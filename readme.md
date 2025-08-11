@@ -14,7 +14,7 @@ UNIVERSE_ID=Roblox_Universe_Id
 PLACE_ID=Roblox_Place_Id
 ROBLOX_API_KEY=Roblox_Api_Key
 ```
-`TUNNEL_URL` is the ip that the bot should bind to.
+`TUNNEL_URL` is the ip url that the bot should bind to.
 
 Run `commands.js` to register the commands with Discord.
 Run `Main.js` to start the bot.
