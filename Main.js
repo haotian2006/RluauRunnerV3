@@ -64,7 +64,7 @@ function log(userid, name, commandName, data) {
     .post(
       FORM_URL,
       new URLSearchParams({
-        "entry.1569623480": name,
+        "entry.1569623480": name, //Make sure these entry ids are correct
         "entry.1249804528": userid,
         "entry.726094871": commandName,
         "entry.182293982": data ? data : "",
@@ -467,7 +467,6 @@ async function main() {
         interaction.user.id,
         interaction.user.username,
         interaction.commandName,
-        code
       );
       if (interaction.commandName === "bytecode") {
         await interaction.deferReply({ ephemeral: false });
@@ -569,7 +568,6 @@ async function main() {
           interaction.user.id,
           interaction.user.username,
           interaction.commandName,
-          code
         );
 
         const options = getByteCodeOptions(code);
