@@ -3,8 +3,10 @@ A discord bot that executes Luau code in a Roblox game.
 Add the bot here:  https://discord.com/oauth2/authorize?client_id=1271610114062811176
 
 To set up copy and paste `LuauBot.luau` into workspace as a module script
+```
 workspace
     - LuauBot
+```
 
 Make sure to have these .env variables set:
 
