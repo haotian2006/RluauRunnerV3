@@ -475,7 +475,7 @@ async function main() {
         const options = getByteCodeOptions(code);
         const bytecode =
           byteCodeOptionsToString(options) + getByteCode(options, code);
-        await reply(interaction, bytecode, false, "Stylus");
+        await reply(interaction, bytecode, false, "armasm");
       } else if (
         interaction.commandName === "bytecodeK" ||
         interaction.commandName === "decompile"
@@ -524,7 +524,7 @@ async function main() {
         options.binary = useKonst;
 
         let bytecode = getByteCode(options, info.content);
-        let type = "Stylus";
+        let type = "armasm";
         if (useKonst) {
           bytecode = await kCall("disassemble", bytecode);
           type = "lua";
