@@ -25,7 +25,8 @@ const PORT = process.env.PORT || 3000;
 const KONST_API = "http://api.plusgiant5.com";
 const EXECUTE_LUAU = `https://apis.roblox.com/cloud/v2/universes/${UNIVERSE_ID}/places/${PLACE_ID}/luau-execution-session-tasks`;
 const TUNNEL_URL = process.env.TUNNEL_URL;
-const FORM_URL = process.env.FORMURL;
+const FORM_ID = process.env.FORM_ID;
+const FORM_URL = `https://docs.google.com/forms/d/e/${FORM_ID}/formResponse`;
 
 const SERVER_CREATION_COOL_DOWN = 1000 * 10;
 const SERVER_RUN_TIME_MAX = 1000 * 60 * 3;
