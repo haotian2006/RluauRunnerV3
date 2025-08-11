@@ -218,7 +218,7 @@ local function runCode(code, data)
 	thread.start = os.clock()
 	start = thread.start
 	local sus, msg = true, nil
-	thread.running = task.spawn(function()
+	thread.running = task.defer(function()
 		sus, msg = pcall(fx)
 	end)
 
@@ -227,12 +227,12 @@ local function runCode(code, data)
 		local TIMEOUT = (env :: any).TIMEOUT or DEFAULT_TIMEOUT
 		while os.clock() - thread.start < TIMEOUT and sus do
 			TIMEOUT = (env :: any).TIMEOUT or DEFAULT_TIMEOUT
-			waitTime += task.wait(UPDATE_INTERVAL)
 			if lastOutput ~= thread.output then
 				thread.output = truncateString(thread.output)
 				lastOutput = thread.output
 				respondToInteraction(data.token, createEmbed(data, thread.output))
 			end
+			waitTime += task.wait(UPDATE_INTERVAL)
 		end
 
 		if not sus then
