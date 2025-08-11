@@ -212,6 +212,7 @@ local function runCode(code, data)
 		return false
 	end
 	respondToInteraction(data.token, createEmbed(data, "Running"))
+	task.wait(.5)
 	setfenv(fx, env)
 	Processes[processID] = thread
 
