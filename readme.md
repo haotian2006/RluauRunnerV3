@@ -13,6 +13,7 @@ PORT=Port_You_Want_to_Use_Default_3000
 UNIVERSE_ID=Roblox_Universe_Id
 PLACE_ID=Roblox_Place_Id
 ROBLOX_API_KEY=Roblox_Api_Key
+TUNNEL_URL=ip
 ```
 `TUNNEL_URL` is the ip url that the bot should bind to.
 
