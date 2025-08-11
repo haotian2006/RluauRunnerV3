@@ -1,6 +1,5 @@
 local IP = ""
-local POLL_RATE = 1500
-local PING_RATE = 1000
+local POLL_RATE = 1000
 local UPDATE_INTERVAL = 1 / 10
 local DEFAULT_TIMEOUT = 15
 local MAX_STR_HEIGHT = 20
@@ -326,19 +325,6 @@ local function start(ip)
 				warn("Failed to poll:", err)
 			end
 			task.wait(POLL_RATE / 1000)
-		end
-	end)
-
-	task.spawn(function()
-		while not Closed do
-			local sus, err = pcall(function()
-				Https:PostAsync(IP .. "/ping", encoder({ ServerId = ServerId }))
-			end)
-			if not sus then
-					
-				warn("Failed to ping server:", err)
-			end
-			task.wait(PING_RATE / 1000)
 		end
 	end)
 end
