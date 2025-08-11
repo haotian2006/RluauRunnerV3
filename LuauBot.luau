@@ -35,7 +35,6 @@ local function createText(text, color)
 	return `[0;37m{text}[0m`
 end
 
-
 local function truncateString(inputString)
 	local lines = {}
 	for line in inputString:gmatch("[^\r\n]+") do
@@ -150,7 +149,6 @@ local function respondToInteraction(interactionToken, responseContent)
 	end
 end
 
-
 local function runCode(code, data)
 	local processID = game:GetService("HttpService"):GenerateGUID(false)
 	local env = setmetatable({}, { __index = getfenv() })
@@ -212,7 +210,7 @@ local function runCode(code, data)
 		return false
 	end
 	respondToInteraction(data.token, createEmbed(data, "Running"))
-	task.wait(.5)
+	task.wait(0.5)
 	setfenv(fx, env)
 	Processes[processID] = thread
 
@@ -238,9 +236,17 @@ local function runCode(code, data)
 
 		if not sus then
 			if msg:find("Script timeout: exhausted allowed execution time") then
-				thread.output ..= string.format(`[2;31m[%.3f] %s[0m`, os.clock() - start, "Script timeout: exhausted allowed execution time")
+				thread.output ..= string.format(
+					`[2;31m[%.3f] %s[0m`,
+					os.clock() - start,
+					"Script timeout: exhausted allowed execution time"
+				)
 			else
-				thread.output ..= string.format(`[2;31m[%.3f] %s[0m`, os.clock() - start, "An error occurred: " .. msg)
+				thread.output ..= string.format(
+					`[2;31m[%.3f] %s[0m`,
+					os.clock() - start,
+					"An error occurred: " .. msg
+				)
 			end
 		else
 			thread.output ..= string.format(
@@ -305,12 +311,12 @@ ScriptContext.Error:Connect(function(err, stackTrace)
 	end
 end)
 
-LogService.MessageOut:Connect(function(errmsg,type)
-    if type == Enum.MessageType.MessageError then
-        if errmsg:find("Script timeout:") then
-            sendMessageToAll("Script timeout: One of the tasks exceeded the time limit")
-        end
-    end
+LogService.MessageOut:Connect(function(errmsg, type)
+	if type == Enum.MessageType.MessageError then
+		if errmsg:find("Script timeout:") then
+			sendMessageToAll("Script timeout: One of the tasks exceeded the time limit")
+		end
+	end
 end)
 
 local function start(ip)
@@ -319,18 +325,17 @@ local function start(ip)
 	Https:PostAsync(IP .. "/start", encoder({ ServerId = ServerId }))
 	task.wait(0.5)
 
-	task.spawn(function()
-		while not Closed do
-			local sus, err = pcall(poll)
-			if not sus then
-				warn("Failed to poll:", err)
-			end
-			task.wait(POLL_RATE / 1000)
+	while not Closed do
+		local sus, err = pcall(poll)
+		if not sus then
+			warn("Failed to poll:", err)
 		end
-	end)
+		task.wait(POLL_RATE / 1000)
+	end
+	task.wait(1)
 end
 
-game:BindToClose(function(reason:Enum.CloseReason)
+game:BindToClose(function(reason: Enum.CloseReason)
 	task.wait(1)
 	while next(Processes) do
 		task.wait()
