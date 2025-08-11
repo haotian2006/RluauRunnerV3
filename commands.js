@@ -39,24 +39,24 @@ const commands = [
     contexts: [0, 1, 2],
     type: 3,
   },
-  {
-    name: "bytecodeK",
-    integration_types: [1],
-    contexts: [0, 1, 2],
-    type: 3,
-  },
+  // { // re assemble using konstant BROKEN FOR NOW
+  //   name: "bytecodeK",
+  //   integration_types: [1],
+  //   contexts: [0, 1, 2],
+  //   type: 3,
+  // },
   {
     name: "bytecodeWOption",
     integration_types: [1],
     contexts: [0, 1, 2],
     type: 3,
   },
-  {
-    name: "decompile",
-    integration_types: [1],
-    contexts: [0, 1, 2],
-    type: 3,
-  },
+  // { // decompile using konstant BROKEN FOR NOW
+  //   name: "decompile",
+  //   integration_types: [1],
+  //   contexts: [0, 1, 2],
+  //   type: 3,
+  // },
 ];
 
 async function registerCommands() {
