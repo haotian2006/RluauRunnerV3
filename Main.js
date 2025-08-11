@@ -383,6 +383,10 @@ app.patch("/respond", async (req, res) => {
   }
 });
 
+app.get('/', (req, res) => {
+  res.send('Bot is running!');
+});
+
 app.post("/start", async (req, res) => {
   RunningServer = req.body.ServerId;
   RunningServerTime = Date.now();
