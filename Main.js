@@ -78,26 +78,25 @@ function log(userid, name, commandName, data) {
     .catch(() => {});
 }
 
-https
-  .get(LUAU_DOWNLOAD_URL, async (res) => {
-    if (res.statusCode !== 200) {
-      console.log(`Failed to get '${LUAU_DOWNLOAD_URL}' (${res.statusCode})`);
-      log("0", "BOT", "Failed to get Luau", res.statusCode);
-      luauModule = require(luauFilePath);
-      return;
-    }
-    const file = fs.createWriteStream(luauFilePath);
-    res.pipe(file);
-    file.on("finish", async () => {
-      file.close(async () => {
-        console.log("Luau downloaded successfully.");
-        const modulePath = path.resolve("./LuauCompile.Web.js");
-        luauModule = await import(`file://${modulePath}`);
-        luauModule = luauModule.default;
-        console.log("Luau compiler loaded successfully.");
-      });
+https.get(LUAU_DOWNLOAD_URL, async (res) => {
+  if (res.statusCode !== 200) {
+    console.log(`Failed to get '${LUAU_DOWNLOAD_URL}' (${res.statusCode})`);
+    log("0", "BOT", "Failed to get Luau", res.statusCode);
+    luauModule = require(luauFilePath);
+    return;
+  }
+  const file = fs.createWriteStream(luauFilePath);
+  res.pipe(file);
+  file.on("finish", async () => {
+    file.close(async () => {
+      console.log("Luau downloaded successfully.");
+      const modulePath = path.resolve("./LuauCompile.Web.js");
+      luauModule = await import(`file://${modulePath}`);
+      luauModule = luauModule.default;
+      console.log("Luau compiler loaded successfully.");
     });
-  })
+  });
+});
 
 function wait(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -383,8 +382,8 @@ app.patch("/respond", async (req, res) => {
   }
 });
 
-app.get('/', (req, res) => {
-  res.send('Bot is running!');
+app.get("/", (req, res) => {
+  res.send("Bot is running!");
 });
 
 app.post("/start", async (req, res) => {
@@ -494,6 +493,15 @@ async function main() {
         createByteModal(interaction, code);
       } else if (interaction.commandName === "compile") {
         await interaction.deferReply({ ephemeral: false });
+        const options = getByteCodeOptions(code);
+        const bytecode = getByteCode(options, code);
+        if (
+          bytecode &&
+          bytecode.split("\n")[0].toLowerCase().includes("syntaxerror")
+        ) {
+          interaction.editReply({ content: "```lua\n" + bytecode + "\n```" });
+          return;
+        }
         sendCompileRequestToRoblox(
           code,
           interaction.id,
@@ -563,6 +571,16 @@ async function main() {
           interaction.commandName,
           code
         );
+
+        const options = getByteCodeOptions(code);
+        const bytecode = getByteCode(options, code);
+        if (
+          bytecode &&
+          bytecode.split("\n")[0].toLowerCase().includes("syntaxerror")
+        ) {
+          interaction.editReply({ content: "```lua\n" + bytecode + "\n```" });
+          return;
+        }
         sendCompileRequestToRoblox(
           code,
           interaction.id,
