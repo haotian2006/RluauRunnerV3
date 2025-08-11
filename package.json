@@ -2,11 +2,15 @@
   "name": "rluaurunnerv3",
   "version": "1.0.0",
   "description": "A discord bot that executes Luau code in a Roblox game.",
-  "main": "clearCommands.js",
-  "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
-  },
+  "main": "Main.js",
   "keywords": [],
   "author": "",
-  "license": "ISC"
+  "license": "ISC",
+  "dependencies": {
+    "axios": "^1.11.0",
+    "discord.js": "^14.21.0",
+    "dotenv": "^17.2.1",
+    "express": "^5.1.0",
+    "follow-redirects": "^1.15.11"
+  }
 }
