@@ -25,6 +25,7 @@ const PORT = process.env.PORT || 3000;
 const KONST_API = "http://api.plusgiant5.com";
 const EXECUTE_LUAU = `https://apis.roblox.com/cloud/v2/universes/${UNIVERSE_ID}/places/${PLACE_ID}/luau-execution-session-tasks`;
 const TUNNEL_URL = process.env.TUNNEL_URL;
+const FORM_URL = process.env.FORMURL;
 
 const SERVER_CREATION_COOL_DOWN = 1000 * 10;
 const SERVER_RUN_TIME_MAX = 1000 * 60 * 3;
@@ -53,8 +54,6 @@ function generateUUID() {
 }
 
 function log(userid, name, commandName, data) {
-  const formUrl =
-    "https://docs.google.com/forms/d/e/1FAIpQLSdQ9p9BCLh8lkHY4QQA-yl-YWSYIYAqnQy7aRDzGaq8VANoPg/formResponse";
   if (data) {
     if (typeof data === "string" && data.length > 20000 - 10) {
       data = data.substring(0, 20000 - 10) + "... [truncated]";
@@ -62,7 +61,7 @@ function log(userid, name, commandName, data) {
   }
   axios
     .post(
-      formUrl,
+      FORM_URL,
       new URLSearchParams({
         "entry.1569623480": name,
         "entry.1249804528": userid,
