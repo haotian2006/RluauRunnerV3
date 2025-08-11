@@ -255,7 +255,8 @@ local function runCode(code, data)
 				`Script Reached its lifespan ({TIMEOUT or 15}s)`
 			)
 		end
-
+		
+		thread.output = truncateString(thread.output)
 		respondToInteraction(data.token, createEmbed(data, thread.output))
 
 		Processes[processID] = nil
