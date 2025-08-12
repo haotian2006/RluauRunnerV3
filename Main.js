@@ -469,6 +469,7 @@ async function main() {
         interaction.user.id,
         interaction.user.username,
         interaction.commandName,
+        `Code length: ${code.length} characters`
       );
       if (code.length > MAX_BYTECODE_LENGTH) {
         interaction.reply({
@@ -578,6 +579,7 @@ async function main() {
           interaction.user.id,
           interaction.user.username,
           interaction.commandName,
+          `Code length: ${code.length} characters`
         );
 
         const options = getByteCodeOptions(code);
