@@ -33,6 +33,8 @@ const SERVER_RUN_TIME_MAX = 1000 * 60 * 3;
 const SERVER_CHECK_INTERVAL = 1000;
 const SERVER_PING_TIMEOUT = 1000 * 5;
 
+const MAX_BYTECODE_LENGTH = 1024 * 20;
+
 let IP = "";
 let RunningServer = "";
 let RunningServerTime = 0;
@@ -468,6 +470,14 @@ async function main() {
         interaction.user.username,
         interaction.commandName,
       );
+      if (code.length > MAX_BYTECODE_LENGTH) {
+        interaction.reply({
+          content: `Code exceeds maximum length of ${MAX_BYTECODE_LENGTH / 1024} KB.`,
+          ephemeral: true,
+        });
+        return;
+      }
+
       if (interaction.commandName === "bytecode") {
         await interaction.deferReply({ ephemeral: false });
         const options = getByteCodeOptions(code);
