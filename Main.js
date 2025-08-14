@@ -626,13 +626,13 @@ async function main() {
       error.message
     );
   });
-  logBot("Discord", "Logging in...");
-  try{
-    client.login(DISCORD_TOKEN);
-  } catch (error) {
+  logBot("Discord", "Logging in...\nToken Length: "+ DISCORD_TOKEN?.length);
+  client.login(DISCORD_TOKEN).then(() => {
+    logBot("Discord", "Logged in successfully.");
+  }).catch((error) => {
     logBot("Discord", "Error logging in." + error);
     console.error("Error logging in:", error);
-  }
+  }); 
 }
 logBot("Check Roblox Server", "Checking if Roblox server is online...");
 checkRobloxServer();
