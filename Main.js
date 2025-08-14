@@ -604,10 +604,22 @@ async function main() {
 
   client.once("ready", () => {
     console.log(`Logged in as ${client.user.tag}`);
+    log(
+      "0",
+      'BOT',
+      "ready",
+      `Logged in as ${client.user.tag}`
+    );
   });
 
   client.on("error", (error) => {
     console.error(error.message);
+    log(
+      client.user.id,
+      client.user.username,
+      "error",
+      error.message
+    );
   });
 
   client.login(DISCORD_TOKEN);
