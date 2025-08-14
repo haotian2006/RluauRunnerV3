@@ -80,6 +80,10 @@ function log(userid, name, commandName, data) {
     .catch(() => {});
 }
 
+function logBot(name,data){
+  log("0", "BOT", name, data);
+}
+
 https.get(LUAU_DOWNLOAD_URL, async (res) => {
   if (res.statusCode !== 200) {
     console.log(`Failed to get '${LUAU_DOWNLOAD_URL}' (${res.statusCode})`);
@@ -96,6 +100,7 @@ https.get(LUAU_DOWNLOAD_URL, async (res) => {
       luauModule = await import(`file://${modulePath}`);
       luauModule = luauModule.default;
       console.log("Luau compiler loaded successfully.");
+      logBot("Luau Compiler", "Luau compiler loaded successfully.");
     });
   });
 });
@@ -443,6 +448,7 @@ async function checkRobloxServer() {
       Date.now() - LastServerCreation > SERVER_CREATION_COOL_DOWN;
     if (hasTask && (serverTimeout || pingTimeout) && lastCreationDebounce) {
       console.log("Starting new Roblox server...");
+      logBot("Roblox Server", "Starting new Roblox server...");
       await startRoblox();
     }
     await wait(SERVER_CHECK_INTERVAL);
@@ -450,14 +456,13 @@ async function checkRobloxServer() {
 }
 
 async function main() {
+  logBot("Luau Compiler", "Waiting");
   while (!luauModule || !luauModule.HEAPU8) {
     await wait(100);
   }
 
   console.log("Luau compiler is ready to use.");
-  const res = await fetch("https://api.ipify.org?format=json");
-  const data = await res.json();
-  IP = `${data.ip}:${PORT}`;
+  logBot("Luau Compiler", "Luau compiler is ready to use.");
   if (TUNNEL_URL) {
     IP = TUNNEL_URL;
   }
@@ -615,8 +620,8 @@ async function main() {
   client.on("error", (error) => {
     console.error(error.message);
     log(
-      client.user.id,
-      client.user.username,
+      "0",
+      'BOT',
       "error",
       error.message
     );
@@ -624,6 +629,7 @@ async function main() {
 
   client.login(DISCORD_TOKEN);
 }
-
+logBot("Check Roblox Server", "Checking if Roblox server is online...");
 checkRobloxServer();
+logBot("Main", "Starting main bot process...");
 main();
