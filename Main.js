@@ -466,7 +466,7 @@ async function main() {
   if (TUNNEL_URL) {
     IP = TUNNEL_URL;
   }
-
+  logBot("Discord", "Registering interaction handler...");
   client.on("interactionCreate", async (interaction) => {
     if (interaction.isMessageContextMenuCommand()) {
       const code = await getCodeFromContextMenu(interaction);
@@ -626,8 +626,13 @@ async function main() {
       error.message
     );
   });
-
-  client.login(DISCORD_TOKEN);
+  logBot("Discord", "Logging in...");
+  try{
+    client.login(DISCORD_TOKEN);
+  } catch (error) {
+    logBot("Discord", "Error logging in." + error);
+    console.error("Error logging in:", error);
+  }
 }
 logBot("Check Roblox Server", "Checking if Roblox server is online...");
 checkRobloxServer();
