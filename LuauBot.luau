@@ -319,8 +319,10 @@ LogService.MessageOut:Connect(function(errmsg, type)
 		end
 	end
 end)
-
+local ready = false
 local function start(ip)
+	if ready then error('Already started') end 
+	ready = true
 	IP = ip or IP
 	task.wait()
 	Https:PostAsync(IP .. "/start", encoder({ ServerId = ServerId }))
@@ -345,7 +347,4 @@ end)
 
 return {
 	start = start,
-	close = function()
-		Closed = true
-	end,
 }

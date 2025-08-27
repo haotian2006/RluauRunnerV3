@@ -45,7 +45,7 @@ let LastServerCreation = 0;
 const ExecuteTasks = {};
 const app = express();
 app.use(express.json());
-const client = new Client({
+const client = new Client({ 
   intents: [GatewayIntentBits.Guilds],
 });
 
@@ -80,7 +80,7 @@ function log(userid, name, commandName, data) {
     .catch(() => {});
 }
 
-function logBot(name,data){
+function logBot(name, data) {
   log("0", "BOT", name, data);
 }
 
@@ -478,7 +478,9 @@ async function main() {
       );
       if (code.length > MAX_BYTECODE_LENGTH) {
         interaction.reply({
-          content: `Code exceeds maximum length of ${MAX_BYTECODE_LENGTH / 1024} KB.`,
+          content: `Code exceeds maximum length of ${
+            MAX_BYTECODE_LENGTH / 1024
+          } KB.`,
           ephemeral: true,
         });
         return;
@@ -609,30 +611,23 @@ async function main() {
 
   client.once("ready", () => {
     console.log(`Logged in as ${client.user.tag}`);
-    log(
-      "0",
-      'BOT',
-      "ready",
-      `Logged in as ${client.user.tag}`
-    );
+    logBot("ready", `Logged in as ${client.user.tag}`);
   });
 
   client.on("error", (error) => {
     console.error(error.message);
-    log(
-      "0",
-      'BOT',
-      "error",
-      error.message
-    );
+    logBot("error", error.message);
   });
-  logBot("Discord", "Logging in...\nToken Length: "+ DISCORD_TOKEN?.length);
-  client.login(DISCORD_TOKEN).then(() => {
-    logBot("Discord", "Logged in successfully.");
-  }).catch((error) => {
-    logBot("Discord", "Error logging in." + error);
-    console.error("Error logging in:", error);
-  }); 
+  logBot("Discord", "Logging in...\nToken Length: " + DISCORD_TOKEN?.length);
+  client
+    .login(DISCORD_TOKEN)
+    .then(() => {
+      logBot("Discord", "Logged in successfully.");
+    })
+    .catch((error) => {
+      logBot("Discord", "Error logging in." + error);
+      console.error("Error logging in:", error);
+    });
 }
 logBot("Check Roblox Server", "Checking if Roblox server is online...");
 checkRobloxServer();
