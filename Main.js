@@ -130,6 +130,12 @@ async function startRoblox() {
   return true;
 }
 
+function getLinkFromData(data) {
+  const channel_id = data.channelId;
+  const msgID = data.targetId;
+  return msgID ? `https://discord.com/channels/@me/${channel_id}/${msgID}` : "";
+}
+
 function fetchFileContent(url) {
   return new Promise((resolve, reject) => {
     https
@@ -327,12 +333,14 @@ async function reply(
   interaction,
   content,
   ephemeral = false,
-  fileType = "lua"
+  fileType = "lua",
+  msgLink = null
 ) {
   const len = content.length;
+  const link = msgLink || getLinkFromData(interaction);
   if (len > 1900) {
     interaction.editReply({
-      content: "Output too long sending as a file...",
+      content: "Results For " + link + ":\nOutput too long sending as a file...",
       files: [
         {
           name: "output." + fileType,
@@ -343,7 +351,7 @@ async function reply(
     });
   } else {
     await interaction.editReply({
-      content: "```" + `${fileType}\n` + content + "\n```",
+      content: "Results For " + link + ":\n```" + `${fileType}\n` + content + "\n```",
       ephemeral: ephemeral,
     });
   }
@@ -560,7 +568,8 @@ async function main() {
           interaction,
           byteCodeOptionsToString(options) + bytecode,
           ephemeral,
-          type
+          type,
+          info.msgLink
         );
 
         delete byteCodeModalData[interaction.user.id];
