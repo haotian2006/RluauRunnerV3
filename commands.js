@@ -8,14 +8,14 @@ const commands = [
   {
     name: "ping",
     description: "Replies with Pong!",
-    integration_types: [1],
+    integration_types: [0,1],
     contexts: [0, 1, 2],
     type: 1,
   },
   {
     name: "compile",
     description: "Runs rLuau code in roblox",
-    integration_types: [1],
+    integration_types: [0,1],
     contexts: [0, 1, 2],
     type: 1,
     options: [
@@ -29,31 +29,31 @@ const commands = [
   },
   {
     name: "compile",
-    integration_types: [1],
+    integration_types: [0,1],
     contexts: [0, 1, 2],
     type: 3,
   },
   {
     name: "bytecode",
-    integration_types: [1],
+    integration_types: [0,1],
     contexts: [0, 1, 2],
     type: 3,
   },
   // { // re assemble using konstant BROKEN FOR NOW
   //   name: "bytecodeK",
-  //   integration_types: [1],
+  //   integration_types: [0,1],
   //   contexts: [0, 1, 2],
   //   type: 3,
   // },
   {
     name: "bytecodeWOption",
-    integration_types: [1],
+    integration_types: [0,1],
     contexts: [0, 1, 2],
     type: 3,
   },
   // { // decompile using konstant BROKEN FOR NOW
   //   name: "decompile",
-  //   integration_types: [1],
+  //   integration_types: [0,1],
   //   contexts: [0, 1, 2],
   //   type: 3,
   // },
