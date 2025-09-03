@@ -214,16 +214,38 @@ function getByteCodeOptions(code) {
   return options;
 }
 
-function byteCodeOptionsToString(options) {
+function getRawSize(options,code){
+  let optionStr = "-a ";
+  optionStr += "--binary ";
+  optionStr += `-O${options.optimizeLevel} -g${options.debugLevel}`;
+
+  let pointer = luauModule.ccall(
+    "exportCompileRaw",
+    "number",
+    ["string", "string"],
+    [optionStr, code]
+  );
+  const size = luauModule.ccall("getSize", "number", [], []);
+  const bytes = new Uint8Array(luauModule.HEAPU8.buffer, pointer, size);
+  const decoder = new TextDecoder("utf-8");
+  const str = decoder.decode(bytes);
+  return str.length;
+}
+
+function byteCodeOptionsToString(options, code = '') {
   let str = "";
   if (options.remarks && !options.binary) {
     str += "Remarks: Enabled\n";
   }
   str += `OptimizeLevel: ${options.optimizeLevel}\n`;
   str += `DebugLevel: ${options.debugLevel}\n`;
+  const size = getRawSize(options,code);
+  str += `Raw Size: ${size} bytes\n`;
   str += "-------------------\n";
   return str;
 }
+
+
 
 function getByteCode(options, code) {
   let optionStr = "-a ";
@@ -498,7 +520,7 @@ async function main() {
         await interaction.deferReply({ ephemeral: false });
         const options = getByteCodeOptions(code);
         const bytecode =
-          byteCodeOptionsToString(options) + getByteCode(options, code);
+          byteCodeOptionsToString(options, code) + getByteCode(options, code);
         await reply(interaction, bytecode, false, "armasm");
       } else if (
         interaction.commandName === "bytecodeK" ||
@@ -513,7 +535,7 @@ async function main() {
         const bytecode = getByteCode(options, code);
 
         const bytecodeK = await kCall(api, bytecode);
-        reply(interaction, byteCodeOptionsToString(options) + bytecodeK);
+        reply(interaction, byteCodeOptionsToString(options, code) + bytecodeK);
       } else if (interaction.commandName === "bytecodeWOption") {
         createByteModal(interaction, code);
       } else if (interaction.commandName === "compile") {
@@ -534,7 +556,7 @@ async function main() {
           interaction.channelId,
           interaction.targetId
         );
-      }
+      } 
     } else if (interaction.isModalSubmit()) {
       if (interaction.customId === "bytecode_modal") {
         const info = byteCodeModalData[interaction.user.id];
@@ -566,7 +588,7 @@ async function main() {
 
         reply(
           interaction,
-          byteCodeOptionsToString(options) + bytecode,
+          byteCodeOptionsToString(options, info.content) + bytecode,
           ephemeral,
           type,
           info.msgLink
