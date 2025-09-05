@@ -147,10 +147,10 @@ local function respondToInteraction(interactionToken, responseContent,logs)
       responseContent = responseContent:sub(1, 1900 - 10) .. "... [truncated]";
     end
 
-	if logs then
+	if logs and logs ~= '' then
 		logs = encode(logs)
 	end
-	
+
 	local requestData = {
 		Url = url,
 		Method = "PATCH",
@@ -261,15 +261,13 @@ local function runCode(code, data)
 
 		if not sus then
 			if msg:find("Script timeout: exhausted allowed execution time") then
-				local noTimeStamp = (env :: any).TIMESTAMP == false
-				thread.output ..= noTimeStamp and "Script timeout: exhausted allowed execution time" or string.format(
+				thread.output ..=  string.format(
 					`[2;31m[%.3f] %s[0m`,
 					os.clock() - start,
 					"Script timeout: exhausted allowed execution time"
 				)
 			else
-				local noTimeStamp = (env :: any).TIMESTAMP == false
-				thread.output ..= noTimeStamp and "An error occurred: " .. msg or string.format(
+				thread.output ..= string.format(
 					`[2;31m[%.3f] %s[0m`,
 					os.clock() - start,
 					"An error occurred: " .. msg
