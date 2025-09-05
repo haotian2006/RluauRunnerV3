@@ -215,36 +215,18 @@ function getByteCodeOptions(code) {
   return options;
 }
 
-function getRawSize(options, code) {
-  let optionStr = "-a ";
-  optionStr += "--binary ";
-  optionStr += `-O${options.optimizeLevel} -g${options.debugLevel}`;
-
-  let pointer = luauModule.ccall(
-    "exportCompileRaw",
-    "number",
-    ["string", "string"],
-    [optionStr, code]
-  );
-  const size = luauModule.ccall("getSize", "number", [], []);
-  const bytes = new Uint8Array(luauModule.HEAPU8.buffer, pointer, size);
-  const decoder = new TextDecoder("utf-8");
-  const str = decoder.decode(bytes);
-  return str.length;
-}
-
-function byteCodeOptionsToString(options, code = "") {
+function byteCodeOptionsToString(options) {
   let str = "";
   if (options.remarks && !options.binary) {
     str += "Remarks: Enabled\n";
   }
   str += `OptimizeLevel: ${options.optimizeLevel}\n`;
   str += `DebugLevel: ${options.debugLevel}\n`;
-  const size = getRawSize(options, code);
-  str += `Raw Size: ${size} bytes\n`;
   str += "-------------------\n";
   return str;
 }
+
+
 
 function getByteCode(options, code) {
   let optionStr = "-a ";
@@ -361,8 +343,7 @@ async function reply(
   const link = msgLink || getLinkFromData(interaction);
   if (len > 1900) {
     interaction.editReply({
-      content:
-        "Results For " + link + ":\nOutput too long sending as a file...",
+      content: "Output too long sending as a file...",
       files: [
         {
           name: "output." + fileType,
@@ -373,8 +354,7 @@ async function reply(
     });
   } else {
     await interaction.editReply({
-      content:
-        "Results For " + link + ":\n```" + `${fileType}\n` + content + "\n```",
+      content: "```" + `${fileType}\n` + content + "\n```",
       ephemeral: ephemeral,
     });
   }
@@ -625,7 +605,7 @@ async function main() {
           interaction.targetId,
           interaction
         );
-      }
+      } 
     } else if (interaction.isModalSubmit()) {
       if (interaction.customId === "bytecode_modal") {
         const info = byteCodeModalData[interaction.user.id];
