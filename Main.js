@@ -12,6 +12,8 @@ const path = require("path");
 const axios = require("axios");
 const express = require("express");
 const { console } = require("inspector");
+const zstd = require("zstd-napi");
+const { json } = require("stream/consumers");
 require("dotenv").config();
 
 const LUAU_DOWNLOAD_URL =
@@ -332,33 +334,6 @@ async function createByteModal(data, code) {
   delete byteCodeModalData[data.user.id];
 }
 
-async function reply(
-  interaction,
-  content,
-  ephemeral = false,
-  fileType = "lua",
-  msgLink = null
-) {
-  const len = content.length;
-  const link = msgLink || getLinkFromData(interaction);
-  if (len > 1900) {
-    interaction.editReply({
-      content: "Output too long sending as a file...",
-      files: [
-        {
-          name: "output." + fileType,
-          attachment: Buffer.from(content, "utf-8"),
-        },
-      ],
-      ephemeral: ephemeral,
-    });
-  } else {
-    await interaction.editReply({
-      content: "```" + `${fileType}\n` + content + "\n```",
-      ephemeral: ephemeral,
-    });
-  }
-}
 
 async function sendCompileRequestToRoblox(
   code,
@@ -414,11 +389,21 @@ async function reply(
   }
 }
 
+function decodeBuffer(data){
+  if (data.zbase64){
+    return zstd.decompress(Buffer.from(data.zbase64, "base64")).toString('utf-8');
+  }else if(data.base64){
+    return Buffer.from(data.base64, "base64").toString('utf-8');
+  }
+}
+
 app.patch("/respond", async (req, res) => {
+
   try {
     const token = req.body.token;
-    let responseContent = req.body.data;
-    const logs = req.body.log;
+    let responseContent = decodeBuffer(JSON.parse(req.body.data));
+    
+    let logs = req.body.log;
     const interaction = CompilingTasks[token];
     if (!interaction) {
       throw new Error("Interaction not found");
@@ -429,10 +414,9 @@ app.patch("/respond", async (req, res) => {
     if (typeof logs === "string") {
       delete CompilingTasks[token];
     }
-    if (responseContent.length > 1900 ) {
-      responseContent = responseContent.substring(0, 1900 - 10) + "... [truncated]";
-    }
+
     if (logs) {
+      logs = decodeBuffer(JSON.parse(logs));
       interaction.editReply({
         content:
           "Results For " +
@@ -460,6 +444,7 @@ app.patch("/respond", async (req, res) => {
       data: "pass",
     });
   } catch (error) {
+    console.error("Error handling /respond:", error);
     res.status(500).json({
       message: "Failed to send response to Discord",
       error: "failed",

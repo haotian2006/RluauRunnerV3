@@ -12,6 +12,7 @@
     "dotenv": "^17.2.1",
     "express": "^5.1.0",
     "follow-redirects": "^1.15.11",
-    "tunnelmole": "^2.4.0"
+    "tunnelmole": "^2.4.0",
+    "zstd-napi": "^0.0.12"
   }
 }

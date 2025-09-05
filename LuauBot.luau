@@ -133,17 +133,29 @@ local function createEmbed(data, logs, image)
 	return msg
 end
 
-local function respondToInteraction(interactionToken, responseContent,LOGGING)
+local function encode(data)
+	return game:GetService("HttpService"):JSONEncode(buffer.fromstring(data))
+end
+
+local function respondToInteraction(interactionToken, responseContent,logs)
 	local url = IP .. "/respond"
 	local headers = {
 		["Content-Type"] = "application/json",
 	}
 
+    if (#responseContent > 1900 ) then
+      responseContent = responseContent:sub(1, 1900 - 10) .. "... [truncated]";
+    end
+
+	if logs then
+		logs = encode(logs)
+	end
+	
 	local requestData = {
 		Url = url,
 		Method = "PATCH",
 		Headers = headers,
-		Body = Https:JSONEncode({ token = interactionToken, data = responseContent,log = LOGGING }),
+		Body = Https:JSONEncode({ token = interactionToken, data = encode(responseContent),log = logs }),
 	}
 
 	local sus, msg = pcall(function()
@@ -283,7 +295,7 @@ local function runCode(code, data)
 			table.insert(log,"Logs For Compilation")
 			table.insert(log,`Compiled at: {date.Month}/{date.Day}/{date.Year} {date.Hour}:{date.Minute}:{date.Second}`)
 			table.insert(log,`User: {name} ({id})`)
-			table.insert(log,`RunTime: {os.clock() - thread.start} Seconds`)
+			table.insert(log,`Run Time: {os.clock() - thread.start} Seconds`)
 			table.insert(log,`Channel Link: {link}`)
 			table.insert(log,"------------------------------")
 			table.insert(log,thread.output)
