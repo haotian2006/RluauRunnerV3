@@ -2,7 +2,7 @@ local IP = ""
 local POLL_RATE = 1000
 local UPDATE_INTERVAL = 1 / 10
 local DEFAULT_TIMEOUT = 15
-local MAX_STR_HEIGHT = 20
+local MAX_STR_HEIGHT = 15
 
 local Https = game:GetService("HttpService")
 local LogService = game:GetService("LogService")
@@ -167,7 +167,8 @@ local function runCode(code, data)
 	env.log = function(text, color, newLine)
 		local time = os.clock() - start
 		color = color or ""
-        thread.output ..= (string.format(`[%.3f] %s\n`, time, (colorsLower[color:lower()] or "") .. text .. (newLine and "\n" or "")))
+		local noTimeStamp = (env :: any).TIMESTAMP == false
+        thread.output ..= noTimeStamp and text..'\n' or (string.format(`[%.3f] %s\n`, time, (colorsLower[color:lower()] or "") .. text .. (newLine and "\n" or "")))
     end
 
 	env.print = function(...)
@@ -179,18 +180,20 @@ local function runCode(code, data)
 			local value = type(array[i]) == "table" and tableToString(array[i]) or tostring(array[i])
 			text ..= value .. " "
 		end
-		thread.output ..= createText(string.format(`[%.3f] %s\n`, time, text))
+		local noTimeStamp = (env :: any).TIMESTAMP == false
+		thread.output ..= noTimeStamp and text..'\n' or createText(string.format(`[%.3f] %s\n`, time, text))
 	end
-	env.debugprint = function(...)
+	env.write = function(...)
 		local text = ""
 		local array = { ... }
 		local length = select("#", ...)
 		local time = os.clock() - start
 		for i = 1, length do
 			local value = type(array[i]) == "table" and tableToString(array[i], nil, nil, true) or tostring(array[i])
-			text ..= value .. " "
+			text ..= value 
 		end
-		thread.output ..= createText(string.format(`[%.3f] %s\n`, time, text), 2)
+		local noTimeStamp = (env :: any).TIMESTAMP == false
+		thread.output ..= noTimeStamp and text or createText(string.format(`[%.3f] %s\n`, time, text))
 	end
 
 	env.warn = function(...)
@@ -201,12 +204,14 @@ local function runCode(code, data)
 		for i = 1, length do
 			text ..= tostring(array[i]) .. " "
 		end
-		thread.output ..= createText(string.format(`[%.3f] %s\n`, time, text), 2)
+		local noTimeStamp = (env :: any).TIMESTAMP == false
+		thread.output ..= noTimeStamp and text..'\n' or createText(string.format(`[%.3f] %s\n`, time, text), 2)
 	end
 
 	env.error = function(msg, context)
 		local time = os.clock() - start
-		thread.output ..= createText(string.format(`[%.3f] %s\n`, time, msg), 3)
+		local noTimeStamp = (env :: any).TIMESTAMP == false
+		thread.output ..= noTimeStamp and msg..'\n' or createText(string.format(`[%.3f] %s\n`, time, msg), 3)
 		local running = coroutine.running()
 		task.defer(coroutine.close, running)
 		coroutine.yield()
@@ -235,28 +240,30 @@ local function runCode(code, data)
 		while os.clock() - thread.start < TIMEOUT and sus do
 			TIMEOUT = (env :: any).TIMEOUT or DEFAULT_TIMEOUT
 			if lastOutput ~= thread.output then
-				thread.output = truncateString(thread.output)
+				local truncated = truncateString(thread.output)
 				lastOutput = thread.output
-				respondToInteraction(data.token, thread.output)
+				respondToInteraction(data.token, truncated)
 			end
 			waitTime += task.wait(UPDATE_INTERVAL)
 		end
 
 		if not sus then
 			if msg:find("Script timeout: exhausted allowed execution time") then
-				thread.output ..= string.format(
+				local noTimeStamp = (env :: any).TIMESTAMP == false
+				thread.output ..= noTimeStamp and "Script timeout: exhausted allowed execution time" or string.format(
 					`[2;31m[%.3f] %s[0m`,
 					os.clock() - start,
 					"Script timeout: exhausted allowed execution time"
 				)
 			else
-				thread.output ..= string.format(
+				local noTimeStamp = (env :: any).TIMESTAMP == false
+				thread.output ..= noTimeStamp and "An error occurred: " .. msg or string.format(
 					`[2;31m[%.3f] %s[0m`,
 					os.clock() - start,
 					"An error occurred: " .. msg
 				)
 			end
-		else
+		elseif (env :: any).TIMESTAMP ~= false then
 			thread.output ..= string.format(
 				`[2;36m[%.3f] %s[0m`,
 				os.clock() - start,

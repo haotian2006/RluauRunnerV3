@@ -43,10 +43,11 @@ let LastServerPing = 0;
 let LastServerCreation = 0;
 
 const ExecuteTasks = {};
+const CompilingTasks = {};
 const app = express();
 app.use(express.json());
 const client = new Client({
-  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages],
+  intents: [GatewayIntentBits.Guilds],
 });
 
 const luauFilePath = path.resolve("./LuauCompile.Web.js");
@@ -130,6 +131,12 @@ async function startRoblox() {
   return true;
 }
 
+function getLinkFromData(data) {
+  const channel_id = data.channelId;
+  const msgID = data.targetId;
+  return msgID ? `https://discord.com/channels/@me/${channel_id}/${msgID}` : "";
+}
+
 function fetchFileContent(url) {
   return new Promise((resolve, reject) => {
     https
@@ -208,13 +215,33 @@ function getByteCodeOptions(code) {
   return options;
 }
 
-function byteCodeOptionsToString(options) {
+function getRawSize(options, code) {
+  let optionStr = "-a ";
+  optionStr += "--binary ";
+  optionStr += `-O${options.optimizeLevel} -g${options.debugLevel}`;
+
+  let pointer = luauModule.ccall(
+    "exportCompileRaw",
+    "number",
+    ["string", "string"],
+    [optionStr, code]
+  );
+  const size = luauModule.ccall("getSize", "number", [], []);
+  const bytes = new Uint8Array(luauModule.HEAPU8.buffer, pointer, size);
+  const decoder = new TextDecoder("utf-8");
+  const str = decoder.decode(bytes);
+  return str.length;
+}
+
+function byteCodeOptionsToString(options, code = "") {
   let str = "";
   if (options.remarks && !options.binary) {
     str += "Remarks: Enabled\n";
   }
   str += `OptimizeLevel: ${options.optimizeLevel}\n`;
   str += `DebugLevel: ${options.debugLevel}\n`;
+  const size = getRawSize(options, code);
+  str += `Raw Size: ${size} bytes\n`;
   str += "-------------------\n";
   return str;
 }
@@ -257,7 +284,6 @@ async function getCodeFromContextMenu(interaction) {
   return content;
 }
 
-const compilationData = {};
 const byteCodeModalData = {};
 /**
  * @param {import('discord.js').MessageContextMenuCommandInteraction} data
@@ -328,12 +354,15 @@ async function reply(
   interaction,
   content,
   ephemeral = false,
-  fileType = "lua"
+  fileType = "lua",
+  msgLink = null
 ) {
   const len = content.length;
+  const link = msgLink || getLinkFromData(interaction);
   if (len > 1900) {
     interaction.editReply({
-      content: "Output too long sending as a file...",
+      content:
+        "Results For " + link + ":\nOutput too long sending as a file...",
       files: [
         {
           name: "output." + fileType,
@@ -344,7 +373,8 @@ async function reply(
     });
   } else {
     await interaction.editReply({
-      content: "```" + `${fileType}\n` + content + "\n```",
+      content:
+        "Results For " + link + ":\n```" + `${fileType}\n` + content + "\n```",
       ephemeral: ephemeral,
     });
   }
@@ -356,8 +386,7 @@ async function sendCompileRequestToRoblox(
   interactionToken,
   channelId,
   targetId,
-  userId,
-  username
+  interaction
 ) {
   const uuid = generateUUID();
   ExecuteTasks[uuid] = {
@@ -366,81 +395,94 @@ async function sendCompileRequestToRoblox(
     targetId: targetId,
     id: interactionId,
     token: interactionToken,
-    userId: userId,
-    username: username,
+    userId: interaction.user.id,
+    username: interaction.user.username,
   };
+  CompilingTasks[interaction.token] = interaction;
+  setTimeout(() => {
+    delete ExecuteTasks[uuid];
+  }, 1000 * 60 * 6);
 }
 
-// async function reply(
-//   interaction,
-//   content,
-//   ephemeral = false,
-//   fileType = "lua"
-// ) {
-//   const len = content.length;
-//   if (len > 1900) {
-//     interaction.editReply({
-//       content: "Output too long sending as a file...",
-//       files: [
-//         {
-//           name: "output." + fileType,
-//           attachment: Buffer.from(content, "utf-8"),
-//         },
-//       ],
-//       ephemeral: ephemeral,
-//     });
-//   } else {
-//     await interaction.editReply({
-//       content: "```" + `${fileType}\n` + content + "\n```",
-//       ephemeral: ephemeral,
-//     });
-//   }
-// }
-
-// webhook_url = f"https://discord.com/api/v10/interactions/{interactionId}/{interactionToken}/callback"
-// edit_webhook_url = f"https://discord.com/api/webhooks/{applicationID}/{interactionToken}/messages/@original"
-// try:
-//     with open(output_file, 'rb') as file:
-//         files = {'file': (output_file,file)}
-//         data = {
-//         'content': f"Bytecode for {msgLink}",
-//         }
-//         response = requests.patch(edit_webhook_url, files=files, data={"payload_json": json.dumps(data)})
-
-//         if response.status_code != 200:
-//             print(f"Failed to send bytecode: {response.status_code}")
-//             print(response.text)
-
-// except Exception as e:
-//     print(f"An error occurred: {e}")
+async function reply(
+  interaction,
+  content,
+  ephemeral = false,
+  fileType = "lua",
+  msgLink = null
+) {
+  const len = content.length;
+  const link = msgLink || getLinkFromData(interaction);
+  if (len > 1900) {
+    interaction.editReply({
+      content:
+        "Results For " + link + ":\nOutput too long sending as a file...",
+      files: [
+        {
+          name: "output." + fileType,
+          attachment: Buffer.from(content, "utf-8"),
+        },
+      ],
+      ephemeral: ephemeral,
+    });
+  } else {
+    await interaction.editReply({
+      content:
+        "Results For " + link + ":\n```" + `${fileType}\n` + content + "\n```",
+      ephemeral: ephemeral,
+    });
+  }
+}
 
 app.patch("/respond", async (req, res) => {
   try {
     const token = req.body.token;
-    const responseContent = req.body.data;
+    let responseContent = req.body.data;
     const logs = req.body.log;
-    const url = `https://discord.com/api/v10/webhooks/${DISCORD_APP_ID}/${token}/messages/@original`;
-    const interaction = compilationData[token];
-    let response;
-    if (interaction){
-      const link = 
-      if (logs === ''){
-        delete compilationData[token];
-      }else if (logs){
-
-      }else{
-
-      }
+    const interaction = CompilingTasks[token];
+    if (!interaction) {
+      throw new Error("Interaction not found");
     }
 
+    const link = getLinkFromData(interaction);
+
+    if (typeof logs === "string") {
+      delete CompilingTasks[token];
+    }
+    if (responseContent.length > 1900 ) {
+      responseContent = responseContent.substring(0, 1900 - 10) + "... [truncated]";
+    }
+    if (logs) {
+      interaction.editReply({
+        content:
+          "Results For " +
+          link +
+          ":\n```ansi\n" +
+          responseContent +
+          "\n```\nSending File with size " +
+          Buffer.byteLength(logs, "utf-8") +
+          " bytes",
+        files: [
+          {
+            name: "logs.ansi",
+            attachment: Buffer.from(logs, "utf-8"),
+          },
+        ],
+      });
+    } else {
+      interaction.editReply({
+        content:
+          "Results For " + link + ":\n```ansi\n" + responseContent + "\n```",
+      });
+    }
     res.json({
-      message: "Failed to send response to Discord",
-      data: "no",
+      message: "Successfully sent response to Discord",
+      data: "pass",
     });
   } catch (error) {
-    res.json({
+    res.status(500).json({
       message: "Failed to send response to Discord",
-      data: "no",
+      error: "failed",
     });
   }
 });
@@ -546,7 +588,7 @@ async function main() {
         await interaction.deferReply({ ephemeral: false });
         const options = getByteCodeOptions(code);
         const bytecode =
-          byteCodeOptionsToString(options) + getByteCode(options, code);
+          byteCodeOptionsToString(options, code) + getByteCode(options, code);
         await reply(interaction, bytecode, false, "armasm");
       } else if (
         interaction.commandName === "bytecodeK" ||
@@ -561,7 +603,7 @@ async function main() {
         const bytecode = getByteCode(options, code);
 
         const bytecodeK = await kCall(api, bytecode);
-        reply(interaction, byteCodeOptionsToString(options) + bytecodeK);
+        reply(interaction, byteCodeOptionsToString(options, code) + bytecodeK);
       } else if (interaction.commandName === "bytecodeWOption") {
         createByteModal(interaction, code);
       } else if (interaction.commandName === "compile") {
@@ -581,8 +623,7 @@ async function main() {
           interaction.token,
           interaction.channelId,
           interaction.targetId,
-          interaction.user.id,
-          interaction.user.username
+          interaction
         );
       }
     } else if (interaction.isModalSubmit()) {
@@ -616,9 +657,10 @@ async function main() {
 
         reply(
           interaction,
-          byteCodeOptionsToString(options) + bytecode,
+          byteCodeOptionsToString(options, info.content) + bytecode,
           ephemeral,
-          type
+          type,
+          info.msgLink
         );
 
         delete byteCodeModalData[interaction.user.id];
@@ -662,12 +704,8 @@ async function main() {
           interaction.token,
           interaction.channelId,
           interaction.targetId,
-          interaction.user.id,
-          interaction.user.username
+          interaction
         );
-        compilationData[interaction.token] = interaction;
-        wait(1000 * 60 * 6);
-        delete compilationData[interaction.token];
       }
     }
   });
