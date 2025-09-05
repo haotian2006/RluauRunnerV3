@@ -45,8 +45,8 @@ let LastServerCreation = 0;
 const ExecuteTasks = {};
 const app = express();
 app.use(express.json());
-const client = new Client({ 
-  intents: [GatewayIntentBits.Guilds],
+const client = new Client({
+  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages],
 });
 
 const luauFilePath = path.resolve("./LuauCompile.Web.js");
@@ -257,6 +257,7 @@ async function getCodeFromContextMenu(interaction) {
   return content;
 }
 
+const compilationData = {};
 const byteCodeModalData = {};
 /**
  * @param {import('discord.js').MessageContextMenuCommandInteraction} data
@@ -354,7 +355,9 @@ async function sendCompileRequestToRoblox(
   interactionId,
   interactionToken,
   channelId,
-  targetId
+  targetId,
+  userId,
+  username
 ) {
   const uuid = generateUUID();
   ExecuteTasks[uuid] = {
@@ -363,28 +366,81 @@ async function sendCompileRequestToRoblox(
     targetId: targetId,
     id: interactionId,
     token: interactionToken,
+    userId: userId,
+    username: username,
   };
 }
+
+// async function reply(
+//   interaction,
+//   content,
+//   ephemeral = false,
+//   fileType = "lua"
+// ) {
+//   const len = content.length;
+//   if (len > 1900) {
+//     interaction.editReply({
+//       content: "Output too long sending as a file...",
+//       files: [
+//         {
+//           name: "output." + fileType,
+//           attachment: Buffer.from(content, "utf-8"),
+//         },
+//       ],
+//       ephemeral: ephemeral,
+//     });
+//   } else {
+//     await interaction.editReply({
+//       content: "```" + `${fileType}\n` + content + "\n```",
+//       ephemeral: ephemeral,
+//     });
+//   }
+// }
+
+// webhook_url = f"https://discord.com/api/v10/interactions/{interactionId}/{interactionToken}/callback"
+// edit_webhook_url = f"https://discord.com/api/webhooks/{applicationID}/{interactionToken}/messages/@original"
+// try:
+//     with open(output_file, 'rb') as file:
+//         files = {'file': (output_file,file)}
+//         data = {
+//         'content': f"Bytecode for {msgLink}",
+//         }
+//         response = requests.patch(edit_webhook_url, files=files, data={"payload_json": json.dumps(data)})
+
+//         if response.status_code != 200:
+//             print(f"Failed to send bytecode: {response.status_code}")
+//             print(response.text)
+
+// except Exception as e:
+//     print(f"An error occurred: {e}")
 
 app.patch("/respond", async (req, res) => {
   try {
     const token = req.body.token;
     const responseContent = req.body.data;
+    const logs = req.body.log;
     const url = `https://discord.com/api/v10/webhooks/${DISCORD_APP_ID}/${token}/messages/@original`;
-    const response = await axios.patch(url, responseContent, {
-      headers: {
-        Authorization: `Bot ${DISCORD_TOKEN}`,
-        "Content-Type": "application/json",
-      },
-    });
+    const interaction = compilationData[token];
+    let response;
+    if (interaction){
+      const link = 
+      if (logs === ''){
+        delete compilationData[token];
+      }else if (logs){
+
+      }else{
+
+      }
+    }
+
     res.json({
-      message: "Successfully sent response to Discord",
-      data: response.data,
+      message: "Failed to send response to Discord",
+      data: "no",
     });
   } catch (error) {
-    res.status(500).json({
+    res.json({
       message: "Failed to send response to Discord",
-      error: error.response ? error.response.data : error.message,
+      data: "no",
     });
   }
 });
@@ -524,7 +580,9 @@ async function main() {
           interaction.id,
           interaction.token,
           interaction.channelId,
-          interaction.targetId
+          interaction.targetId,
+          interaction.user.id,
+          interaction.user.username
         );
       }
     } else if (interaction.isModalSubmit()) {
@@ -603,8 +661,13 @@ async function main() {
           interaction.id,
           interaction.token,
           interaction.channelId,
-          interaction.targetId
+          interaction.targetId,
+          interaction.user.id,
+          interaction.user.username
         );
+        compilationData[interaction.token] = interaction;
+        wait(1000 * 60 * 6);
+        delete compilationData[interaction.token];
       }
     }
   });

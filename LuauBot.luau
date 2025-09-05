@@ -26,6 +26,11 @@ local Colors = {
 	White = "[0;37m",
 }
 
+local colorsLower = {}
+for i,v in Colors do
+	colorsLower[i:lower()] = v
+end
+
 local function createText(text, color)
 	if color == 3 then
 		return `[0;31m{text}[0m`
@@ -128,7 +133,7 @@ local function createEmbed(data, logs, image)
 	return msg
 end
 
-local function respondToInteraction(interactionToken, responseContent)
+local function respondToInteraction(interactionToken, responseContent,LOGGING)
 	local url = IP .. "/respond"
 	local headers = {
 		["Content-Type"] = "application/json",
@@ -138,7 +143,7 @@ local function respondToInteraction(interactionToken, responseContent)
 		Url = url,
 		Method = "PATCH",
 		Headers = headers,
-		Body = Https:JSONEncode({ token = interactionToken, data = responseContent }),
+		Body = Https:JSONEncode({ token = interactionToken, data = responseContent,log = LOGGING }),
 	}
 
 	local sus, msg = pcall(function()
@@ -157,10 +162,13 @@ local function runCode(code, data)
 	local thread = {}
 	thread.output = ""
 	thread.start = start
+
+	env.table = if workspace:FindFirstChild("ExtendedTableLibrary") then require(workspace:FindFirstChild("ExtendedTableLibrary")) else table
 	env.log = function(text, color, newLine)
 		local time = os.clock() - start
-		thread.output ..= (string.format(`[%.3f] %s\n`, time, (Colors[color] or "") .. text .. (newLine and "\n" or "")))
-	end
+		color = color or ""
+        thread.output ..= (string.format(`[%.3f] %s\n`, time, (colorsLower[color:lower()] or "") .. text .. (newLine and "\n" or "")))
+    end
 
 	env.print = function(...)
 		local text = ""
@@ -206,10 +214,10 @@ local function runCode(code, data)
 
 	local fx = loadstring(code, "RluauRunnerV3|PROCESS|" .. processID .. "|")
 	if not fx then
-		respondToInteraction(data.token, createEmbed(data, "Failed to load script"))
+		respondToInteraction(data.token, "Failed to load script")
 		return false
 	end
-	respondToInteraction(data.token, createEmbed(data, "Running"))
+	respondToInteraction(data.token, "Running")
 	task.wait(0.5)
 	setfenv(fx, env)
 	Processes[processID] = thread
@@ -229,7 +237,7 @@ local function runCode(code, data)
 			if lastOutput ~= thread.output then
 				thread.output = truncateString(thread.output)
 				lastOutput = thread.output
-				respondToInteraction(data.token, createEmbed(data, thread.output))
+				respondToInteraction(data.token, thread.output)
 			end
 			waitTime += task.wait(UPDATE_INTERVAL)
 		end
@@ -255,9 +263,26 @@ local function runCode(code, data)
 				`Script Reached its lifespan ({TIMEOUT or 15}s)`
 			)
 		end
+
+		local shouldLog = (env :: any).OUTPUT_LOGS or false
 		
-		thread.output = truncateString(thread.output)
-		respondToInteraction(data.token, createEmbed(data, thread.output))
+		local truncated = truncateString(thread.output)
+		local log 
+		if shouldLog then
+			local id,name = data.userId,data.username
+			local link = getLinkFromData(data)
+			log = {}
+			local date = DateTime.now():ToUniversalTime()
+			table.insert(log,"Logs For Compilation")
+			table.insert(log,`Compiled at: {date.Month}/{date.Day}/{date.Year} {date.Hour}:{date.Minute}:{date.Second}`)
+			table.insert(log,`User: {name} ({id})`)
+			table.insert(log,`RunTime: {os.clock() - thread.start} Seconds`)
+			table.insert(log,`Channel Link: {link}`)
+			table.insert(log,"------------------------------")
+			table.insert(log,thread.output)
+			log = table.concat(log,"\n")
+		end
+		respondToInteraction(data.token,  truncated,log or '')
 
 		Processes[processID] = nil
 		--// AFAIK theres no way to fully cleanup a thread (this included sub-threads). If this was in a live environment I could execute it from a script and destroy it later but
