@@ -201,7 +201,7 @@ local function runCode(code, data)
 		local length = select("#", ...)
 		local time = os.clock() - start
 		for i = 1, length do
-			local value = type(array[i]) == "table" and tableToString(array[i], nil, nil, true) or tostring(array[i])
+			local value = tostring(array[i])
 			text ..= value 
 		end
 		local noTimeStamp = (env :: any).TIMESTAMP == false
