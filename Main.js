@@ -737,7 +737,7 @@ async function main() {
 
         let code = info.content;
         const originalInteraction = info.data;
-        const headers = `OUTPUT_LOGS=${logOutput ? "true" : "false"}\nTIMESTAMPS=${timestamps ? "true" : "false"}\nMAX_RUN_TIME=${runTime}\n`;
+        const headers = `OUTPUT_LOGS=${logOutput ? "true" : "false"}\nTIMESTAMP=${timestamps ? "true" : "false"}\nTIMEOUT=${runTime}\n`;
         if (additionalCode.includes("{CODE}")) {
           code = additionalCode.replace(/{CODE}/g, code);
         } else {
