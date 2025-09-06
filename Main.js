@@ -358,7 +358,7 @@ async function createCompileModal(data, code) {
     .setCustomId("timestamps")
     .setLabel("Include Timestamps? (1 = yes, 0 = no)")
     .setStyle(TextInputStyle.Short)
-    .setValue("0")
+    .setValue("1")
     .setRequired(false);
 
 
