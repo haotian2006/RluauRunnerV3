@@ -5,6 +5,7 @@ const {
   TextInputBuilder,
   TextInputStyle,
   ActionRowBuilder,
+  EmbedBuilder,
 } = require("discord.js");
 const { https } = require("follow-redirects");
 const fs = require("fs");
@@ -80,7 +81,7 @@ function log(userid, name, commandName, data) {
         },
       }
     )
-    .catch(() => {});
+    .catch(() => { });
 }
 
 function logBot(name, data) {
@@ -389,10 +390,10 @@ async function reply(
   }
 }
 
-function decodeBuffer(data){
-  if (data.zbase64){
+function decodeBuffer(data) {
+  if (data.zbase64) {
     return zstd.decompress(Buffer.from(data.zbase64, "base64")).toString('utf-8');
-  }else if(data.base64){
+  } else if (data.base64) {
     return Buffer.from(data.base64, "base64").toString('utf-8');
   }
 }
@@ -402,7 +403,7 @@ app.patch("/respond", async (req, res) => {
   try {
     const token = req.body.token;
     let responseContent = decodeBuffer(JSON.parse(req.body.data));
-    
+
     let logs = req.body.log;
     const interaction = CompilingTasks[token];
     if (!interaction) {
@@ -415,17 +416,16 @@ app.patch("/respond", async (req, res) => {
       delete CompilingTasks[token];
     }
 
+
     if (logs) {
       logs = decodeBuffer(JSON.parse(logs));
+
+      const embed = new EmbedBuilder()
+        .setTitle(`Results For ${link}`)
+        .setDescription(`\`\`\`ansi\n${responseContent}\n\`\`\``)
+
       interaction.editReply({
-        content:
-          "Results For " +
-          link +
-          ":\n```ansi\n" +
-          responseContent +
-          "\n```\nSending File with size " +
-          Buffer.byteLength(logs, "utf-8") +
-          " bytes",
+        embeds: [embed],
         files: [
           {
             name: "logs.ansi",
@@ -434,10 +434,12 @@ app.patch("/respond", async (req, res) => {
         ],
       });
     } else {
-      interaction.editReply({
-        content:
-          "Results For " + link + ":\n```ansi\n" + responseContent + "\n```",
-      });
+      const embed = new EmbedBuilder() 
+        .setTitle(`Results For User`)
+        .setDescription(`\`\`\`ansi\n${responseContent}\n\`\`\``)
+
+
+      interaction.editReply({ embeds: [embed] });
     }
     res.json({
       message: "Successfully sent response to Discord",
@@ -541,9 +543,8 @@ async function main() {
       );
       if (code.length > MAX_BYTECODE_LENGTH) {
         interaction.reply({
-          content: `Code exceeds maximum length of ${
-            MAX_BYTECODE_LENGTH / 1024
-          } KB.`,
+          content: `Code exceeds maximum length of ${MAX_BYTECODE_LENGTH / 1024
+            } KB.`,
           ephemeral: true,
         });
         return;
@@ -590,7 +591,7 @@ async function main() {
           interaction.targetId,
           interaction
         );
-      } 
+      }
     } else if (interaction.isModalSubmit()) {
       if (interaction.customId === "bytecode_modal") {
         const info = byteCodeModalData[interaction.user.id];
