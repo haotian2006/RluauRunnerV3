@@ -42,7 +42,7 @@ end
 
 local function truncateString(inputString)
 	local lines = {}
-	for line in inputString:gmatch("[^\r\n]+") do
+	for line in inputString:gsub('\r','\n'):gmatch("([^\n]*)\n?") do
 		table.insert(lines, line)
 	end
 

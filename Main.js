@@ -420,16 +420,16 @@ app.patch("/respond", async (req, res) => {
 
     const embed = new EmbedBuilder()
       .setTitle("Luau Compiler Results")
-      .setDescription(`\`\`\`ansi\n${responseContent}\n\`\`\``)
-      .setAuthor({
-        name: interaction.user.username,
-        iconURL: interaction.user.displayAvatarURL(),
-        url: link? link : undefined,
-      })
+      .setDescription(`Requested by: <@${interaction.user.id}>` + `\`\`\`ansi\n${responseContent}\n\`\`\``)
       .addFields(
-        { name: "Remember To Follow the TOS", value: `<https://haotian2006.github.io/LuauBotSite/TOS/>`},
-    
+        { name: "Remember To Follow the TOS", value: `<https://haotian2006.github.io/LuauBotSite/TOS/>` },
+
       )
+      .setColor(3447003);
+
+    if (link) {
+      embed.setURL(link);
+    }
     if (logs) {
       logs = decodeBuffer(JSON.parse(logs));
 
@@ -540,7 +540,7 @@ async function main() {
   }
   logBot("Discord", "Registering interaction handler...");
   client.on("interactionCreate", async (interaction) => {
-    
+
     if (interaction.isMessageContextMenuCommand()) {
       const code = await getCodeFromContextMenu(interaction);
       log(
