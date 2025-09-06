@@ -277,7 +277,7 @@ local function runCode(code, data)
 				thread.output ..= string.format(
 					`[2;31m[%.3f] %s[0m`,
 					os.clock() - start,
-					"An error occurred: " .. msg
+					"An error occurred: " .. msg:match(':(%d+: .+)')
 				)
 			end
 		elseif (env :: any).TIMESTAMP ~= false then
