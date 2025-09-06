@@ -417,12 +417,21 @@ app.patch("/respond", async (req, res) => {
     }
 
 
+
+    const embed = new EmbedBuilder()
+      .setTitle("Luau Compiler Results")
+      .setDescription(`\`\`\`ansi\n${responseContent}\n\`\`\``)
+      .setAuthor({
+        name: interaction.user.username,
+        iconURL: interaction.user.displayAvatarURL(),
+        url: link? link : undefined,
+      })
+      .addFields(
+        { name: "Remember To Follow the TOS", value: `<https://haotian2006.github.io/LuauBotSite/TOS/>`},
+    
+      )
     if (logs) {
       logs = decodeBuffer(JSON.parse(logs));
-
-      const embed = new EmbedBuilder()
-        .setTitle(`Results For ${link}`)
-        .setDescription(`\`\`\`ansi\n${responseContent}\n\`\`\``)
 
       interaction.editReply({
         embeds: [embed],
@@ -434,9 +443,7 @@ app.patch("/respond", async (req, res) => {
         ],
       });
     } else {
-      const embed = new EmbedBuilder() 
-        .setTitle(`Results For User`)
-        .setDescription(`\`\`\`ansi\n${responseContent}\n\`\`\``)
+
 
 
       interaction.editReply({ embeds: [embed] });
@@ -533,6 +540,7 @@ async function main() {
   }
   logBot("Discord", "Registering interaction handler...");
   client.on("interactionCreate", async (interaction) => {
+    
     if (interaction.isMessageContextMenuCommand()) {
       const code = await getCodeFromContextMenu(interaction);
       log(
@@ -574,15 +582,15 @@ async function main() {
         createByteModal(interaction, code);
       } else if (interaction.commandName === "compile") {
         await interaction.deferReply({ ephemeral: false });
-        const options = getByteCodeOptions(code);
-        const bytecode = getByteCode(options, code);
-        if (
-          bytecode &&
-          bytecode.split("\n")[0].toLowerCase().includes("syntaxerror")
-        ) {
-          interaction.editReply({ content: "```lua\n" + bytecode + "\n```" });
-          return;
-        }
+        // const options = getByteCodeOptions(code);
+        // const bytecode = getByteCode(options, code);
+        // if (
+        //   bytecode &&
+        //   bytecode.split("\n")[0].toLowerCase().includes("syntaxerror")
+        // ) {
+        //   interaction.editReply({ content: "```lua\n" + bytecode + "\n```" });
+        //   return;
+        // }
         sendCompileRequestToRoblox(
           code,
           interaction.id,
@@ -655,15 +663,15 @@ async function main() {
           `Code length: ${code.length} characters`
         );
 
-        const options = getByteCodeOptions(code);
-        const bytecode = getByteCode(options, code);
-        if (
-          bytecode &&
-          bytecode.split("\n")[0].toLowerCase().includes("syntaxerror")
-        ) {
-          interaction.editReply({ content: "```lua\n" + bytecode + "\n```" });
-          return;
-        }
+        // const options = getByteCodeOptions(code);
+        // const bytecode = getByteCode(options, code);
+        // if (
+        //   bytecode &&
+        //   bytecode.split("\n")[0].toLowerCase().includes("syntaxerror")
+        // ) {
+        //   interaction.editReply({ content: "```lua\n" + bytecode + "\n```" });
+        //   return;
+        // }
         sendCompileRequestToRoblox(
           code,
           interaction.id,

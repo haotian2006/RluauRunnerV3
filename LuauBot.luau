@@ -143,9 +143,9 @@ local function respondToInteraction(interactionToken, responseContent,logs)
 		["Content-Type"] = "application/json",
 	}
 
-    if (#responseContent > 1900 ) then
-      responseContent = responseContent:sub(1, 1900 - 10) .. "... [truncated]";
-    end
+	if (#responseContent > 1900 ) then
+		responseContent = responseContent:sub(1, 1900 - 10) .. "... [truncated]";
+	end
 
 	if logs and logs ~= '' then
 		logs = encode(logs)
@@ -175,13 +175,20 @@ local function runCode(code, data)
 	thread.output = ""
 	thread.start = start
 
+	env.loadstring = function(...)
+		local f,e = loadstring(...)
+		if f then
+			setfenv(f, env)
+		end
+		return f,e
+	end
 	env.table = if workspace:FindFirstChild("ExtendedTableLibrary") then require(workspace:FindFirstChild("ExtendedTableLibrary")) else table
 	env.log = function(text, color, newLine)
 		local time = os.clock() - start
 		color = color or ""
 		local noTimeStamp = (env :: any).TIMESTAMP == false
-        thread.output ..= noTimeStamp and text..'\n' or (string.format(`[%.3f] %s\n`, time, (colorsLower[color:lower()] or "") .. text .. (newLine and "\n" or "")))
-    end
+		thread.output ..= noTimeStamp and text..'\n' or (string.format(`[%.3f] %s\n`, time, (colorsLower[color:lower()] or "") .. text .. (newLine and "\n" or "")))
+	end
 
 	env.print = function(...)
 		local text = ""
@@ -229,9 +236,9 @@ local function runCode(code, data)
 		coroutine.yield()
 	end
 
-	local fx = loadstring(code, "RluauRunnerV3|PROCESS|" .. processID .. "|")
+	local fx,err = loadstring(code, "RluauRunnerV3|PROCESS|" .. processID .. "|")
 	if not fx then
-		respondToInteraction(data.token, "Failed to load script")
+		respondToInteraction(data.token, err:match(':(%d+: .+)'),'')
 		return false
 	end
 	respondToInteraction(data.token, "Running")
@@ -282,7 +289,7 @@ local function runCode(code, data)
 		end
 
 		local shouldLog = (env :: any).OUTPUT_LOGS or false
-		
+
 		local truncated = truncateString(thread.output)
 		local log 
 		if shouldLog then
@@ -294,7 +301,7 @@ local function runCode(code, data)
 			table.insert(log, string.format(
 				"Compiled at: %02d/%02d/%04d %02d:%02d:%02d",
 				date.Month, date.Day, date.Year, date.Hour, date.Minute, date.Second
-		 ))
+				))
 			table.insert(log,`User: {name} ({id})`)
 			table.insert(log,`Run Time: {os.clock() - thread.start} Seconds`)
 			table.insert(log,`Channel Link: {link}`)
