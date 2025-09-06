@@ -47,6 +47,7 @@ let LastServerCreation = 0;
 
 const ExecuteTasks = {};
 const CompilingTasks = {};
+const Inputs = [];
 const app = express();
 app.use(express.json());
 const client = new Client({
@@ -335,6 +336,75 @@ async function createByteModal(data, code) {
   delete byteCodeModalData[data.user.id];
 }
 
+/**
+ * @param {import('discord.js').MessageContextMenuCommandInteraction} data
+ * @param {string} code
+ */
+async function createCompileModal(data, code) {
+  const msgLink = `https://discord.com/channels/@me/${data.channelId}/${data.targetId}`;
+
+  const modal = new ModalBuilder()
+    .setCustomId("compile_modal")
+    .setTitle("Generate Compile");
+
+  const logInput = new TextInputBuilder()
+    .setCustomId("log")
+    .setLabel("Output Logs? (1 = yes, 0 = no)")
+    .setStyle(TextInputStyle.Short)
+    .setValue("0")
+    .setRequired(false);
+
+  const timestamps = new TextInputBuilder()
+    .setCustomId("timestamps")
+    .setLabel("Include Timestamps? (1 = yes, 0 = no)")
+    .setStyle(TextInputStyle.Short)
+    .setValue("0")
+    .setRequired(false);
+
+
+  const runTime = new TextInputBuilder()
+    .setCustomId("run_time")
+    .setLabel("Max Run Time")
+    .setStyle(TextInputStyle.Short)
+    .setValue("15")
+    .setRequired(true);
+
+  const ephemeralInput = new TextInputBuilder()
+    .setCustomId("ephemeral")
+    .setLabel("Hide Result? (1 = yes, 0 = no)")
+    .setStyle(TextInputStyle.Short)
+    .setValue("0")
+    .setRequired(false);
+
+  const additionalCode = new TextInputBuilder()
+    .setCustomId("additional_code")
+    .setLabel("Additional Code (Optional)")
+    .setStyle(TextInputStyle.Paragraph)
+    .setValue("")
+    .setRequired(false);
+
+  modal.addComponents(
+    new ActionRowBuilder().addComponents(logInput),
+    new ActionRowBuilder().addComponents(timestamps),
+    new ActionRowBuilder().addComponents(runTime),
+    new ActionRowBuilder().addComponents(ephemeralInput),
+    new ActionRowBuilder().addComponents(additionalCode)
+  );
+
+  byteCodeModalData[data.user.id] = {
+    data: data,
+    content: code,
+    msgLink: msgLink,
+    data: data,
+  };
+  await data.showModal(modal);
+
+  await wait(5 * 60 * 1000);
+  delete byteCodeModalData[data.user.id];
+}
+
+
+
 
 async function sendCompileRequestToRoblox(
   code,
@@ -342,7 +412,8 @@ async function sendCompileRequestToRoblox(
   interactionToken,
   channelId,
   targetId,
-  interaction
+  interaction,
+  originalInteraction
 ) {
   const uuid = generateUUID();
   ExecuteTasks[uuid] = {
@@ -354,7 +425,7 @@ async function sendCompileRequestToRoblox(
     userId: interaction.user.id,
     username: interaction.user.username,
   };
-  CompilingTasks[interaction.token] = interaction;
+  CompilingTasks[interaction.token] = [interaction, originalInteraction];
   setTimeout(() => {
     delete ExecuteTasks[uuid];
   }, 1000 * 60 * 6);
@@ -405,12 +476,12 @@ app.patch("/respond", async (req, res) => {
     let responseContent = decodeBuffer(JSON.parse(req.body.data));
 
     let logs = req.body.log;
-    const interaction = CompilingTasks[token];
+    const [interaction, originalInteraction] = CompilingTasks[token];
     if (!interaction) {
       throw new Error("Interaction not found");
     }
 
-    const link = getLinkFromData(interaction);
+    const link = getLinkFromData(originalInteraction || interaction);
 
     if (typeof logs === "string") {
       delete CompilingTasks[token];
@@ -477,6 +548,18 @@ app.post("/ping", (req, res) => {
   }
   res.json({ message: "Ping received" });
 });
+
+app.post("/getInputs", async (req, res) => {
+  const ServerId = req.body.ServerId;
+
+  if (ServerId === RunningServer) {
+    res.json(Inputs);
+    Inputs.length = 0;
+  } else {
+    res.status(201).json({ message: "New Session" });
+  }
+});
+
 app.post("/getAll", async (req, res) => {
   const ServerId = req.body.ServerId;
 
@@ -580,6 +663,8 @@ async function main() {
         reply(interaction, byteCodeOptionsToString(options, code) + bytecodeK);
       } else if (interaction.commandName === "bytecodeWOption") {
         createByteModal(interaction, code);
+      } else if (interaction.commandName === "compileWOption") {
+        createCompileModal(interaction, code);
       } else if (interaction.commandName === "compile") {
         await interaction.deferReply({ ephemeral: false });
         // const options = getByteCodeOptions(code);
@@ -638,6 +723,39 @@ async function main() {
         );
 
         delete byteCodeModalData[interaction.user.id];
+      } else if (interaction.customId === "compile_modal") {
+        const info = byteCodeModalData[interaction.user.id];
+        if (!info) return;
+        const logOutput = interaction.fields.getTextInputValue("log") === "1";
+        const timestamps = interaction.fields.getTextInputValue("timestamps") === "1";
+        const runTime = interaction.fields.getTextInputValue("run_time") || "15";
+        const ephemeral =
+          interaction.fields.getTextInputValue("ephemeral") === "1";
+        const additionalCode =
+          interaction.fields.getTextInputValue("additional_code") || "";
+        await interaction.deferReply({ ephemeral: ephemeral });
+
+        let code = info.content;
+        const originalInteraction = info.data;
+        const headers = `OUTPUT_LOGS=${logOutput ? "true" : "false"}\nTIMESTAMPS=${timestamps ? "true" : "false"}\nMAX_RUN_TIME=${runTime}\n`;
+        if (additionalCode.includes("{CODE}")) {
+          code = additionalCode.replace(/{CODE}/g, code);
+        } else {
+          code = code + "\n" + additionalCode;
+        }
+        code = headers + "\n" + code;
+
+        delete byteCodeModalData[interaction.user.id];
+        sendCompileRequestToRoblox(
+          code,
+          interaction.id,
+          interaction.token,
+          interaction.channelId,
+          interaction.targetId,
+          interaction,
+          originalInteraction
+        );
+
       }
     } else if (interaction.isCommand()) {
       if (interaction.commandName === "ping") {
@@ -653,6 +771,23 @@ async function main() {
           `Pong! ${diff}ms.`
         );
         await interaction.editReply(`Pong! ${diff}ms.`);
+      } else if (interaction.commandName === "help") {
+        await interaction.reply({
+          content: `Check out the documentation at https://haotian2006.github.io/LuauBotSite/`,
+        });
+      } else if (interaction.commandName === "input"|| interaction.commandName === "hiddeninput") {
+
+        const input = interaction.options.getString("input");
+        Inputs.push({ input: input, id: interaction.user.id });
+
+        interaction.reply({ content: `sent '${input}'`, ephemeral: interaction.commandName === "hiddeninput" }); 
+        log(
+          interaction.user.id,
+          interaction.user.username,
+          interaction.commandName,
+          `Input Length: ${input.length} characters`
+        );
+
       } else if (interaction.commandName === "compile") {
         await interaction.deferReply({ ephemeral: false });
         const code = interaction.options.getString("code");
