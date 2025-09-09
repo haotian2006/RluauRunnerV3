@@ -1,6 +1,6 @@
 local IP = ""
 local POLL_RATE = 1000
-local UPDATE_INTERVAL = 1 / 10
+local UPDATE_INTERVAL = 1 / 5
 local DEFAULT_TIMEOUT = 15
 local MAX_STR_HEIGHT = 15
 
@@ -159,12 +159,14 @@ local function respondToInteraction(interactionToken, responseContent, logs)
 		Body = Https:JSONEncode({ token = interactionToken, data = encode(responseContent), log = logs }),
 	}
 
-	local sus, msg = pcall(function()
-		Https:RequestAsync(requestData)
+	task.spawn(function()
+		local sus, msg = pcall(function()
+			Https:RequestAsync(requestData)
+		end)
+		if not sus then
+			warn(msg)
+		end
 	end)
-	if not sus then
-		warn(msg)
-	end
 end
 
 local function runCode(code, data)
@@ -176,7 +178,7 @@ local function runCode(code, data)
 	thread.output = ""
 	thread.start = start
 	local userid = data.userId
-	
+
 	IDinputs[userid] = {}
 	env.io = {
 		read = function()
@@ -217,7 +219,7 @@ local function runCode(code, data)
 			`[%.3f] %s\n`,
 			time,
 			(colorsLower[color:lower()] or "") .. text .. (newLine and "\n" or "")
-		))
+			))
 	end
 
 	env.print = function(...)
