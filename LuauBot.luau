@@ -178,6 +178,7 @@ local function runCode(code, data)
 	local userid = data.userId
 	
 	IDinputs[userid] = {}
+	env.TIMESTAMP = false
 	env.io = {
 		read = function()
 			local info 
@@ -209,6 +210,17 @@ local function runCode(code, data)
 	env.table = if workspace:FindFirstChild("ExtendedTableLibrary")
 		then require(workspace:FindFirstChild("ExtendedTableLibrary"))
 		else table
+	env.misc = if workspace:FindFirstChild("misc")
+		then require(workspace:FindFirstChild("misc"):Clone())
+		else table
+
+	if env.misc then
+		for i, v in env.misc do
+			if type(v) == "function" then
+				setfenv(v, env)
+			end
+		end
+	end
 	env.log = function(text, color, newLine)
 		local time = os.clock() - start
 		color = color or ""
