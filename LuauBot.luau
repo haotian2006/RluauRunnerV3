@@ -285,7 +285,7 @@ local function runCode(code, data)
 		
 		local truncated = truncateString(thread.output)
 		local log 
-		if shouldLog then
+		if shouldLog == true then
 			local id,name = data.userId,data.username
 			local link = getLinkFromData(data)
 			log = {}
@@ -301,6 +301,8 @@ local function runCode(code, data)
 			table.insert(log,"------------------------------")
 			table.insert(log,thread.output)
 			log = table.concat(log,"\n")
+		elseif shouldLog == "LOG" then
+			log = thread.output
 		end
 		respondToInteraction(data.token,  truncated,log or '')
 
