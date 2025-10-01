@@ -12,6 +12,13 @@ const commands = [
     contexts: [0, 1, 2],
     type: 1,
   },
+   {
+    name: "help",
+    description: "check out this site!",
+    integration_types: [0,1],
+    contexts: [0, 1, 2],
+    type: 1,
+  },
   {
     name: "compile",
     description: "Runs rLuau code in roblox",
@@ -22,6 +29,36 @@ const commands = [
       {
         name: "code",
         description: "Code to run",
+        type: 3,
+        required: true,
+      },
+    ],
+  },
+  {
+    name: "input",
+    description: "Provides input for io.read()",
+    integration_types: [0,1],
+    contexts: [0, 1, 2],
+    type: 1,
+    options: [
+      {
+        name: "input",
+        description: "input string",
+        type: 3,
+        required: true,
+      },
+    ],
+  },
+    {
+    name: "hiddeninput", 
+    description: "Provides input for io.read() without showing it to others",
+    integration_types: [0,1],
+    contexts: [0, 1, 2],
+    type: 1,
+    options: [
+      {
+        name: "input",
+        description: "input string",
         type: 3,
         required: true,
       },
@@ -47,6 +84,12 @@ const commands = [
   // },
   {
     name: "bytecodeWOption",
+    integration_types: [0,1],
+    contexts: [0, 1, 2],
+    type: 3,
+  },
+    {
+    name: "compileWOption",
     integration_types: [0,1],
     contexts: [0, 1, 2],
     type: 3,
