@@ -407,7 +407,8 @@ async function sendCompileRequestToRoblox(
   channelId,
   targetId,
   interaction,
-  originalInteraction
+  originalInteraction,
+  isCommand = false
 ) {
   const uuid = generateUUID();
   ExecuteTasks[uuid] = {
@@ -418,6 +419,7 @@ async function sendCompileRequestToRoblox(
     token: interactionToken,
     userId: interaction.user.id,
     username: interaction.user.username,
+    isCommand: isCommand,
   };
   CompilingTasks[interaction.token] = [interaction, originalInteraction];
   setTimeout(() => {
@@ -826,7 +828,9 @@ async function main() {
             interaction.token,
             interaction.channelId,
             interaction.targetId,
-            interaction
+            interaction,
+            null,
+            true
           );
         }
       }

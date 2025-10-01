@@ -2,7 +2,7 @@ local IP = ""
 local POLL_RATE = 1000
 local UPDATE_INTERVAL = 1 / 5
 local DEFAULT_TIMEOUT = 15
-local MAX_STR_HEIGHT = 15
+local MAX_STR_HEIGHT = 20
 
 local Https = game:GetService("HttpService")
 local LogService = game:GetService("LogService")
@@ -178,6 +178,7 @@ local function runCode(code, data)
 	thread.output = ""
 	thread.start = start
 	local userid = data.userId
+	local isCommand = data.isCommand
 
 	IDinputs[userid] = {}
 	env.TIMESTAMP = false
@@ -270,8 +271,15 @@ local function runCode(code, data)
 
 	local fx, err = loadstring(code, "RluauRunnerV3|PROCESS|" .. processID .. "|")
 	if not fx then
-		respondToInteraction(data.token, err:match(":(%d+: .+)"), "")
+		local warning = ''
+		if isCommand and code:find('%-%-') then
+			warning = 'Detected comments in command, try an application command instead or remove comments.\n'
+		end
+		respondToInteraction(data.token, warning..err:match(":(%d+: .+)"), "")
 		return false
+	end
+	if isCommand and code:find('%-%-') then
+		thread.output ..= '[2;33m[Warning] Detected comments in command this may cause issues, try an application command instead or remove comments.[0m\n'
 	end
 	respondToInteraction(data.token, "Running")
 	task.wait(0.5)
