@@ -259,13 +259,26 @@ function getByteCode(options, code) {
 async function getCodeFromContextMenu(interaction) {
   let content = interaction.targetMessage.content;
   const attachments = interaction.targetMessage.attachments.first();
+  let codeBlocks = [...content.matchAll(/```(?:lua)?\s*([\s\S]*?)\s*```/g)].map(
+    (m) => m[1]
+  );
   if (attachments && attachments.url) {
     content = await fetchFileContent(attachments.url);
-  } else {
-    const match = content.match(/```(?:lua)?\s*([\s\S]*?)\s*```/);
-    content = match ? match[1] : content;
+    codeBlocks.unshift(content);
   }
-  return content;
+  if (codeBlocks.length === 0) {
+    return "";
+  }
+  let code = codeBlocks[0];
+  for (let i = 1; i < codeBlocks.length; i++) {
+    let additionalCode = codeBlocks[i];
+    if (additionalCode.includes("{CODE}")) {
+      code = additionalCode.replace(/{CODE}/g, code);
+    } else {
+      code = code + "\n" + additionalCode;
+    }
+  }
+  return code;
 }
 
 const byteCodeModalData = {};
@@ -377,7 +390,7 @@ async function createCompileModal(data, code) {
     .setCustomId("additional_code")
     .setLabel("Additional Code (Optional)")
     .setStyle(TextInputStyle.Paragraph)
-    .setValue("")
+    .setValue(`local function run()\n\t{CODE}\nend\nlocal results = run()`)
     .setRequired(false);
 
   modal.addComponents(
@@ -436,26 +449,31 @@ async function reply(
 ) {
   try {
     const len = content.length;
-  const link = msgLink || getLinkFromData(interaction);
-  if (len > 1900) {
-    await interaction.editReply({
-      content:
-        "Results For " + link + ":\nOutput too long sending as a file...",
-      files: [
-        {
-          name: "output." + fileType,
-          attachment: Buffer.from(content, "utf-8"),
-        },
-      ],
-      ephemeral: ephemeral,
-    });
-  } else {
-    await interaction.editReply({
-      content:
-        "Results For " + link + ":\n```" + `${fileType}\n` + content + "\n```",
-      ephemeral: ephemeral,
-    });
-  }
+    const link = msgLink || getLinkFromData(interaction);
+    if (len > 1900) {
+      await interaction.editReply({
+        content:
+          "Results For " + link + ":\nOutput too long sending as a file...",
+        files: [
+          {
+            name: "output." + fileType,
+            attachment: Buffer.from(content, "utf-8"),
+          },
+        ],
+        ephemeral: ephemeral,
+      });
+    } else {
+      await interaction.editReply({
+        content:
+          "Results For " +
+          link +
+          ":\n```" +
+          `${fileType}\n` +
+          content +
+          "\n```",
+        ephemeral: ephemeral,
+      });
+    }
   } catch (error) {
     console.error("Error in reply function:", error);
   }
@@ -472,7 +490,7 @@ function decodeBuffer(data) {
 }
 
 app.patch("/respond", async (req, res) => {
-    const token = req.body.token;
+  const token = req.body.token;
   try {
     let responseContent = decodeBuffer(JSON.parse(req.body.data));
 
