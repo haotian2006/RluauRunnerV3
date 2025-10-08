@@ -331,31 +331,25 @@ local function runCode(code, data)
 		local shouldLog = (env :: any).OUTPUT_LOGS or false
 
 		local truncated = truncateString(thread.output)
-		local log
-		if shouldLog then
-			local id, name = data.userId, data.username
+		local log 
+		if shouldLog == true then
+			local id,name = data.userId,data.username
 			local link = getLinkFromData(data)
 			log = {}
 			local date = DateTime.now():ToUniversalTime()
-			table.insert(log, "Logs For Compilation")
-			table.insert(
-				log,
-				string.format(
-					"Compiled at: %02d/%02d/%04d %02d:%02d:%02d",
-					date.Month,
-					date.Day,
-					date.Year,
-					date.Hour,
-					date.Minute,
-					date.Second
-				)
-			)
-			table.insert(log, `User: {name} ({id})`)
-			table.insert(log, `Run Time: {os.clock() - thread.start} Seconds`)
-			table.insert(log, `Channel Link: {link}`)
-			table.insert(log, "------------------------------")
-			table.insert(log, thread.output)
-			log = table.concat(log, "\n")
+			table.insert(log,"Logs For Compilation")
+			table.insert(log, string.format(
+				"Compiled at: %02d/%02d/%04d %02d:%02d:%02d",
+				date.Month, date.Day, date.Year, date.Hour, date.Minute, date.Second
+		 ))
+			table.insert(log,`User: {name} ({id})`)
+			table.insert(log,`Run Time: {os.clock() - thread.start} Seconds`)
+			table.insert(log,`Channel Link: {link}`)
+			table.insert(log,"------------------------------")
+			table.insert(log,thread.output)
+			log = table.concat(log,"\n")
+		elseif shouldLog == "LOG" then
+			log = thread.output
 		end
 		respondToInteraction(data.token, truncated, log or "")
 
