@@ -36,7 +36,7 @@ const SERVER_RUN_TIME_MAX = 1000 * 60 * 3;
 const SERVER_CHECK_INTERVAL = 1000;
 const SERVER_PING_TIMEOUT = 1000 * 5;
 
-const MAX_BYTECODE_LENGTH = 1024 * 20;
+const MAX_BYTECODE_LENGTH = 1024 * 10000;
 
 let IP = "";
 let RunningServer = "";
@@ -267,7 +267,7 @@ async function getCodeFromContextMenu(interaction) {
     codeBlocks.unshift(content);
   }
   if (codeBlocks.length === 0) {
-    return "";
+    return content;
   }
   let code = codeBlocks[0];
   for (let i = 1; i < codeBlocks.length; i++) {
