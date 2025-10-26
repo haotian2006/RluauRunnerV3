@@ -8,21 +8,21 @@ const commands = [
   {
     name: "ping",
     description: "Replies with Pong!",
-    integration_types: [0,1],
+    integration_types: [0, 1],
     contexts: [0, 1, 2],
     type: 1,
   },
-   {
+  {
     name: "help",
     description: "check out this site!",
-    integration_types: [0,1],
+    integration_types: [0, 1],
     contexts: [0, 1, 2],
     type: 1,
   },
   {
     name: "compile",
     description: "Runs rLuau code in roblox",
-    integration_types: [0,1],
+    integration_types: [0, 1],
     contexts: [0, 1, 2],
     type: 1,
     options: [
@@ -37,7 +37,7 @@ const commands = [
   {
     name: "input",
     description: "Provides input for io.read()",
-    integration_types: [0,1],
+    integration_types: [0, 1],
     contexts: [0, 1, 2],
     type: 1,
     options: [
@@ -49,10 +49,10 @@ const commands = [
       },
     ],
   },
-    {
-    name: "hiddeninput", 
+  {
+    name: "hiddeninput",
     description: "Provides input for io.read() without showing it to others",
-    integration_types: [0,1],
+    integration_types: [0, 1],
     contexts: [0, 1, 2],
     type: 1,
     options: [
@@ -66,13 +66,19 @@ const commands = [
   },
   {
     name: "compile",
-    integration_types: [0,1],
+    integration_types: [0, 1],
+    contexts: [0, 1, 2],
+    type: 3,
+  },
+  {
+    name: "input",
+    integration_types: [0, 1],
     contexts: [0, 1, 2],
     type: 3,
   },
   {
     name: "bytecode",
-    integration_types: [0,1],
+    integration_types: [0, 1],
     contexts: [0, 1, 2],
     type: 3,
   },
@@ -84,13 +90,13 @@ const commands = [
   // },
   {
     name: "bytecodeWOption",
-    integration_types: [0,1],
+    integration_types: [0, 1],
     contexts: [0, 1, 2],
     type: 3,
   },
-    {
+  {
     name: "compileWOption",
-    integration_types: [0,1],
+    integration_types: [0, 1],
     contexts: [0, 1, 2],
     type: 3,
   },

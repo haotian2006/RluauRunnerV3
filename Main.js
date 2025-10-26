@@ -36,7 +36,7 @@ const SERVER_RUN_TIME_MAX = 1000 * 60 * 3;
 const SERVER_CHECK_INTERVAL = 1000;
 const SERVER_PING_TIMEOUT = 1000 * 5;
 
-const MAX_BYTECODE_LENGTH = 1024 * 10000;
+const MAX_BYTECODE_LENGTH = 1024 * 20;
 
 let IP = "";
 let RunningServer = "";
@@ -47,7 +47,7 @@ let LastServerCreation = 0;
 
 const ExecuteTasks = {};
 const CompilingTasks = {};
-const Inputs = [];
+const Inputs = {};
 const app = express();
 app.use(express.json());
 const client = new Client({
@@ -60,6 +60,7 @@ let luauModule;
 function generateUUID() {
   return Math.random().toString(36).substring(2, 10);
 }
+
 
 function log(userid, name, commandName, data) {
   if (data) {
@@ -130,6 +131,7 @@ async function startRoblox() {
   if (!res.ok) {
     console.log("Failed to start Roblox: ", res.statusText);
     log("0", "BOT", "Failed to start Roblox", res.statusText);
+    return false;
   }
 
   return true;
@@ -256,15 +258,19 @@ function getByteCode(options, code) {
 /**
  * @param {import('discord.js').MessageContextMenuCommandInteraction} interaction
  */
-async function getCodeFromContextMenu(interaction) {
+async function getCodeFromContextMenu(interaction,noCode) {
   let content = interaction.targetMessage.content;
   const attachments = interaction.targetMessage.attachments.first();
+
   let codeBlocks = [...content.matchAll(/```(?:lua)?\s*([\s\S]*?)\s*```/g)].map(
     (m) => m[1]
   );
   if (attachments && attachments.url) {
     content = await fetchFileContent(attachments.url);
     codeBlocks.unshift(content);
+  }
+  if (noCode) {
+      return content;
   }
   if (codeBlocks.length === 0) {
     return content;
@@ -364,12 +370,12 @@ async function createCompileModal(data, code) {
     .setStyle(TextInputStyle.Short)
     .setValue("0")
     .setRequired(false);
-
+  
   const timestamps = new TextInputBuilder()
     .setCustomId("timestamps")
     .setLabel("Include Timestamps? (1 = yes, 0 = no)")
     .setStyle(TextInputStyle.Short)
-    .setValue("1")
+    .setValue("0")
     .setRequired(false);
 
   const runTime = new TextInputBuilder()
@@ -390,15 +396,15 @@ async function createCompileModal(data, code) {
     .setCustomId("additional_code")
     .setLabel("Additional Code (Optional)")
     .setStyle(TextInputStyle.Paragraph)
-    .setValue(`local function run()\n\t{CODE}\nend\nlocal results = run()`)
+    .setValue(`--native\n--optimize 2\nlocal function run()\n\t{CODE}\nend\nlocal results = run()`)
     .setRequired(false);
 
   modal.addComponents(
+    new ActionRowBuilder().addComponents(additionalCode),
     new ActionRowBuilder().addComponents(logInput),
     new ActionRowBuilder().addComponents(timestamps),
     new ActionRowBuilder().addComponents(runTime),
     new ActionRowBuilder().addComponents(ephemeralInput),
-    new ActionRowBuilder().addComponents(additionalCode)
   );
 
   byteCodeModalData[data.user.id] = {
@@ -569,14 +575,16 @@ app.post("/ping", (req, res) => {
 });
 
 app.post("/getInputs", async (req, res) => {
-  const ServerId = req.body.ServerId;
+  const interacted = req.body.i;
 
-  if (ServerId === RunningServer) {
-    res.json(Inputs);
-    Inputs.length = 0;
-  } else {
-    res.status(201).json({ message: "New Session" });
+  data = [];
+
+  for (const id in Inputs) {
+    if (!(interacted.includes(Inputs[id].uid))) {
+      data.push(Inputs[id]);
+    }
   }
+  res.json(data);
 });
 
 app.post("/getAll", async (req, res) => {
@@ -623,7 +631,24 @@ async function checkRobloxServer() {
     if (hasTask && (serverTimeout || pingTimeout) && lastCreationDebounce) {
       console.log("Starting new Roblox server...");
       logBot("Roblox Server", "Starting new Roblox server...");
-      await startRoblox();
+      if (!(await startRoblox()) && hasTask) {
+        Object.keys(ExecuteTasks).forEach((key) => {
+          const task = ExecuteTasks[key];
+          if (!task) return;
+          if (!CompilingTasks || !CompilingTasks[task.token]) return;
+          const [interaction, originalInteraction] = CompilingTasks[task.token];
+          if (interaction) {
+            try {
+              interaction.editReply({
+                content: `Failed to start Roblox server.`,
+                ephemeral: true,
+              });
+            } catch (error) {}
+            delete ExecuteTasks[key];
+            delete CompilingTasks[task.token];
+          }
+        });
+      }
     }
     await wait(SERVER_CHECK_INTERVAL);
   }
@@ -644,22 +669,50 @@ async function main() {
   client.on("interactionCreate", async (interaction) => {
     try {
       if (interaction.isMessageContextMenuCommand()) {
+
+         if (interaction.commandName === "input") {
+          const code = await getCodeFromContextMenu(interaction,true);
+          const uid = generateUUID();
+          Inputs[uid] = {
+            uid: uid,
+            id: interaction.user.id,
+            input: code,
+          };
+          interaction.reply({
+            content: code.length > 100 ? `sent input (${code.length} characters)` : `sent '${code}'`,
+            ephemeral: true,
+          });
+
+          log(
+            interaction.user.id,
+            interaction.user.username,
+            interaction.commandName,
+            `Input Length: ${code.length} characters`
+          );
+          wait(1000 * 30).then(() => {
+            delete Inputs[uid];
+          });
+          return;
+        }
+
         const code = await getCodeFromContextMenu(interaction);
+
+
         log(
           interaction.user.id,
           interaction.user.username,
           interaction.commandName,
           `Code length: ${code.length} characters`
         );
-        if (code.length > MAX_BYTECODE_LENGTH) {
-          interaction.reply({
-            content: `Code exceeds maximum length of ${
-              MAX_BYTECODE_LENGTH / 1024
-            } KB.`,
-            ephemeral: true,
-          });
-          return;
-        }
+        // if (code.length > MAX_BYTECODE_LENGTH) {
+        //   interaction.reply({
+        //     content: `Code exceeds maximum length of ${
+        //       MAX_BYTECODE_LENGTH / 1024
+        //     } KB.`,
+        //     ephemeral: true,
+        //   });
+        //   return;
+        // }
 
         if (interaction.commandName === "bytecode") {
           await interaction.deferReply({ ephemeral: false });
@@ -809,7 +862,13 @@ async function main() {
           interaction.commandName === "hiddeninput"
         ) {
           const input = interaction.options.getString("input");
-          Inputs.push({ input: input, id: interaction.user.id });
+          const uid = generateUUID();
+          Inputs[uid] = {
+            uid: uid,
+            id: interaction.user.id,
+            input: input,
+          };
+          
 
           interaction.reply({
             content: `sent '${input}'`,
@@ -821,6 +880,9 @@ async function main() {
             interaction.commandName,
             `Input Length: ${input.length} characters`
           );
+          wait(1000 * 30).then(() => {
+            delete Inputs[uid];
+          });
         } else if (interaction.commandName === "compile") {
           await interaction.deferReply({ ephemeral: false });
           const code = interaction.options.getString("code");

@@ -1,16 +1,18 @@
 local IP = ""
-local POLL_RATE = 1000
-local UPDATE_INTERVAL = 1 / 5
+local POLL_RATE = 1000 --ms
+local UPDATE_INTERVAL = 0.25 -- seconds
 local DEFAULT_TIMEOUT = 15
 local MAX_STR_HEIGHT = 20
 
+local HttpService = game:GetService("HttpService")
 local Https = game:GetService("HttpService")
 local LogService = game:GetService("LogService")
 local ScriptContext = game:GetService("ScriptContext")
 local ServerId = Https:GenerateGUID()
 local Closed = false
 local Processes = {}
-local IDinputs = {}
+local ProcessesByUser = {}
+
 
 local encoder = function(data)
 	return Https:JSONEncode(data)
@@ -62,14 +64,14 @@ end
 
 local function sendMessageToAll(err)
 	for i, v in Processes do
-		v.output ..= createText(string.format(`[%.3f] %s\n`, os.clock() - v.start, err), 3)
+		table.insert(v.output, createText(string.format(`[%.3f] %s\n`, os.clock() - v.start, err), 3))
 	end
 end
 
 local function sendMessageTo(process, err)
 	local v = Processes[process]
 	if v then
-		v.output ..= createText(string.format(`[%.3f] %s\n`, os.clock() - v.start, err), 3)
+		table.insert(v.output, createText(string.format(`[%.3f] %s\n`, os.clock() - v.start, err), 3))
 	end
 end
 
@@ -138,7 +140,7 @@ local function encode(data)
 	return game:GetService("HttpService"):JSONEncode(buffer.fromstring(data))
 end
 
-local function respondToInteraction(interactionToken, responseContent, logs)
+local function respondToInteraction(interactionToken, responseContent, logs,await)
 	local url = IP .. "/respond"
 	local headers = {
 		["Content-Type"] = "application/json",
@@ -158,35 +160,71 @@ local function respondToInteraction(interactionToken, responseContent, logs)
 		Headers = headers,
 		Body = Https:JSONEncode({ token = interactionToken, data = encode(responseContent), log = logs }),
 	}
-
-	task.spawn(function()
+	local a = function()
 		local sus, msg = pcall(function()
 			Https:RequestAsync(requestData)
 		end)
 		if not sus then
 			warn(msg)
 		end
-	end)
+	end
+	
+	if await then
+		a()
+	else
+		task.spawn(a)
+	end
 end
 
+local function executeCode(id,code,env)
+	local m = Instance.new("ModuleScript")
+	local imports = ''
+	for k in env do
+		imports ..= `local {k} = imports.{k}\n`
+	end
+	local fs = {}
+	
+	if code:find("--!native") then
+		table.insert(fs, "--!native")
+		env.native = true
+	end
+	env.optimize = code:match("%-%-!optimize%s*(%d+)") or 2
+	table.insert(fs, `--!optimize {env.optimize}`)
+
+
+
+	m.Source = `{table.concat(fs, "\n")}\nreturn function(imports)\n{imports}\n{code}\nend`
+	m.Parent = game
+	m.Name = id
+	local f = require(m)
+	return f,m
+end
 local function runCode(code, data)
 	local processID = game:GetService("HttpService"):GenerateGUID(false)
 	local env = setmetatable({}, { __index = getfenv() })
 	local lastOutput = ""
 	local start = os.clock() + 3
 	local thread = {}
-	thread.output = ""
+	local inputs = {}
+	thread.output = {}
+	thread.inputs = inputs
+	local output = thread.output
 	thread.start = start
 	local userid = data.userId
 	local isCommand = data.isCommand
 
-	IDinputs[userid] = {}
+	for input in code:gmatch("%-%-@([^\n\r]+)") do
+		table.insert(inputs, input)
+	end
+
+	ProcessesByUser[userid] = ProcessesByUser[userid] or {}
+	ProcessesByUser[userid][processID] = thread
 	env.TIMESTAMP = false
 	env.io = {
 		read = function()
 			local info 
 			while task.wait() and not info do --ik this is bad but i'm lazy and this works
-				info = IDinputs[userid] and table.remove(IDinputs[userid], 1)
+				info = table.remove(inputs, 1)
 			end
 			return info
 		end,
@@ -200,8 +238,8 @@ local function runCode(code, data)
 				text ..= value
 			end
 			local noTimeStamp = (env :: any).TIMESTAMP == false
-			thread.output ..= noTimeStamp and text or createText(string.format(`[%.3f] %s\n`, time, text))
-		end,
+			table.insert(output, noTimeStamp and text .. "\n" or string.format(`[%.3f] %s\n`, time, text))
+		end,	
 	}
 	env.loadstring = function(...)
 		local f, e = loadstring(...)
@@ -214,8 +252,35 @@ local function runCode(code, data)
 		then require(workspace:FindFirstChild("ExtendedTableLibrary"))
 		else table
 	env.misc = if workspace:FindFirstChild("misc")
-		then require(workspace:FindFirstChild("misc"):Clone())
-		else table
+		then require((workspace:FindFirstChild("misc")::any):Clone())
+		else nil
+	local benches = 0
+	env.bench = if workspace:FindFirstChild("Bench")
+		then function(data,printMode,iterations,waitPerIter)
+			local module = require((workspace:FindFirstChild("Bench")::any):Clone())
+			benches += 1
+			local running = true
+			local tracker = {}::any
+			local line = env.println(`Benching: {0}/{0}`)
+			task.spawn(function()
+				while running do
+					env.println(`Benching: {tracker.iterations}/{tracker.totalIterations} | FPS: {tracker.fps or 0}`,line)
+					task.wait(0.1)
+				end
+			end)
+			task.wait(1)
+			local info,str = module.Run(data,printMode,iterations,waitPerIter,tracker)
+			task.wait(.1)
+			env.println(`Done Benching \n`,line)
+			running = false
+			if str then
+				table.insert(thread.output, `NATIVE: {env.native and "true" or "false"} | OPTIMIZE: {env.optimize}\n`)
+				table.insert(thread.output, str .. "\n")
+			end
+			benches -= 1
+			return info
+		end
+		else nil
 
 	if env.misc then
 		for i, v in env.misc do
@@ -228,11 +293,22 @@ local function runCode(code, data)
 		local time = os.clock() - start
 		color = color or ""
 		local noTimeStamp = (env :: any).TIMESTAMP == false
-		thread.output ..= noTimeStamp and text .. "\n" or (string.format(
+		table.insert(thread.output, noTimeStamp and text .. "\n" or (string.format(
 			`[%.3f] %s\n`,
 			time,
 			(colorsLower[color:lower()] or "") .. text .. (newLine and "\n" or "")
-			))
+			)))
+	end
+
+	env.println = function(str,line)
+
+		if not line then
+			table.insert(output, str)
+			return #output
+		end
+
+		output[line] = str
+		return line
 	end
 
 	env.print = function(...)
@@ -245,7 +321,7 @@ local function runCode(code, data)
 			text ..= value .. " "
 		end
 		local noTimeStamp = (env :: any).TIMESTAMP == false
-		thread.output ..= noTimeStamp and text .. "\n" or createText(string.format(`[%.3f] %s\n`, time, text))
+		table.insert(thread.output, noTimeStamp and text .. "\n" or createText(string.format(`[%.3f] %s\n`, time, text)))
 	end
 
 	env.warn = function(...)
@@ -257,19 +333,19 @@ local function runCode(code, data)
 			text ..= tostring(array[i]) .. " "
 		end
 		local noTimeStamp = (env :: any).TIMESTAMP == false
-		thread.output ..= noTimeStamp and text .. "\n" or createText(string.format(`[%.3f] %s\n`, time, text), 2)
+		table.insert(thread.output, noTimeStamp and createText(text,2) .. "\n" or createText(string.format(`[%.3f] %s\n`, time, text), 2))
 	end
 
 	env.error = function(msg, context)
 		local time = os.clock() - start
 		local noTimeStamp = (env :: any).TIMESTAMP == false
-		thread.output ..= noTimeStamp and msg .. "\n" or createText(string.format(`[%.3f] %s\n`, time, msg), 3)
+		table.insert(thread.output, noTimeStamp and createText(msg,3) .. "\n" or createText(string.format(`[%.3f] %s\n`, time, msg), 3))
 		local running = coroutine.running()
 		task.defer(coroutine.close, running)
 		coroutine.yield()
 	end
-
-	local fx, err = loadstring(code, "RluauRunnerV3|PROCESS|" .. processID .. "|")
+	local id = "RluauRunnerV3|PROCESS|" .. processID .. "|"
+	local fx, err = loadstring(code, id)
 	if not fx then
 		local warning = ''
 		if isCommand and code:find('%-%-') then
@@ -278,59 +354,58 @@ local function runCode(code, data)
 		respondToInteraction(data.token, warning..err:match(":(%d+: .+)"), "")
 		return false
 	end
+	local module
+	fx,module = executeCode(id,code,env)
+	
 	if isCommand and code:find('%-%-') then
-		thread.output ..= '[2;33m[Warning] Detected comments in command this may cause issues, try an application command instead or remove comments.[0m\n'
+		table.insert(thread.output, '[2;33m[Warning] Detected comments in command this may cause issues, try an application command instead or remove comments.[0m\n')
 	end
-	respondToInteraction(data.token, "Running")
-	task.wait(0.5)
-	setfenv(fx, env)
+	respondToInteraction(data.token, "Running",nil,true)
+	task.wait(0.1)
+	
 	Processes[processID] = thread
 
 	thread.start = os.clock()
 	start = thread.start
 	local sus, msg = true, nil
 	thread.running = task.defer(function()
-		sus, msg = pcall(fx)
+		sus, msg = pcall(fx,env)
 	end)
 
 	thread.timeOutThread = task.spawn(function()
 		local waitTime = 0
 		local TIMEOUT = (env :: any).TIMEOUT or DEFAULT_TIMEOUT
-		while os.clock() - thread.start < TIMEOUT and sus do
+		while (os.clock() - thread.start < TIMEOUT and sus) or benches > 0 do
 			TIMEOUT = (env :: any).TIMEOUT or DEFAULT_TIMEOUT
-			if lastOutput ~= thread.output then
-				local truncated = truncateString(thread.output)
-				lastOutput = thread.output
+			local outStr = table.concat(thread.output)
+			if lastOutput ~= outStr then
+				local truncated = truncateString(outStr)
+				lastOutput = outStr
 				respondToInteraction(data.token, truncated)
 			end
 			waitTime += task.wait(UPDATE_INTERVAL)
 		end
 
 		if not sus then
+			local str = ((env :: any).TIMESTAMP ~= false) and string.format("[%.3f] ",os.clock() - start) or ''
 			if msg:find("Script timeout: exhausted allowed execution time") then
-				thread.output ..= string.format(
-					`[2;31m[%.3f] %s[0m`,
-					os.clock() - start,
-					"Script timeout: exhausted allowed execution time"
-				)
+				table.insert(thread.output, createText(str.."Script timeout: exhausted allowed execution time", 3))
 			else
-				thread.output ..= string.format(
-					`[2;31m[%.3f] %s[0m`,
-					os.clock() - start,
-					"An error occurred: " .. msg:match(":(%d+: .+)")
-				)
+				table.insert(thread.output, createText(str.."An error occurred: " .. msg, 3))
 			end
 		elseif (env :: any).TIMESTAMP ~= false then
-			thread.output ..= string.format(
+			table.insert(thread.output, string.format(
 				`[2;36m[%.3f] %s[0m`,
 				os.clock() - start,
 				`Script Reached its lifespan ({TIMEOUT or 15}s)`
-			)
+			))
+		else
+			table.insert(thread.output, createText(`Script Reached its lifespan ({TIMEOUT or 15}s)`, 2))
 		end
 
 		local shouldLog = (env :: any).OUTPUT_LOGS or false
 
-		local truncated = truncateString(thread.output)
+		local truncated = truncateString(table.concat(thread.output))
 		local log 
 		if shouldLog == true then
 			local id,name = data.userId,data.username
@@ -346,18 +421,20 @@ local function runCode(code, data)
 			table.insert(log,`Run Time: {os.clock() - thread.start} Seconds`)
 			table.insert(log,`Channel Link: {link}`)
 			table.insert(log,"------------------------------")
-			table.insert(log,thread.output)
-			log = table.concat(log,"\n")
+			table.insert(log,table.concat(thread.output))
+			log = table.concat(log)
 		elseif shouldLog == "LOG" then
-			log = thread.output
+			log = table.concat(thread.output)
 		end
 		respondToInteraction(data.token, truncated, log or "")
 
 		Processes[processID] = nil
+		ProcessesByUser[userid][processID] = nil
 		--// AFAIK theres no way to fully cleanup a thread (this included sub-threads). If this was in a live environment I could execute it from a script and destroy it later but
 		--// for now we just have to keep the sub-threads running. Either way, this session only runs for a max of 5 mins.
 		pcall(task.cancel, thread.timeOutThread)
 		pcall(task.cancel, thread.running)
+		module:Destroy()
 	end)
 
 	return true
@@ -375,6 +452,7 @@ local function handleRequest(uuid)
 	runCode(decodedData.content, decodedData)
 end
 
+local processedInputs = {}
 local function handleInputs()
 	local res = Https:RequestAsync({
 		Url = IP .. "/getInputs",
@@ -382,17 +460,19 @@ local function handleInputs()
 		Headers = {
 			["Content-Type"] = "application/json",
 		},
-		Body = encoder({ ServerId = ServerId }),
+		Body = encoder({ i = processedInputs }),
 	})
 	if res.StatusCode ~= 200 then
 		return
 	end
-	local decodedData: { { input: string, id: number } } = Https:JSONDecode(res.Body)
-	for _, input in decodedData do
-		if not IDinputs[input.id] then
-			IDinputs[input.id] = {}
+	local decodedData: { { input: string, id: number, uid: string } } = Https:JSONDecode(res.Body)
+	for _, data in decodedData do
+		local id = data.id
+		local input = data.input
+		table.insert(processedInputs, data.uid)
+		for _, process in ProcessesByUser[id] or {} do
+			table.insert(process.inputs, input)
 		end
-		table.insert(IDinputs[input.id], input.input)
 	end
 end
 
@@ -455,12 +535,16 @@ local function start(ip)
 	task.wait(1)
 end
 
-game:BindToClose(function(reason: Enum.CloseReason)
-	task.wait(1)
-	while next(Processes) do
-		task.wait()
-	end
-end)
+print(pcall(function()
+	game:BindToClose(function(reason: Enum.CloseReason)
+		task.wait(1)
+		while next(Processes) do
+			task.wait()
+		end
+	end)
+
+end))
+
 
 return {
 	start = start,
