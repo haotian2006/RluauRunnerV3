@@ -32,7 +32,7 @@ const FORM_ID = process.env.FORM_ID;
 const FORM_URL = `https://docs.google.com/forms/d/e/${FORM_ID}/formResponse`;
 
 const SERVER_CREATION_COOL_DOWN = 1000 * 10;
-const SERVER_RUN_TIME_MAX = 1000 * 60 * 3;
+const SERVER_RUN_TIME_MAX = 1000 * 60 * 1.5;
 const SERVER_CHECK_INTERVAL = 1000;
 const SERVER_PING_TIMEOUT = 1000 * 5;
 
