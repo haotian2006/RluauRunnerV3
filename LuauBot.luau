@@ -218,6 +218,31 @@ local function runCode(code, data)
 	thread.start = start
 	local userid = data.userId
 	local isCommand = data.isCommand
+	local runningThreads = {}
+
+	local function wrapThread(fx)
+		return function(...)
+			local t = fx(...)
+			table.insert(runningThreads, t)
+			return t
+		end
+	end
+
+	local function hasRunning()
+		for i, v in runningThreads do
+			if coroutine.status(v) ~= "dead" then
+				return true
+			end
+		end
+		return false
+	end
+
+	local function stopAll()
+		for i, v in runningThreads do
+			pcall(coroutine.close, v)
+			pcall(task.cancel, v)
+		end
+	end
 
 	for input in code:gmatch("%-%-@([^\n\r]+)") do
 		table.insert(inputs, input)
@@ -225,6 +250,22 @@ local function runCode(code, data)
 
 	ProcessesByUser[userid] = ProcessesByUser[userid] or {}
 	ProcessesByUser[userid][processID] = thread
+
+	env.spawn = wrapThread(spawn)
+	env.delay = wrapThread(delay)
+
+	env.task = setmetatable({
+		spawn = wrapThread(task.spawn),
+		defer = wrapThread(task.defer),
+		delay = wrapThread(task.delay)
+	}, {__index = task})
+	env.coroutine = setmetatable({
+		create = wrapThread(coroutine.create),
+		wrap = function(fx)
+			fx = coroutine.wrap(fx)
+			return wrapThread(fx)
+		end
+	}, {__index = coroutine})
 	env.TIMESTAMP = false
 	env.OUTPUT_LOGS = false
 	env.io = {
@@ -384,6 +425,7 @@ local function runCode(code, data)
 			sus,msg = pcall(msg)
 		end
 	end)
+	table.insert(runningThreads,thread.running)
 
 	thread.timeOutThread = task.spawn(function()
 		local waitTime = 0
@@ -415,7 +457,7 @@ local function runCode(code, data)
 				os.clock() - start,
 				`Script Reached its lifespan ({TIMEOUT}s)`
 				))
-		elseif shouldLog ~= "LOG" then
+		elseif shouldLog ~= "LOG" and hasRunning() then
 			table.insert(thread.output, createText(`Script Reached its lifespan ({TIMEOUT}s)`, 2))
 		end
 
@@ -445,10 +487,11 @@ local function runCode(code, data)
 
 		Processes[processID] = nil
 		ProcessesByUser[userid][processID] = nil
-		--// AFAIK theres no way to fully cleanup a thread (this included sub-threads). If this was in a live environment I could execute it from a script and destroy it later but
+		--// ![AFAIK] theres no way to fully cleanup a thread (this included sub-threads). If this was in a live environment I could execute it from a script and destroy it later but
 		--// for now we just have to keep the sub-threads running. Either way, this session only runs for a max of 5 mins.
+		--// 10/30/25, wrapped tasks and coroutine creations to be tracked and closed on script end.
 		pcall(task.cancel, thread.timeOutThread)
-		pcall(task.cancel, thread.running)
+		stopAll()
 		module:Destroy()
 	end)
 
