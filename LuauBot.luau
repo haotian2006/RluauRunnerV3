@@ -43,6 +43,20 @@ local function createText(text, color)
 	return `[0;37m{text}[0m`
 end
 
+local function truncateArray(inputArray)
+	if #inputArray > MAX_STR_HEIGHT then
+		local startLine = #inputArray - MAX_STR_HEIGHT + 1
+		local truncatedLines = {}
+		for i = startLine, #inputArray do
+			table.insert(truncatedLines, inputArray[i])
+		end
+
+		return truncatedLines
+	else
+		return inputArray
+	end
+end
+
 local function truncateString(inputString)
 	local lines = {}
 	for line in inputString:gsub("\r", "\n"):gmatch("([^\n]*)\n?") do
@@ -432,7 +446,7 @@ local function runCode(code, data)
 		local TIMEOUT = env.TIMEOUT 
 		while (os.clock() - thread.start < TIMEOUT and sus) or benches > 0 do
 			TIMEOUT = env.TIMEOUT
-			local outStr = table.concat(thread.output)
+			local outStr = table.concat(truncateArray(thread.output))
 			if lastOutput ~= outStr then
 				local truncated = truncateString(outStr)
 				lastOutput = outStr
@@ -462,7 +476,7 @@ local function runCode(code, data)
 		end
 
 
-		local truncated = truncateString(table.concat(thread.output))
+		local truncated = truncateString(table.concat(truncateArray(thread.output)))
 		local log 
 		if shouldLog == true then
 			local id,name = data.userId,data.username
