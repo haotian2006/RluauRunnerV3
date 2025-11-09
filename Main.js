@@ -404,7 +404,9 @@ async function createCompileModal(data, code) {
     .setCustomId("additional_code")
     .setLabel("Additional Code (Optional)")
     .setStyle(TextInputStyle.Paragraph)
-    .setValue(`--native\n--optimize 2\nlocal function run()\n\t{CODE}\nend\nlocal results = run()`)
+    .setValue(
+      `--native\n--optimize 2\n--runpy([[{CODE}]])\nlocal function run()\n\t{CODE}\nend\nlocal results = run()`
+    )
     .setRequired(false);
 
   modal.addComponents(
