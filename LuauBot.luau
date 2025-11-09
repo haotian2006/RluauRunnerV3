@@ -230,6 +230,7 @@ local function runCode(code, data)
 	thread.inputs = inputs
 	local output = thread.output
 	thread.start = start
+	thread.blocked = false
 	local userid = data.userId
 	local isCommand = data.isCommand
 	local runningThreads = {}
@@ -310,49 +311,7 @@ local function runCode(code, data)
 		end
 		return f, e
 	end
-	env.table = if workspace:FindFirstChild("ExtendedTableLibrary")
-		then require(workspace:FindFirstChild("ExtendedTableLibrary"))
-		else table
-	env.misc = if workspace:FindFirstChild("misc")
-		then require((workspace:FindFirstChild("misc")::any):Clone())
-		else nil
-	local benches = 0
-	env.bench = if workspace:FindFirstChild("Bench")
-		then function(data,printMode,iterations,waitPerIter)
-			local module = require((workspace:FindFirstChild("Bench")::any):Clone())
-			benches += 1
-			local running = true
-			local tracker = {}::any
-			local line = env.println(`Benching: {0}/{0}`)
-			task.spawn(function()
-				while running do
-					env.println(`Benching: {tracker.iterations}/{tracker.totalIterations} | FPS: {tracker.fps or 0}`,line)
-					task.wait(0.1)
-				end
-			end)
-			task.wait(1)
-			local info,str = module.Run(data,printMode,iterations,waitPerIter,tracker)
-			task.wait(.1)
-			env.println(`Done Benching`,line)
-			running = false
-			if str then
-				table.insert(thread.output, `NATIVE: {env.native and "true" or "false"} | OPTIMIZE: {env.optimize}\n`)
-				table.insert(thread.output, str .. "\n")
-			end
-			task.delay(2,function()
-				benches -= 1
-			end)
-			return info
-		end
-		else nil
 
-	if env.misc then
-		for i, v in env.misc do
-			if type(v) == "function" then
-				setfenv(v, env)
-			end
-		end
-	end
 	env.log = function(text, color, newLine)
 		local time = os.clock() - start
 		color = color or ""
@@ -400,7 +359,19 @@ local function runCode(code, data)
 		local noTimeStamp = (env :: any).TIMESTAMP == false
 		table.insert(thread.output, noTimeStamp and createText(text,2) .. "\n" or createText(string.format(`[%.3f] %s\n`, time, text), 2))
 	end
+
 	env.TIMEOUT = DEFAULT_TIMEOUT
+	
+	local l_sus, l_err = pcall(function()
+		if workspace:FindFirstChild("LoadEnv") then
+			local loadEnv = require((workspace:FindFirstChild("LoadEnv") :: any))
+			loadEnv(thread, env)
+		end
+	end)
+
+	if not l_sus then
+		table.insert(thread.output, createText(`Error loading environment: {l_err}`, 3) .. "\n")
+	end
 	-- env.error = function(msg, context)
 	-- 	local time = os.clock() - start
 	-- 	local noTimeStamp = (env :: any).TIMESTAMP == false
@@ -421,6 +392,7 @@ local function runCode(code, data)
 	end
 	local module
 	fx,module = executeCode(id,code,env)
+	thread.module = module
 
 	if isCommand and code:find('%-%-') then
 		table.insert(thread.output, '[2;33m[Warning] Detected comments in command this may cause issues, try an application command instead or remove comments.[0m\n')
@@ -444,7 +416,7 @@ local function runCode(code, data)
 	thread.timeOutThread = task.spawn(function()
 		local waitTime = 0
 		local TIMEOUT = env.TIMEOUT 
-		while (os.clock() - thread.start < TIMEOUT and sus) or benches > 0 do
+		while (os.clock() - thread.start < TIMEOUT and sus) or thread.blocked do
 			TIMEOUT = env.TIMEOUT
 			local outStr = table.concat(truncateArray(thread.output))
 			if lastOutput ~= outStr then
