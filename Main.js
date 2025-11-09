@@ -262,8 +262,16 @@ async function getCodeFromContextMenu(interaction,noCode) {
   let content = interaction.targetMessage.content;
   const attachments = interaction.targetMessage.attachments.first();
 
-  let codeBlocks = [...content.matchAll(/```(?:lua)?\s*([\s\S]*?)\s*```/g)].map(
-    (m) => m[1]
+  // let codeBlocks = [...content.matchAll(/```(?:lua)?\s*([\s\S]*?)\s*```/g)].map(
+  //   (m) => m[1]
+  // );
+  if (/```lua/.test(content)) {
+    regex = /```lua\s*([\s\S]*?)\s*```/g;
+  } else {
+    regex = /```\w*\s*([\s\S]*?)\s*```/g;
+  }
+  let codeBlocks = [...content.matchAll(regex)].map(
+    (m) => m[1].trim()
   );
   if (attachments && attachments.url) {
     content = await fetchFileContent(attachments.url);
