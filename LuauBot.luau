@@ -13,7 +13,6 @@ local Closed = false
 local Processes = {}
 local ProcessesByUser = {}
 
-
 local encoder = function(data)
 	return Https:JSONEncode(data)
 end
@@ -156,7 +155,7 @@ local function encode(data)
 	return game:GetService("HttpService"):JSONEncode(buffer.fromstring(data))
 end
 
-local function respondToInteraction(interactionToken, responseContent, logs,await)
+local function respondToInteraction(interactionToken, responseContent, logs, await)
 	local url = IP .. "/respond"
 	local headers = {
 		["Content-Type"] = "application/json",
@@ -192,10 +191,10 @@ local function respondToInteraction(interactionToken, responseContent, logs,awai
 	end
 end
 
-local function executeCode(id,code,env)
+local function executeCode(id, code, env)
 	local m = Instance.new("ModuleScript")
-	local imports = ''
-	local updates = ''
+	local imports = ""
+	local updates = ""
 	for k in env do
 		imports ..= `\tlocal {k} = imports.{k}\n`
 		updates ..= `\t\timports.{k} = {k}\n`
@@ -208,15 +207,15 @@ local function executeCode(id,code,env)
 	end
 	env.optimize = code:match("%-%-!optimize%s*(%d+)") or 2
 	table.insert(fs, `--!optimize {env.optimize}`)
-	updates = `\t_ = coroutine.running()\n--Hi I see that you decided to log this file\n\ttask.spawn(function()\n\t\tlocal _=_ while coroutine.status(_) ~= 'dead' do\n{updates}\ntask.wait()\n\t\tend\n\tend)\n`
+	updates =
+		`\t_ = coroutine.running()\n--Hi I see that you decided to log this file\n\ttask.spawn(function()\n\t\tlocal _=_ while coroutine.status(_) ~= 'dead' do\n{updates}\ntask.wait()\n\t\tend\n\tend)\n`
 
-
-
-	m.Source = `{table.concat(fs, "\n")}\nreturn function(imports)\n{imports}\n{updates}\n\treturn function()\n--[[START OF CODE]]\n{code}\n--[[END OF CODE]]\n\t\t\ntask.wait(1)\n\tend\nend`
+	m.Source =
+		`{table.concat(fs, "\n")}\nreturn function(imports)\n{imports}\n{updates}\n\treturn function()\n--[[START OF CODE]]\n{code}\n--[[END OF CODE]]\n\t\t\ntask.wait(1)\n\tend\nend`
 	m.Parent = game
 	m.Name = id
 	local f = require(m)
-	return f,m
+	return f, m
 end
 local function runCode(code, data)
 	local processID = game:GetService("HttpService"):GenerateGUID(false)
@@ -259,7 +258,11 @@ local function runCode(code, data)
 		end
 	end
 
-	for input in code:gmatch("%-%-@([^\n\r]+)") do
+	for block in code:gmatch("%-%-%[%[@(.-)%]%]") do
+		table.insert(inputs, block)
+	end
+
+	for input in code:gmatch("%-%-@([^\n\r%[]+)") do
 		table.insert(inputs, input)
 	end
 
@@ -272,20 +275,20 @@ local function runCode(code, data)
 	env.task = setmetatable({
 		spawn = wrapThread(task.spawn),
 		defer = wrapThread(task.defer),
-		delay = wrapThread(task.delay)
-	}, {__index = task})
+		delay = wrapThread(task.delay),
+	}, { __index = task })
 	env.coroutine = setmetatable({
 		create = wrapThread(coroutine.create),
 		wrap = function(fx)
 			fx = coroutine.wrap(fx)
 			return wrapThread(fx)
-		end
-	}, {__index = coroutine})
+		end,
+	}, { __index = coroutine })
 	env.TIMESTAMP = false
 	env.OUTPUT_LOGS = false
 	env.io = {
 		read = function()
-			local info 
+			local info
 			while task.wait() and not info do --ik this is bad but i'm lazy and this works
 				info = table.remove(inputs, 1)
 			end
@@ -302,7 +305,7 @@ local function runCode(code, data)
 			end
 			local noTimeStamp = (env :: any).TIMESTAMP == false
 			table.insert(output, noTimeStamp and text .. "\n" or string.format(`[%.3f] %s\n`, time, text))
-		end,	
+		end,
 	}
 	env.loadstring = function(...)
 		local f, e = loadstring(...)
@@ -317,21 +320,27 @@ local function runCode(code, data)
 		color = color or ""
 		text = tostring(text)
 		local noTimeStamp = (env :: any).TIMESTAMP == false
-		table.insert(thread.output, noTimeStamp and text .. "\n" or (string.format(
-			`[%.3f] %s\n`,
-			time,
-			(colorsLower[color:lower()] or "") .. text .. (newLine and "\n" or "")
-			)))
+		table.insert(
+			thread.output,
+			noTimeStamp and text .. "\n"
+				or (
+					string.format(
+						`[%.3f] %s\n`,
+						time,
+						(colorsLower[color:lower()] or "") .. text .. (newLine and "\n" or "")
+					)
+				)
+		)
 	end
 
-	env.println = function(str,line)
+	env.println = function(str, line)
 		str = tostring(str)
 		if not line then
-			table.insert(output, str..'\n')
+			table.insert(output, str .. "\n")
 			return #output
 		end
 
-		output[line] = str ..'\n'
+		output[line] = str .. "\n"
 		return line
 	end
 
@@ -345,7 +354,10 @@ local function runCode(code, data)
 			text ..= value .. " "
 		end
 		local noTimeStamp = (env :: any).TIMESTAMP == false
-		table.insert(thread.output, noTimeStamp and text .. "\n" or createText(string.format(`[%.3f] %s\n`, time, text)))
+		table.insert(
+			thread.output,
+			noTimeStamp and text .. "\n" or createText(string.format(`[%.3f] %s\n`, time, text))
+		)
 	end
 
 	env.warn = function(...)
@@ -357,14 +369,17 @@ local function runCode(code, data)
 			text ..= tostring(array[i]) .. " "
 		end
 		local noTimeStamp = (env :: any).TIMESTAMP == false
-		table.insert(thread.output, noTimeStamp and createText(text,2) .. "\n" or createText(string.format(`[%.3f] %s\n`, time, text), 2))
+		table.insert(
+			thread.output,
+			noTimeStamp and createText(text, 2) .. "\n" or createText(string.format(`[%.3f] %s\n`, time, text), 2)
+		)
 	end
 
 	env.TIMEOUT = DEFAULT_TIMEOUT
-	
+
 	local l_sus, l_err = pcall(function()
 		if workspace:FindFirstChild("LoadEnv") then
-			local loadEnv = require((workspace:FindFirstChild("LoadEnv") :: any))
+			local loadEnv = require(workspace:FindFirstChild("LoadEnv") :: any)
 			loadEnv(thread, env)
 		end
 	end)
@@ -383,21 +398,24 @@ local function runCode(code, data)
 	local id = "RluauRunnerV3|PROCESS|" .. processID .. "|"
 	local fx, err = loadstring(code, id)
 	if not fx then
-		local warning = ''
-		if isCommand and code:find('%-%-') then
-			warning = 'Detected comments in command, try an application command instead or remove comments.\n'
+		local warning = ""
+		if isCommand and code:find("%-%-") then
+			warning = "Detected comments in command, try an application command instead or remove comments.\n"
 		end
-		respondToInteraction(data.token, warning..err:match(":(%d+: .+)"), "")
+		respondToInteraction(data.token, warning .. err:match(":(%d+: .+)"), "")
 		return false
 	end
 	local module
-	fx,module = executeCode(id,code,env)
+	fx, module = executeCode(id, code, env)
 	thread.module = module
 
-	if isCommand and code:find('%-%-') then
-		table.insert(thread.output, '[2;33m[Warning] Detected comments in command this may cause issues, try an application command instead or remove comments.[0m\n')
+	if isCommand and code:find("%-%-") then
+		table.insert(
+			thread.output,
+			"[2;33m[Warning] Detected comments in command this may cause issues, try an application command instead or remove comments.[0m\n"
+		)
 	end
-	respondToInteraction(data.token, "Running",nil,true)
+	respondToInteraction(data.token, "Running", nil, true)
 	task.wait(0.1)
 
 	Processes[processID] = thread
@@ -406,16 +424,16 @@ local function runCode(code, data)
 	start = thread.start
 	local sus, msg = true, nil
 	thread.running = task.defer(function()
-		sus, msg = pcall(fx,env)
+		sus, msg = pcall(fx, env)
 		if sus then
-			sus,msg = pcall(msg)
+			sus, msg = pcall(msg)
 		end
 	end)
-	table.insert(runningThreads,thread.running)
+	table.insert(runningThreads, thread.running)
 
 	thread.timeOutThread = task.spawn(function()
 		local waitTime = 0
-		local TIMEOUT = env.TIMEOUT 
+		local TIMEOUT = env.TIMEOUT
 		while (os.clock() - thread.start < TIMEOUT and sus) or thread.blocked do
 			TIMEOUT = env.TIMEOUT
 			local outStr = table.concat(truncateArray(thread.output))
@@ -429,42 +447,48 @@ local function runCode(code, data)
 
 		local shouldLog = (env :: any).OUTPUT_LOGS
 		if not sus then
-			local str = ((env :: any).TIMESTAMP ~= false) and string.format("[%.3f] ",os.clock() - start) or ''
+			local str = ((env :: any).TIMESTAMP ~= false) and string.format("[%.3f] ", os.clock() - start) or ""
 			if msg:find("Script timeout: exhausted allowed execution time") then
-				table.insert(thread.output, createText(str.."Script timeout: exhausted allowed execution time", 3))
+				table.insert(thread.output, createText(str .. "Script timeout: exhausted allowed execution time", 3))
 			else
 				local msg = msg:match("RluauRunnerV3|PROCESS|[%w%-]+|:(.+)") or msg
 				msg = msg:gsub("RluauRunnerV3|PROCESS|[%w%-]+|", "script")
-				table.insert(thread.output, createText(str.. msg, 3))
+				table.insert(thread.output, createText(str .. msg, 3))
 			end
 		elseif (env :: any).TIMESTAMP ~= false then
-			table.insert(thread.output, string.format(
-				`[2;36m[%.3f] %s[0m`,
-				os.clock() - start,
-				`Script Reached its lifespan ({TIMEOUT}s)`
-				))
+			table.insert(
+				thread.output,
+				string.format(`[2;36m[%.3f] %s[0m`, os.clock() - start, `Script Reached its lifespan ({TIMEOUT}s)`)
+			)
 		elseif shouldLog ~= "LOG" and hasRunning() then
 			table.insert(thread.output, createText(`Script Reached its lifespan ({TIMEOUT}s)`, 2))
 		end
 
-
 		local truncated = truncateString(table.concat(truncateArray(thread.output)))
-		local log 
+		local log
 		if shouldLog == true then
-			local id,name = data.userId,data.username
+			local id, name = data.userId, data.username
 			local link = getLinkFromData(data)
 			log = {}
 			local date = DateTime.now():ToUniversalTime()
-			table.insert(log,"Logs For Compilation\n")
-			table.insert(log, string.format(
-				"Compiled at: %02d/%02d/%04d %02d:%02d:%02d\n",
-				date.Month, date.Day, date.Year, date.Hour, date.Minute, date.Second
-				))
-			table.insert(log,`User: {name} ({id})\n`)
-			table.insert(log,`Run Time: {os.clock() - thread.start} Seconds\n`)
-			table.insert(log,`Channel Link: {link}\n`)
-			table.insert(log,"------------------------------\n")
-			table.insert(log,table.concat(thread.output))
+			table.insert(log, "Logs For Compilation\n")
+			table.insert(
+				log,
+				string.format(
+					"Compiled at: %02d/%02d/%04d %02d:%02d:%02d\n",
+					date.Month,
+					date.Day,
+					date.Year,
+					date.Hour,
+					date.Minute,
+					date.Second
+				)
+			)
+			table.insert(log, `User: {name} ({id})\n`)
+			table.insert(log, `Run Time: {os.clock() - thread.start} Seconds\n`)
+			table.insert(log, `Channel Link: {link}\n`)
+			table.insert(log, "------------------------------\n")
+			table.insert(log, table.concat(thread.output))
 			log = table.concat(log)
 		elseif shouldLog == "LOG" then
 			log = table.concat(thread.output)
@@ -533,7 +557,6 @@ local function poll()
 		Closed = true
 		return
 	end
-	
 
 	local data = Https:JSONDecode(res.Body)
 
@@ -598,9 +621,7 @@ print(pcall(function()
 			task.wait()
 		end
 	end)
-
 end))
-
 
 return {
 	start = start,
