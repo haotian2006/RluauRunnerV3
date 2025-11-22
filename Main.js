@@ -61,7 +61,6 @@ function generateUUID() {
   return Math.random().toString(36).substring(2, 10);
 }
 
-
 function log(userid, name, commandName, data) {
   if (data) {
     if (typeof data === "string" && data.length > 20000 - 10) {
@@ -258,7 +257,7 @@ function getByteCode(options, code) {
 /**
  * @param {import('discord.js').MessageContextMenuCommandInteraction} interaction
  */
-async function getCodeFromContextMenu(interaction,noCode) {
+async function getCodeFromContextMenu(interaction, noCode) {
   let content = interaction.targetMessage.content;
   const attachments = interaction.targetMessage.attachments.first();
 
@@ -270,15 +269,13 @@ async function getCodeFromContextMenu(interaction,noCode) {
   } else {
     regex = /```\w*\s*([\s\S]*?)\s*```/g;
   }
-  let codeBlocks = [...content.matchAll(regex)].map(
-    (m) => m[1].trim()
-  );
+  let codeBlocks = [...content.matchAll(regex)].map((m) => m[1].trim());
   if (attachments && attachments.url) {
     content = await fetchFileContent(attachments.url);
     codeBlocks.unshift(content);
   }
   if (noCode) {
-      return content;
+    return content;
   }
   if (codeBlocks.length === 0) {
     return content;
@@ -378,7 +375,7 @@ async function createCompileModal(data, code) {
     .setStyle(TextInputStyle.Short)
     .setValue("0")
     .setRequired(false);
-  
+
   const timestamps = new TextInputBuilder()
     .setCustomId("timestamps")
     .setLabel("Include Timestamps? (1 = yes, 0 = no)")
@@ -405,7 +402,7 @@ async function createCompileModal(data, code) {
     .setLabel("Additional Code (Optional)")
     .setStyle(TextInputStyle.Paragraph)
     .setValue(
-      `--native\n--optimize 2\n--runpy([[{CODE}]])\nlocal function run()\n\t{CODE}\nend\nlocal results = run()`
+      `--native\n--optimize 2\n--[[runpy([[{CODE}]])]]\nlocal function run()\n\t{CODE}\nend\nlocal results = run()`
     )
     .setRequired(false);
 
@@ -414,7 +411,7 @@ async function createCompileModal(data, code) {
     new ActionRowBuilder().addComponents(logInput),
     new ActionRowBuilder().addComponents(timestamps),
     new ActionRowBuilder().addComponents(runTime),
-    new ActionRowBuilder().addComponents(ephemeralInput),
+    new ActionRowBuilder().addComponents(ephemeralInput)
   );
 
   byteCodeModalData[data.user.id] = {
@@ -507,17 +504,23 @@ function decodeBuffer(data) {
 
 app.patch("/respond", async (req, res) => {
   const token = req.body.token;
+  let _interaction;
+  let _link;
   try {
     let responseContent = decodeBuffer(JSON.parse(req.body.data));
 
     let logs = req.body.log;
     const [interaction, originalInteraction] = CompilingTasks[token];
-    if (!interaction) {
-      throw new Error("Interaction not found");
+    if (!CompilingTasks[token]) {
+      res.status(500).json({
+        message: "Failed to send response to Discord",
+        error: "failed",
+      });
+      return;
     }
-
+    _interaction = interaction;
     const link = getLinkFromData(originalInteraction || interaction);
-
+    _link = link;
     if (typeof logs === "string") {
       delete CompilingTasks[token];
     }
@@ -528,15 +531,17 @@ app.patch("/respond", async (req, res) => {
         `Requested by: <@${interaction.user.id}>` +
           `\`\`\`ansi\n${responseContent}\n\`\`\``
       )
-      .addFields({
-        name: "Remember To Follow the TOS",
-        value: `<https://haotian2006.github.io/LuauBotSite/TOS/>`,
-      })
       .setColor(3447003);
+
+    // .addFields({
+    //   name: "Remember To Follow the TOS",
+    //   value: `<https://haotian2006.github.io/LuauBotSite/TOS/>`,
+    // })
 
     if (link) {
       embed.setURL(link);
     }
+
     if (logs) {
       logs = decodeBuffer(JSON.parse(logs));
 
@@ -558,13 +563,35 @@ app.patch("/respond", async (req, res) => {
       data: "pass",
     });
   } catch (error) {
-    delete CompilingTasks[token];
+
+
     console.error("Error handling /respond:", error);
+
+    if (_interaction) {
+      const errorEmbed = new EmbedBuilder()
+        .setTitle("Discord Error")
+        .setDescription(
+          ` Requested by: <@${_interaction.user.id}> \n ERROR: ${error.message}`
+        )
+        .setColor(0xff0000);
+
+      if (_link) {
+        errorEmbed.setURL(_link);
+      }
+
+      try {
+        await _interaction.editReply({ embeds: [errorEmbed] });
+      } catch (editError) {
+        console.error("Failed to edit reply with error:", editError);
+      }
+    }
+    delete CompilingTasks[token];
     res.status(500).json({
       message: "Failed to send response to Discord",
       error: "failed",
     });
   }
+
 });
 
 app.get("/", (req, res) => {
@@ -590,7 +617,7 @@ app.post("/getInputs", async (req, res) => {
   data = [];
 
   for (const id in Inputs) {
-    if (!(interacted.includes(Inputs[id].uid))) {
+    if (!interacted.includes(Inputs[id].uid)) {
       data.push(Inputs[id]);
     }
   }
@@ -679,9 +706,8 @@ async function main() {
   client.on("interactionCreate", async (interaction) => {
     try {
       if (interaction.isMessageContextMenuCommand()) {
-
-         if (interaction.commandName === "input") {
-          const code = await getCodeFromContextMenu(interaction,true);
+        if (interaction.commandName === "input") {
+          const code = await getCodeFromContextMenu(interaction, true);
           const uid = generateUUID();
           Inputs[uid] = {
             uid: uid,
@@ -689,7 +715,10 @@ async function main() {
             input: code,
           };
           interaction.reply({
-            content: code.length > 100 ? `sent input (${code.length} characters)` : `sent '${code}'`,
+            content:
+              code.length > 100
+                ? `sent input (${code.length} characters)`
+                : `sent '${code}'`,
             ephemeral: true,
           });
 
@@ -706,7 +735,6 @@ async function main() {
         }
 
         const code = await getCodeFromContextMenu(interaction);
-
 
         log(
           interaction.user.id,
@@ -828,7 +856,7 @@ async function main() {
 
           let code = info.content;
           const originalInteraction = info.data;
-          const headers = `OUTPUT_LOGS=${
+          const headers = `\nOUTPUT_LOGS=${
             logOutput ? "true" : "false"
           }\nTIMESTAMP=${timestamps ? "true" : "false"}\nTIMEOUT=${runTime}\n`;
           if (additionalCode.includes("{CODE}")) {
@@ -878,7 +906,6 @@ async function main() {
             id: interaction.user.id,
             input: input,
           };
-          
 
           interaction.reply({
             content: `sent '${input}'`,

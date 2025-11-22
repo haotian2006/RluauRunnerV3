@@ -304,7 +304,7 @@ local function runCode(code, data)
 				text ..= value
 			end
 			local noTimeStamp = (env :: any).TIMESTAMP == false
-			table.insert(output, noTimeStamp and text .. "\n" or string.format(`[%.3f] %s\n`, time, text))
+			table.insert(output, noTimeStamp and text or string.format(`[%.3f] %s\n`, time, text))
 		end,
 	}
 	env.loadstring = function(...)
@@ -318,7 +318,7 @@ local function runCode(code, data)
 	env.log = function(text, color, newLine)
 		local time = os.clock() - start
 		color = color or ""
-		text = tostring(text)
+		text = (colorsLower[color:lower()] or "")..tostring(text)
 		local noTimeStamp = (env :: any).TIMESTAMP == false
 		table.insert(
 			thread.output,
@@ -327,7 +327,7 @@ local function runCode(code, data)
 					string.format(
 						`[%.3f] %s\n`,
 						time,
-						(colorsLower[color:lower()] or "") .. text .. (newLine and "\n" or "")
+						 text .. (newLine and "\n" or "")
 					)
 				)
 		)
