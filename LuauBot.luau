@@ -196,7 +196,7 @@ local function executeCode(id, code, env)
 	local imports = ""
 	local updates = ""
 	for k in env do
-		imports ..= `\tlocal {k} = imports.{k}\n`
+		imports ..= `\t{k} = imports.{k}\n`
 		updates ..= `\t\timports.{k} = {k}\n`
 	end
 	local fs = {}
