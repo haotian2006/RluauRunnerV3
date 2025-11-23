@@ -402,7 +402,7 @@ async function createCompileModal(data, code) {
     .setLabel("Additional Code (Optional)")
     .setStyle(TextInputStyle.Paragraph)
     .setValue(
-      `--native\n--optimize 2\n--[[runpy([[{CODE}]])]]\nlocal function run()\n\t{CODE}\nend\nlocal results = run()`
+      `--native\n--optimize 2\nlocal function run()\n\t{CODE}\nend\nlocal results = run()`
     )
     .setRequired(false);
 
@@ -563,8 +563,6 @@ app.patch("/respond", async (req, res) => {
       data: "pass",
     });
   } catch (error) {
-
-
     console.error("Error handling /respond:", error);
 
     if (_interaction) {
@@ -591,7 +589,6 @@ app.patch("/respond", async (req, res) => {
       error: "failed",
     });
   }
-
 });
 
 app.get("/", (req, res) => {
