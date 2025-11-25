@@ -15,6 +15,14 @@ const express = require("express");
 const { console } = require("inspector");
 const zstd = require("zstd-napi");
 const { json } = require("stream/consumers");
+const {
+  TextCensor,
+  RegExpMatcher,
+  englishDataset,
+  englishRecommendedTransformers,
+} = require("obscenity");
+
+const FILTER_BAD_WORDS = true;
 require("dotenv").config();
 
 const LUAU_DOWNLOAD_URL =
@@ -44,6 +52,15 @@ let RunningServerTime = 0;
 let LastServerPing = 0;
 
 let LastServerCreation = 0;
+
+const Matcher = new RegExpMatcher({ ...englishDataset.build(), ...englishRecommendedTransformers });
+const Censor = new TextCensor();
+
+function censorText(text) {
+  if (!FILTER_BAD_WORDS) return text;
+  const matches = Matcher.getAllMatches(text);
+  return Censor.applyTo(text, matches);
+}
 
 const ExecuteTasks = {};
 const CompilingTasks = {};
@@ -529,7 +546,7 @@ app.patch("/respond", async (req, res) => {
       .setTitle("Luau Compiler Results")
       .setDescription(
         `Requested by: <@${interaction.user.id}>` +
-          `\`\`\`ansi\n${responseContent}\n\`\`\``
+          `\`\`\`ansi\n${censorText(responseContent)}\n\`\`\``
       )
       .setColor(3447003);
 
@@ -715,7 +732,7 @@ async function main() {
             content:
               code.length > 100
                 ? `sent input (${code.length} characters)`
-                : `sent '${code}'`,
+                : `sent '${censorText(code)}'`,
             ephemeral: true,
           });
 
@@ -905,7 +922,7 @@ async function main() {
           };
 
           interaction.reply({
-            content: `sent '${input}'`,
+            content: `sent '${censorText(input)}'`,
             ephemeral: interaction.commandName === "hiddeninput",
           });
           log(
