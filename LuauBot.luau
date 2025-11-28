@@ -211,13 +211,16 @@ local function executeCode(id, code, env)
 		`\t_ = coroutine.running()\n--Hi I see that you decided to log this file\n\ttask.spawn(function()\n\t\tlocal _=_ while coroutine.status(_) ~= 'dead' do\n{updates}\ntask.wait()\n\t\tend\n\tend)\n`
 
 	m.Source =
-		`{table.concat(fs, "\n")}\nreturn function(imports)\n{imports}\n{updates}\n\treturn function()\n--[[START OF CODE]]\n{code}\n--[[END OF CODE]]\n\t\t\ntask.wait(1)\n\tend\nend`
+		`{table.concat(fs, "\n")}\nreturn function(imports)\n{imports}\n{updates}\n\treturn function()\n_=(function ()\n--[[START OF CODE]]\n{code}\n--[[END OF CODE]]\nend)()\n\n\t\t\ntask.wait(1)\n\tend\nend`
 	m.Parent = game
 	m.Name = id
 	local f = require(m)
 	return f, m
 end
 local function runCode(code, data)
+	if code:sub(1, 1) == "=" then
+		code = `print({code:sub(2)})`
+	end
 	local processID = game:GetService("HttpService"):GenerateGUID(false)
 	local env = {}
 	local lastOutput = ""
@@ -318,18 +321,11 @@ local function runCode(code, data)
 	env.log = function(text, color, newLine)
 		local time = os.clock() - start
 		color = color or ""
-		text = (colorsLower[color:lower()] or "")..tostring(text)
+		text = (colorsLower[color:lower()] or "") .. tostring(text)
 		local noTimeStamp = (env :: any).TIMESTAMP == false
 		table.insert(
 			thread.output,
-			noTimeStamp and text .. "\n"
-				or (
-					string.format(
-						`[%.3f] %s\n`,
-						time,
-						 text .. (newLine and "\n" or "")
-					)
-				)
+			noTimeStamp and text .. "\n" or (string.format(`[%.3f] %s\n`, time, text .. (newLine and "\n" or "")))
 		)
 	end
 
@@ -492,6 +488,9 @@ local function runCode(code, data)
 			log = table.concat(log)
 		elseif shouldLog == "LOG" then
 			log = table.concat(thread.output)
+		end
+		if truncated == '' then
+			truncated = "No Output"
 		end
 		respondToInteraction(data.token, truncated, log or "")
 
