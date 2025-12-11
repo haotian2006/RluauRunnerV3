@@ -15,6 +15,10 @@ const express = require("express");
 const { console } = require("inspector");
 const zstd = require("zstd-napi");
 const { json } = require("stream/consumers");
+
+const os = require("os");
+const { spawn } = require("child_process");
+
 const {
   TextCensor,
   RegExpMatcher,
@@ -25,8 +29,7 @@ const {
 const FILTER_BAD_WORDS = true;
 require("dotenv").config();
 
-const LUAU_DOWNLOAD_URL =
-  "https://github.com/haotian2006/luaufork/releases/latest/download/LuauCompile.Web.js";
+const PATH_TO_COMPILER = path.join(__dirname, "luau-compile");
 const DISCORD_TOKEN = process.env.BOT_TOKEN;
 const DISCORD_APP_ID = process.env.CLIENT_ID;
 const ROBLOX_API_KEY = process.env.ROBLOX_API_KEY;
@@ -44,7 +47,6 @@ const SERVER_RUN_TIME_MAX = 1000 * 60 * 1.5;
 const SERVER_CHECK_INTERVAL = 1000;
 const SERVER_PING_TIMEOUT = 1000 * 5;
 
-const MAX_BYTECODE_LENGTH = 1024 * 20;
 
 let IP = "";
 let RunningServer = "";
@@ -71,8 +73,8 @@ const client = new Client({
   intents: [GatewayIntentBits.Guilds],
 });
 
-const luauFilePath = path.resolve("./LuauCompile.Web.js");
-let luauModule;
+// const luauFilePath = path.resolve("./LuauCompile.Web.js");
+// let luauModule;
 
 function generateUUID() {
   return Math.random().toString(36).substring(2, 10);
@@ -106,26 +108,82 @@ function logBot(name, data) {
   log("0", "BOT", name, data);
 }
 
-https.get(LUAU_DOWNLOAD_URL, async (res) => {
-  if (res.statusCode !== 200) {
-    console.log(`Failed to get '${LUAU_DOWNLOAD_URL}' (${res.statusCode})`);
-    log("0", "BOT", "Failed to get Luau", res.statusCode);
-    luauModule = require(luauFilePath);
-    return;
-  }
-  const file = fs.createWriteStream(luauFilePath);
-  res.pipe(file);
-  file.on("finish", async () => {
-    file.close(async () => {
-      console.log("Luau downloaded successfully.");
-      const modulePath = path.resolve("./LuauCompile.Web.js");
-      luauModule = await import(`file://${modulePath}`);
-      luauModule = luauModule.default;
-      console.log("Luau compiler loaded successfully.");
-      logBot("Luau Compiler", "Luau compiler loaded successfully.");
+// https.get(LUAU_DOWNLOAD_URL, async (res) => {
+//   if (res.statusCode !== 200) {
+//     console.log(`Failed to get '${LUAU_DOWNLOAD_URL}' (${res.statusCode})`);
+//     log("0", "BOT", "Failed to get Luau", res.statusCode);
+//     luauModule = require(luauFilePath);
+//     return;
+//   }
+//   const file = fs.createWriteStream(luauFilePath);
+//   res.pipe(file);
+//   file.on("finish", async () => {
+//     file.close(async () => {
+//       console.log("Luau downloaded successfully.");
+//       const modulePath = path.resolve("./LuauCompile.Web.js");
+//       luauModule = await import(`file://${modulePath}`);
+//       luauModule = luauModule.default;
+//       console.log("Luau compiler loaded successfully.");
+//       logBot("Luau Compiler", "Luau compiler loaded successfully.");
+//     });
+//   });
+// });
+
+async function compileLuau(code, options) {
+  const { pathToLuau, optimizationLevel, debugLevel, native, remarks,binary } =
+    options;
+
+  return new Promise((resolve, reject) => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "luau-"));
+
+    const inputPath = path.join(tmpDir, "Code.luau");
+    const outputPath = path.join(tmpDir, "Bytecode.luau");
+
+
+    fs.writeFileSync(inputPath, code, "utf8");
+
+    const args = [];
+
+    if (native) {
+      args.push("--codegen");
+    } else if (remarks) {
+      args.push("--remarks");
+    } else if (binary) {
+      args.push("--binary"); 
+    }
+    args.push(`-g${debugLevel}`);
+    args.push(`-O${optimizationLevel}`);
+    args.push("--vector-lib=Vector3");
+    args.push("--vector-ctor=new");
+    args.push("--vector-type=Vector3");
+
+
+    args.push(inputPath);
+    console.log(args);
+    const outputStream = fs.createWriteStream(outputPath);
+
+    const child = spawn(pathToLuau, args);
+
+    child.stdout.pipe(outputStream);
+    child.stderr.pipe(outputStream);
+
+    child.on("error", reject);
+
+    child.on("close", (code) => {
+      outputStream.end(() => {
+        const output = fs.readFileSync(outputPath, "utf8");
+
+        try {
+          fs.unlinkSync(inputPath);
+          fs.unlinkSync(outputPath);
+          fs.rmdirSync(tmpDir);
+        } catch {}
+
+        resolve({ code, output });
+      });
     });
   });
-});
+}
 
 function wait(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -227,12 +285,16 @@ function getByteCodeOptions(code) {
   const oMatch = code.match("--!optimize (\\d+)");
   const dMatch = code.match("--!debug (\\d+)");
   let options = {
+    native : code.indexOf("--!native") !== -1,
     binary: code.indexOf("--!binary") !== -1,
     remarks: code.indexOf("--!remarks") !== -1,
     optimizeLevel: oMatch ? parseInt(oMatch[1]) : 2,
     debugLevel: dMatch ? parseInt(dMatch[1]) : 0,
   };
-  options.optimizeLevel = Math.max(0, Math.min(2, options.optimizeLevel));
+  if (options.native || options.remarks) {
+    options.binary = false;
+  }
+    options.optimizeLevel = Math.max(0, Math.min(2, options.optimizeLevel));
   options.debugLevel = Math.max(0, Math.min(2, options.debugLevel));
   return options;
 }
@@ -242,13 +304,16 @@ function byteCodeOptionsToString(options) {
   if (options.remarks && !options.binary) {
     str += "Remarks: Enabled\n";
   }
+  if (options.native) {
+    str += "Native Codegen: Enabled\n";
+  }
   str += `OptimizeLevel: ${options.optimizeLevel}\n`;
   str += `DebugLevel: ${options.debugLevel}\n`;
   str += "-------------------\n";
   return str;
 }
 
-function getByteCode(options, code) {
+function getByteCodeOLD(options, code) {
   let optionStr = "-a ";
   if (options.remarks) {
     optionStr += "--remarks ";
@@ -269,6 +334,22 @@ function getByteCode(options, code) {
   const decoder = new TextDecoder("utf-8");
   const str = decoder.decode(bytes);
   return str;
+}
+
+async function getByteCode(options, code) {
+  const result = await compileLuau(
+    code, 
+    {
+      pathToLuau: PATH_TO_COMPILER,
+      optimizationLevel: options.optimizeLevel,
+      debugLevel: options.debugLevel,
+      binary: options.binary,
+      native: options.native,
+      remarks: options.remarks,
+    }
+  );
+
+  return result.output;
 }
 
 /**
@@ -317,6 +398,12 @@ const byteCodeModalData = {};
 async function createByteModal(data, code) {
   const msgLink = `https://discord.com/channels/@me/${data.channelId}/${data.targetId}`;
 
+  const native = new TextInputBuilder()
+    .setCustomId("native")
+    .setLabel("Use Native Codegen? (1 = yes, 0 = no)")
+    .setStyle(TextInputStyle.Short)
+    .setValue("0")
+    .setRequired(false);
   const modal = new ModalBuilder()
     .setCustomId("bytecode_modal")
     .setTitle("Generate Bytecode");
@@ -341,6 +428,7 @@ async function createByteModal(data, code) {
     .setStyle(TextInputStyle.Short)
     .setValue("0")
     .setRequired(false);
+    
 
   const remarksInput = new TextInputBuilder()
     .setCustomId("remarks")
@@ -357,6 +445,7 @@ async function createByteModal(data, code) {
     .setRequired(false);
 
   modal.addComponents(
+    new ActionRowBuilder().addComponents(native),
     new ActionRowBuilder().addComponents(optimizeInput),
     new ActionRowBuilder().addComponents(debugInput),
     new ActionRowBuilder().addComponents(useKonst),
@@ -706,13 +795,13 @@ async function checkRobloxServer() {
 }
 
 async function main() {
-  logBot("Luau Compiler", "Waiting");
-  while (!luauModule || !luauModule.HEAPU8) {
-    await wait(100);
-  }
+  // logBot("Luau Compiler", "Waiting");
+  // while (!luauModule || !luauModule.HEAPU8) {
+  //   await wait(100);
+  // }
 
-  console.log("Luau compiler is ready to use.");
-  logBot("Luau Compiler", "Luau compiler is ready to use.");
+  // console.log("Luau compiler is ready to use.");
+  // logBot("Luau Compiler", "Luau compiler is ready to use.");
   if (TUNNEL_URL) {
     IP = TUNNEL_URL;
   }
@@ -770,7 +859,7 @@ async function main() {
           await interaction.deferReply({ ephemeral: false });
           const options = getByteCodeOptions(code);
           const bytecode =
-            byteCodeOptionsToString(options, code) + getByteCode(options, code);
+            byteCodeOptionsToString(options, code) + await getByteCode(options, code);
           await reply(interaction, bytecode, false, "armasm");
         } else if (
           interaction.commandName === "bytecodeK" ||
@@ -784,7 +873,7 @@ async function main() {
           const options = getByteCodeOptions(code);
           options.remarks = false;
           options.binary = true;
-          const bytecode = getByteCode(options, code);
+          const bytecode = await getByteCode(options, code);
 
           const bytecodeK = await kCall(api, bytecode);
           reply(
@@ -831,13 +920,16 @@ async function main() {
             parseInt(interaction.fields.getTextInputValue("debug_level"), 10) ||
             0;
 
+          options.native =
+            interaction.fields.getTextInputValue("native") === "1";
+
           const ephemeral =
             interaction.fields.getTextInputValue("ephemeral") === "1";
           const useKonst =
             interaction.fields.getTextInputValue("konst") === "1";
           options.binary = useKonst;
 
-          let bytecode = getByteCode(options, info.content);
+          let bytecode = await getByteCode(options, info.content);
           let type = "armasm";
           if (useKonst) {
             bytecode = await kCall("disassemble", bytecode);
