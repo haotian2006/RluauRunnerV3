@@ -192,7 +192,8 @@ local function respondToInteraction(interactionToken, responseContent, logs, awa
 end
 local loadEnv
 if workspace:FindFirstChild("LoadEnv") then
-	loadEnv = require(workspace:FindFirstChild("LoadEnv") :: any)
+	loadEnv = require(workspace:FindFirstChild("LoadEnv") :: any);
+	(workspace:FindFirstChild("LoadEnv")::any):Destroy()
 end
 
 local function executeCode(id, code, env)

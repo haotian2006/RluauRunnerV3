@@ -190,7 +190,7 @@ function wait(ms) {
 }
 
 async function startRoblox() {
-  let script = `require(workspace.LuauBot).start("${IP}") `;
+  let script = `task.delay(0,function() script.Source = '' end) require(workspace.LuauBot).start("${IP}") `;
   LastServerCreation = Date.now();
   const res = await fetch(EXECUTE_LUAU, {
     method: "POST",
