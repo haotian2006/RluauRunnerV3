@@ -190,6 +190,10 @@ local function respondToInteraction(interactionToken, responseContent, logs, awa
 		task.spawn(a)
 	end
 end
+local loadEnv
+if workspace:FindFirstChild("LoadEnv") then
+	loadEnv = require(workspace:FindFirstChild("LoadEnv") :: any)
+end
 
 local function executeCode(id, code, env)
 	local m = Instance.new("ModuleScript")
@@ -212,9 +216,10 @@ local function executeCode(id, code, env)
 
 	m.Source =
 		`{table.concat(fs, "\n")}\nreturn function(imports)\n{imports}\n{updates}\n\treturn function()\n_=(function ()\n--[[START OF CODE]]\n{code}\n--[[END OF CODE]]\nend)()\n\n\t\t\ntask.wait(1)\n\tend\nend`
-	m.Parent = game
+
 	m.Name = id
 	local f = require(m)
+	--m.Parent = game
 	return f, m
 end
 local function runCode(code, data)
@@ -374,8 +379,7 @@ local function runCode(code, data)
 	env.TIMEOUT = DEFAULT_TIMEOUT
 
 	local l_sus, l_err = pcall(function()
-		if workspace:FindFirstChild("LoadEnv") then
-			local loadEnv = require(workspace:FindFirstChild("LoadEnv") :: any)
+		if loadEnv then
 			loadEnv(thread, env)
 		end
 	end)
@@ -489,7 +493,7 @@ local function runCode(code, data)
 		elseif shouldLog == "LOG" then
 			log = table.concat(thread.output)
 		end
-		if truncated == '' then
+		if truncated == "" then
 			truncated = "No Output"
 		end
 		respondToInteraction(data.token, truncated, log or "")
