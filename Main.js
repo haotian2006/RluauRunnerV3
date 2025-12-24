@@ -26,6 +26,7 @@ const {
   englishRecommendedTransformers,
 } = require("obscenity");
 
+
 const FILTER_BAD_WORDS = true;
 require("dotenv").config();
 
@@ -42,10 +43,11 @@ const TUNNEL_URL = process.env.TUNNEL_URL;
 const FORM_ID = process.env.FORM_ID;
 const FORM_URL = `https://docs.google.com/forms/d/e/${FORM_ID}/formResponse`;
 
-const SERVER_CREATION_COOL_DOWN = 1000 * 10;
-const SERVER_RUN_TIME_MAX = 1000 * 60 * 1.5;
+const SERVER_CREATION_COOL_DOWN = 1000 * 30;
+const SERVER_RUN_TIME_MAX = 1000 * 60 * 1.5; //This is how much before a new server is created
 const SERVER_CHECK_INTERVAL = 1000;
 const SERVER_PING_TIMEOUT = 1000 * 5;
+const SERVER_TIME_OUT = "180s"; // this is how much before a server timeouts
 
 
 let IP = "";
@@ -130,7 +132,7 @@ function logBot(name, data) {
 // });
 
 async function compileLuau(code, options) {
-  const { pathToLuau, optimizationLevel, debugLevel, native, remarks,binary } =
+  const { pathToLuau, optimizationLevel, debugLevel, native, remarks,binary, architecture } =
     options;
 
   return new Promise((resolve, reject) => {
@@ -146,6 +148,7 @@ async function compileLuau(code, options) {
 
     if (native) {
       args.push("--codegen");
+      args.push(`--target=${architecture}`);
     } else if (remarks) {
       args.push("--remarks");
     } else if (binary) {
@@ -200,6 +203,7 @@ async function startRoblox() {
     },
     body: JSON.stringify({
       script: script,
+      timeout: SERVER_TIME_OUT,
     }),
   });
   if (!res.ok) {
@@ -284,7 +288,9 @@ function getByteCodeOptions(code) {
   }
   const oMatch = code.match("--!optimize (\\d+)");
   const dMatch = code.match("--!debug (\\d+)");
+  const aMatch = code.match("--!architecture (\\S+)");
   let options = {
+    architecture: aMatch ? aMatch[1] : "x64",
     native : code.indexOf("--!native") !== -1,
     binary: code.indexOf("--!binary") !== -1,
     remarks: code.indexOf("--!remarks") !== -1,
@@ -306,6 +312,7 @@ function byteCodeOptionsToString(options) {
   }
   if (options.native) {
     str += "Native Codegen: Enabled\n";
+    str += `Architecture: ${options.architecture}\n`;
   }
   str += `OptimizeLevel: ${options.optimizeLevel}\n`;
   str += `DebugLevel: ${options.debugLevel}\n`;
@@ -346,6 +353,7 @@ async function getByteCode(options, code) {
       binary: options.binary,
       native: options.native,
       remarks: options.remarks,
+      architecture: options.architecture,
     }
   );
 
@@ -398,6 +406,12 @@ const byteCodeModalData = {};
 async function createByteModal(data, code) {
   const msgLink = `https://discord.com/channels/@me/${data.channelId}/${data.targetId}`;
 
+  const architectureInput = new TextInputBuilder()
+    .setCustomId("architecture")
+    .setLabel("Target Architecture(x64, a64, a64_nf, x64_ms)")
+    .setStyle(TextInputStyle.Short)
+    .setValue("")
+    .setRequired(false);
   const native = new TextInputBuilder()
     .setCustomId("native")
     .setLabel("Use Native Codegen? (1 = yes, 0 = no)")
@@ -445,10 +459,11 @@ async function createByteModal(data, code) {
     .setRequired(false);
 
   modal.addComponents(
-    new ActionRowBuilder().addComponents(native),
     new ActionRowBuilder().addComponents(optimizeInput),
+    // new ActionRowBuilder().addComponents(native),
+    new ActionRowBuilder().addComponents(architectureInput),
     new ActionRowBuilder().addComponents(debugInput),
-    new ActionRowBuilder().addComponents(useKonst),
+    // new ActionRowBuilder().addComponents(useKonst),
     new ActionRowBuilder().addComponents(remarksInput),
     new ActionRowBuilder().addComponents(ephemeralInput)
   );
@@ -610,6 +625,7 @@ function decodeBuffer(data) {
 
 app.patch("/respond", async (req, res) => {
   const token = req.body.token;
+  const serverNum = req.body.serverNum;
   let _interaction;
   let _link;
   try {
@@ -632,7 +648,7 @@ app.patch("/respond", async (req, res) => {
     }
 
     const embed = new EmbedBuilder()
-      .setTitle("Luau Compiler Results")
+      .setTitle("Luau Compiler Results | Server #" + serverNum)
       .setDescription(
         `Requested by: <@${interaction.user.id}>` +
           `\`\`\`ansi\n${censorText(responseContent)}\n\`\`\``
@@ -700,11 +716,12 @@ app.patch("/respond", async (req, res) => {
 app.get("/", (req, res) => {
   res.send("Bot is running!");
 });
-
+let SERVER_NUMBERS = 0;
 app.post("/start", async (req, res) => {
   RunningServer = req.body.ServerId;
   RunningServerTime = Date.now();
-  res.json({ message: "Server started" });
+  SERVER_NUMBERS+=1;
+  res.json({ message: "Server started",id: SERVER_NUMBERS%256 });
 });
 
 app.post("/ping", (req, res) => {
@@ -909,6 +926,8 @@ async function main() {
           const info = byteCodeModalData[interaction.user.id];
           if (!info) return;
           const options = getByteCodeOptions();
+          options.architecture =
+            interaction.fields.getTextInputValue("architecture") || "";
           options.remarks =
             interaction.fields.getTextInputValue("remarks") === "1";
           options.optimizeLevel =
@@ -920,21 +939,21 @@ async function main() {
             parseInt(interaction.fields.getTextInputValue("debug_level"), 10) ||
             0;
 
-          options.native =
-            interaction.fields.getTextInputValue("native") === "1";
+          options.native = options.architecture !== ""  
+            // interaction.fields.getTextInputValue("native") === "1";
 
           const ephemeral =
             interaction.fields.getTextInputValue("ephemeral") === "1";
-          const useKonst =
-            interaction.fields.getTextInputValue("konst") === "1";
-          options.binary = useKonst;
+          // const useKonst =
+          //   interaction.fields.getTextInputValue("konst") === "1";
+          // options.binary = useKonst;
 
           let bytecode = await getByteCode(options, info.content);
           let type = "armasm";
-          if (useKonst) {
-            bytecode = await kCall("disassemble", bytecode);
-            type = "lua";
-          }
+          // if (useKonst) {
+          //   bytecode = await kCall("disassemble", bytecode);
+          //   type = "lua";
+          // }
           await interaction.deferReply({ ephemeral: ephemeral });
 
           reply(

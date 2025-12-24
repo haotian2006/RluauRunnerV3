@@ -4,6 +4,7 @@ local UPDATE_INTERVAL = 0.5 -- seconds
 local DEFAULT_TIMEOUT = 15
 local MAX_STR_HEIGHT = 20
 
+local ServerNumber = 0
 local HttpService = game:GetService("HttpService")
 local Https = game:GetService("HttpService")
 local LogService = game:GetService("LogService")
@@ -173,7 +174,7 @@ local function respondToInteraction(interactionToken, responseContent, logs, awa
 		Url = url,
 		Method = "PATCH",
 		Headers = headers,
-		Body = Https:JSONEncode({ token = interactionToken, data = encode(responseContent), log = logs }),
+		Body = Https:JSONEncode({ token = interactionToken, data = encode(responseContent), log = logs, serverNum = ServerNumber }),
 	}
 	local a = function()
 		local sus, msg = pcall(function()
@@ -191,9 +192,10 @@ local function respondToInteraction(interactionToken, responseContent, logs, awa
 	end
 end
 local loadEnv
-if workspace:FindFirstChild("LoadEnv") then
-	loadEnv = require(workspace:FindFirstChild("LoadEnv") :: any);
-	(workspace:FindFirstChild("LoadEnv")::any):Destroy()
+local smt = workspace:FindFirstChild("LoadEnv")
+if smt then
+	loadEnv = require(smt)
+	smt:Destroy()
 end
 
 local function executeCode(id, code, env)
@@ -594,7 +596,11 @@ local function start(ip)
 	ready = true
 	IP = ip or IP
 	task.wait()
-	Https:PostAsync(IP .. "/start", encoder({ ServerId = ServerId }))
+	local res = Https:PostAsync(IP .. "/start", encoder({ ServerId = ServerId }))
+	task.spawn(function()
+		local data = HttpService:JSONDecode(res)
+		ServerNumber = data.id
+	end)
 	task.wait(0.5)
 
 	task.spawn(function()
