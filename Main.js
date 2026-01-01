@@ -24,6 +24,7 @@ const {
   englishDataset,
   englishRecommendedTransformers,
 } = require("obscenity");
+const { zstdCompress } = require("zlib");
 
 const FILTER_BAD_WORDS = true;
 require("dotenv").config();
@@ -581,6 +582,11 @@ async function createCompileModal(data, code) {
   delete byteCodeModalData[data.user.id];
 }
 
+function encodeZstd(str){
+  return zstd.compress(Buffer.from(str, "utf-8"),10).toString("base64");
+}
+
+
 async function sendCompileRequestToRoblox(
   code,
   interactionId,
@@ -593,7 +599,7 @@ async function sendCompileRequestToRoblox(
 ) {
   const uuid = generateUUID();
   ExecuteTasks[uuid] = {
-    content: code,
+    content: encodeZstd(code),
     channelId: channelId,
     targetId: targetId,
     id: interactionId,
@@ -647,9 +653,6 @@ async function reply(
   }
 }
 
-function encodeZstd(str){
-  return zstd.compress(Buffer.from(str, "utf-8")).toString("base64");
-}
 
 function decodeBuffer(data) {
   if (data.zbase64) {
@@ -834,6 +837,10 @@ app.post("/getInputs", async (req, res) => {
 
   for (const id in Inputs) {
     if (!interacted.includes(Inputs[id].uid)) {
+      if (!Inputs[id].encoded){
+        Inputs[id].input = encodeZstd(Inputs[id].input);
+        Inputs[id].encoded = true;
+      }
       data.push(Inputs[id]);
     }
   }

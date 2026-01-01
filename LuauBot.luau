@@ -20,6 +20,7 @@ local function UPDATE_INTERVAL_SCALE(count)
 end
 
 local ServerNumber = 0
+local EncodingService = game:GetService("EncodingService")
 local HttpService = game:GetService("HttpService")
 local Https = game:GetService("HttpService")
 local LogService = game:GetService("LogService")
@@ -293,7 +294,19 @@ local function executeCode(id, code, env)
 	--m.Parent = game
 	return f, m
 end
-local function runCode(code, data)
+
+local function decodeZstd(data)
+	return pcall(function()
+		return buffer.tostring(EncodingService:DecompressBuffer(EncodingService:Base64Decode(buffer.fromstring(data)), Enum.CompressionAlgorithm.Zstd, 10))
+	end)
+end
+
+local function runCode(compCode, data)
+	local decodePass, code = decodeZstd(compCode)
+	if not decodePass then
+		respondToInteraction(data.token, `Error while decoding: {code} | {tableToString(compCode)}`, "")
+		return
+	end
 	if code:sub(1, 1) == "=" then
 		code = `print({code:sub(2)})`
 	end
@@ -579,14 +592,14 @@ local function runCode(code, data)
 			table.insert(log, `Run Time: {os.clock() - thread.start} Seconds\n`)
 			table.insert(log, `Channel Link: {link}\n`)
 			if #parsedInputs > 0 then
-				for i,v in parsedInputs do
-					parsedInputs[i] = v:sub(1, 20) .. ( #v > 20 and "[TRUNCATED]" or "" )
+				for i, v in parsedInputs do
+					parsedInputs[i] = v:sub(1, 20) .. (#v > 20 and "[TRUNCATED]" or "")
 				end
 				table.insert(log, "Inputs: " .. table.concat(parsedInputs, " | ") .. "\n")
 			end
 			if #inputs > 0 then
-				for i,v in inputs do
-					inputs[i] = v:sub(1, 20) .. ( #v > 20 and "[TRUNCATED]" or "" )
+				for i, v in inputs do
+					inputs[i] = v:sub(1, 20) .. (#v > 20 and "[TRUNCATED]" or "")
 				end
 				table.insert(log, "Inputs in Queue: " .. table.concat(inputs, " | ") .. "\n")
 			end
@@ -642,8 +655,11 @@ local function handleInputs()
 	local decodedData: { { input: string, id: number, uid: string } } = Https:JSONDecode(res.Body)
 	for _, data in decodedData do
 		local id = data.id
-		local input = data.input
 		table.insert(processedInputs, data.uid)
+		local sus,input = decodeZstd(data.input)
+		if not sus then
+			input = '[ERROR WHILE DECODING INPUT]: '..input
+		end
 		for _, process in ProcessesByUser[id] or {} do
 			table.insert(process.inputs, input)
 		end
