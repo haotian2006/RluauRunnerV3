@@ -1,8 +1,22 @@
 local IP = ""
 local POLL_RATE = 1000 --ms
-local UPDATE_INTERVAL = 0.5 -- seconds
-local DEFAULT_TIMEOUT = 15
-local MAX_STR_HEIGHT = 20
+local DEFAULT_TIMEOUT = 25 -- seconds
+local MAX_STR_HEIGHT = 25
+local MAX_RESPONSES_BEFORE_TIMEOUT = 50
+
+--[[
+	Takes in the number of responses sent so far and returns how often should the next update be sent.
+]]
+local function UPDATE_INTERVAL_SCALE(count)
+	if count <=10 then
+		return 0.1
+	elseif count <= 25 then
+		return 0.25
+	elseif count <= 50 then
+		return 0.5
+	end
+	return 1
+end
 
 local ServerNumber = 0
 local HttpService = game:GetService("HttpService")
@@ -13,6 +27,8 @@ local ServerId = Https:GenerateGUID()
 local Closed = false
 local Processes = {}
 local ProcessesByUser = {}
+
+
 
 local encoder = function(data)
 	return Https:JSONEncode(data)
@@ -174,7 +190,12 @@ local function respondToInteraction(interactionToken, responseContent, logs, awa
 		Url = url,
 		Method = "PATCH",
 		Headers = headers,
-		Body = Https:JSONEncode({ token = interactionToken, data = encode(responseContent), log = logs, serverNum = ServerNumber }),
+		Body = Https:JSONEncode({
+			token = interactionToken,
+			data = encode(responseContent),
+			log = logs,
+			serverNum = ServerNumber,
+		}),
 	}
 	local a = function()
 		local sus, msg = pcall(function()
@@ -192,7 +213,7 @@ local function respondToInteraction(interactionToken, responseContent, logs, awa
 	end
 end
 local loadEnv
-local smt = workspace:FindFirstChild("LoadEnv")
+local smt = script:FindFirstChild("LoadEnv")
 if smt then
 	loadEnv = require(smt)
 	smt:Destroy()
@@ -253,6 +274,16 @@ local function runCode(code, data)
 		end
 	end
 
+	local function numRunning()
+		local count = 0
+		for i, v in runningThreads do
+			if coroutine.status(v) ~= "dead" then
+				count += 1
+			end
+		end
+		return count
+	end
+
 	local function hasRunning()
 		for i, v in runningThreads do
 			if coroutine.status(v) ~= "dead" then
@@ -297,12 +328,14 @@ local function runCode(code, data)
 	}, { __index = coroutine })
 	env.TIMESTAMP = false
 	env.OUTPUT_LOGS = false
+	local parsedInputs = {}
 	env.io = {
 		read = function()
 			local info
 			while task.wait() and not info do --ik this is bad but i'm lazy and this works
 				info = table.remove(inputs, 1)
 			end
+			table.insert(parsedInputs, info)
 			return info
 		end,
 		write = function(...)
@@ -336,7 +369,7 @@ local function runCode(code, data)
 			noTimeStamp and text .. "\n" or (string.format(`[%.3f] %s\n`, time, text .. (newLine and "\n" or "")))
 		)
 	end
-
+	env.thread = thread
 	env.println = function(str, line)
 		str = tostring(str)
 		if not line then
@@ -433,19 +466,27 @@ local function runCode(code, data)
 		end
 	end)
 	table.insert(runningThreads, thread.running)
-
+	task.wait(0.5)
+	local numOfResponses = 0
 	thread.timeOutThread = task.spawn(function()
 		local waitTime = 0
 		local TIMEOUT = env.TIMEOUT
-		while (os.clock() - thread.start < TIMEOUT and sus) or thread.blocked do
+		while
+			(
+				(os.clock() - thread.start < TIMEOUT or numOfResponses < MAX_RESPONSES_BEFORE_TIMEOUT)
+				and sus
+				and numRunning() > 1
+			) or thread.blocked
+		do
 			TIMEOUT = env.TIMEOUT
 			local outStr = table.concat(truncateArray(thread.output))
 			if lastOutput ~= outStr then
 				local truncated = truncateString(outStr)
 				lastOutput = outStr
+				numOfResponses += 1
 				respondToInteraction(data.token, truncated)
 			end
-			waitTime += task.wait(UPDATE_INTERVAL)
+			waitTime += task.wait(UPDATE_INTERVAL_SCALE(numOfResponses))
 		end
 
 		local shouldLog = (env :: any).OUTPUT_LOGS
@@ -464,7 +505,8 @@ local function runCode(code, data)
 				string.format(`[2;36m[%.3f] %s[0m`, os.clock() - start, `Script Reached its lifespan ({TIMEOUT}s)`)
 			)
 		elseif shouldLog ~= "LOG" and hasRunning() then
-			table.insert(thread.output, createText(`Script Reached its lifespan ({TIMEOUT}s)`, 2))
+			table.insert(thread.output, createText(`Script Reached its max lifespan ({TIMEOUT}s)\n`, 2))
+			table.insert(thread.output, createText(`You can increase it by setting the "TIMEOUT" global`, 2))
 		end
 
 		local truncated = truncateString(table.concat(truncateArray(thread.output)))
@@ -474,7 +516,6 @@ local function runCode(code, data)
 			local link = getLinkFromData(data)
 			log = {}
 			local date = DateTime.now():ToUniversalTime()
-			table.insert(log, "Logs For Compilation\n")
 			table.insert(
 				log,
 				string.format(
@@ -490,6 +531,12 @@ local function runCode(code, data)
 			table.insert(log, `User: {name} ({id})\n`)
 			table.insert(log, `Run Time: {os.clock() - thread.start} Seconds\n`)
 			table.insert(log, `Channel Link: {link}\n`)
+			if #parsedInputs > 0 then
+				table.insert(log, "Inputs: " .. table.concat(parsedInputs, " | ") .. "\n")
+			end
+			if #inputs > 0 then
+				table.insert(log, "Inputs in Queue: " .. table.concat(inputs, " | ") .. "\n")
+			end
 			table.insert(log, "------------------------------\n")
 			table.insert(log, table.concat(thread.output))
 			log = table.concat(log)

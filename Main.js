@@ -14,7 +14,6 @@ const axios = require("axios");
 const express = require("express");
 const { console } = require("inspector");
 const zstd = require("zstd-napi");
-const { json } = require("stream/consumers");
 
 const os = require("os");
 const { spawn } = require("child_process");
@@ -25,7 +24,6 @@ const {
   englishDataset,
   englishRecommendedTransformers,
 } = require("obscenity");
-
 
 const FILTER_BAD_WORDS = true;
 require("dotenv").config();
@@ -42,22 +40,31 @@ const EXECUTE_LUAU = `https://apis.roblox.com/cloud/v2/universes/${UNIVERSE_ID}/
 const TUNNEL_URL = process.env.TUNNEL_URL;
 const FORM_ID = process.env.FORM_ID;
 const FORM_URL = `https://docs.google.com/forms/d/e/${FORM_ID}/formResponse`;
+const BACK_UP_EXECUTE_URL = process.env.BACK_UP_PATH || "";
+const BACK_UP_KEY = process.env.BACK_UP_KEY || "";
+const LUAU_MODULE = process.env.LUAU_MODULE || "";
+const BACKUP_LUAU_MODULE = process.env.BACKUP_LUAU_MODULE || "";
 
-const SERVER_CREATION_COOL_DOWN = 1000 * 30;
-const SERVER_RUN_TIME_MAX = 1000 * 60 * 1.5; //This is how much before a new server is created
+const SERVER_CREATION_COOL_DOWN = 1000 * 20;
+const SERVER_RUN_TIME_MAX = 1000 * 60 * 1.5; //This is how much before a new server is created regardless if old one is running
 const SERVER_CHECK_INTERVAL = 1000;
 const SERVER_PING_TIMEOUT = 1000 * 5;
-const SERVER_TIME_OUT = "180s"; // this is how much before a server timeouts
-
+const SERVER_TIME_OUT = "300s"; // this is how much before a server timeouts
+const BACKUP_SERVER_WAIT_TIME = 1000 * 60 * 2;
 
 let IP = "";
 let RunningServer = "";
 let RunningServerTime = 0;
 let LastServerPing = 0;
 
+let BackUpEndTime = 0;
+
 let LastServerCreation = 0;
 
-const Matcher = new RegExpMatcher({ ...englishDataset.build(), ...englishRecommendedTransformers });
+const Matcher = new RegExpMatcher({
+  ...englishDataset.build(),
+  ...englishRecommendedTransformers,
+});
 const Censor = new TextCensor();
 
 function censorText(text) {
@@ -132,15 +139,21 @@ function logBot(name, data) {
 // });
 
 async function compileLuau(code, options) {
-  const { pathToLuau, optimizationLevel, debugLevel, native, remarks,binary, architecture } =
-    options;
+  const {
+    pathToLuau,
+    optimizationLevel,
+    debugLevel,
+    native,
+    remarks,
+    binary,
+    architecture,
+  } = options;
 
   return new Promise((resolve, reject) => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "luau-"));
 
     const inputPath = path.join(tmpDir, "Code.luau");
     const outputPath = path.join(tmpDir, "Bytecode.luau");
-
 
     fs.writeFileSync(inputPath, code, "utf8");
 
@@ -152,14 +165,13 @@ async function compileLuau(code, options) {
     } else if (remarks) {
       args.push("--remarks");
     } else if (binary) {
-      args.push("--binary"); 
+      args.push("--binary");
     }
     args.push(`-g${debugLevel}`);
     args.push(`-O${optimizationLevel}`);
     args.push("--vector-lib=Vector3");
     args.push("--vector-ctor=new");
     args.push("--vector-type=Vector3");
-
 
     args.push(inputPath);
     console.log(args);
@@ -192,14 +204,21 @@ function wait(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function startRoblox() {
-  let script = `task.delay(0,function() script.Source = '' end) require(workspace.LuauBot).start("${IP}") `;
+let SERVERS_CREATED = 0;
+async function startRoblox(
+  path = EXECUTE_LUAU,
+  key = ROBLOX_API_KEY,
+  module = LUAU_MODULE
+) {
+  let script = `task.delay(0,function() script.Source = '' end) require(${
+    module !== "" ? module : "workspace.LuauBot"
+  }).start("${IP}") `;
   LastServerCreation = Date.now();
-  const res = await fetch(EXECUTE_LUAU, {
+  const res = await fetch(path, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      "x-api-key": ROBLOX_API_KEY,
+      "x-api-key": key,
     },
     body: JSON.stringify({
       script: script,
@@ -211,7 +230,10 @@ async function startRoblox() {
     log("0", "BOT", "Failed to start Roblox", res.statusText);
     return false;
   }
-
+  SERVERS_CREATED++;
+  setTimeout(() => {
+    SERVERS_CREATED--;
+  }, 90000);
   return true;
 }
 
@@ -291,7 +313,7 @@ function getByteCodeOptions(code) {
   const aMatch = code.match("--!architecture (\\S+)");
   let options = {
     architecture: aMatch ? aMatch[1] : "x64",
-    native : code.indexOf("--!native") !== -1,
+    native: code.indexOf("--!native") !== -1,
     binary: code.indexOf("--!binary") !== -1,
     remarks: code.indexOf("--!remarks") !== -1,
     optimizeLevel: oMatch ? parseInt(oMatch[1]) : 2,
@@ -300,7 +322,7 @@ function getByteCodeOptions(code) {
   if (options.native || options.remarks) {
     options.binary = false;
   }
-    options.optimizeLevel = Math.max(0, Math.min(2, options.optimizeLevel));
+  options.optimizeLevel = Math.max(0, Math.min(2, options.optimizeLevel));
   options.debugLevel = Math.max(0, Math.min(2, options.debugLevel));
   return options;
 }
@@ -344,20 +366,29 @@ function getByteCodeOLD(options, code) {
 }
 
 async function getByteCode(options, code) {
-  const result = await compileLuau(
-    code, 
-    {
-      pathToLuau: PATH_TO_COMPILER,
-      optimizationLevel: options.optimizeLevel,
-      debugLevel: options.debugLevel,
-      binary: options.binary,
-      native: options.native,
-      remarks: options.remarks,
-      architecture: options.architecture,
-    }
-  );
+  const result = await compileLuau(code, {
+    pathToLuau: PATH_TO_COMPILER,
+    optimizationLevel: options.optimizeLevel,
+    debugLevel: options.debugLevel,
+    binary: options.binary,
+    native: options.native,
+    remarks: options.remarks,
+    architecture: options.architecture,
+  });
 
   return result.output;
+}
+
+async function checkAndGetAttachmentText(attachment) {
+  const validTextExtensions = [".txt", ".lua", ".luau", ".json"];
+  const isTextFile = validTextExtensions.some((ext) =>
+    attachment.name.toLowerCase().endsWith(ext)
+  );
+
+  if (!isTextFile) {
+    return null;
+  }
+  return await fetchFileContent(attachment.url);
 }
 
 /**
@@ -377,8 +408,13 @@ async function getCodeFromContextMenu(interaction, noCode) {
   }
   let codeBlocks = [...content.matchAll(regex)].map((m) => m[1].trim());
   if (attachments && attachments.url) {
-    content = await fetchFileContent(attachments.url);
-    codeBlocks.unshift(content);
+   
+    let data = await checkAndGetAttachmentText(attachments);
+    
+    if (data) {
+      content = data;
+      codeBlocks.unshift(content);
+    }
   }
   if (noCode) {
     return content;
@@ -442,7 +478,6 @@ async function createByteModal(data, code) {
     .setStyle(TextInputStyle.Short)
     .setValue("0")
     .setRequired(false);
-    
 
   const remarksInput = new TextInputBuilder()
     .setCustomId("remarks")
@@ -623,6 +658,8 @@ function decodeBuffer(data) {
   }
 }
 
+
+let UsingBackup = false;
 app.patch("/respond", async (req, res) => {
   const token = req.body.token;
   const serverNum = req.body.serverNum;
@@ -650,10 +687,13 @@ app.patch("/respond", async (req, res) => {
     const embed = new EmbedBuilder()
       .setTitle("Luau Compiler Results | Server #" + serverNum)
       .setDescription(
-        `Requested by: <@${interaction.user.id}>` +
+        (UsingBackup
+          ? `[WARNING] Server creation quota reached. New sessions will be created less often. Frees <t:${BackUpEndTime}:R>. \n`
+          : "") +
+          `Requested by: <@${interaction.user.id}>` +
           `\`\`\`ansi\n${censorText(responseContent)}\n\`\`\``
       )
-      .setColor(3447003);
+      .setColor(UsingBackup ? 16488960 : 3447003);
 
     // .addFields({
     //   name: "Remember To Follow the TOS",
@@ -720,8 +760,8 @@ let SERVER_NUMBERS = 0;
 app.post("/start", async (req, res) => {
   RunningServer = req.body.ServerId;
   RunningServerTime = Date.now();
-  SERVER_NUMBERS+=1;
-  res.json({ message: "Server started",id: SERVER_NUMBERS%256 });
+  SERVER_NUMBERS += 1;
+  res.json({ message: "Server started", id: SERVER_NUMBERS % 256 });
 });
 
 app.post("/ping", (req, res) => {
@@ -783,12 +823,42 @@ async function checkRobloxServer() {
     const hasTask = Object.keys(ExecuteTasks).length > 0;
     const serverTimeout = Date.now() - RunningServerTime > SERVER_RUN_TIME_MAX;
     const pingTimeout = Date.now() - LastServerPing > SERVER_PING_TIMEOUT;
-    const lastCreationDebounce =
-      Date.now() - LastServerCreation > SERVER_CREATION_COOL_DOWN;
+    let debounce =
+      SERVERS_CREATED <= 2
+        ? SERVER_CREATION_COOL_DOWN / 1.5
+        : SERVERS_CREATED >= 5
+        ? SERVER_CREATION_COOL_DOWN * 1.5
+        : SERVER_CREATION_COOL_DOWN;
+    if (UsingBackup) {
+      debounce = SERVER_CREATION_COOL_DOWN * 2;
+    }
+    const lastCreationDebounce = Date.now() - LastServerCreation > debounce;
     if (hasTask && (serverTimeout || pingTimeout) && lastCreationDebounce) {
       console.log("Starting new Roblox server...");
       logBot("Roblox Server", "Starting new Roblox server...");
-      if (!(await startRoblox()) && hasTask) {
+
+      let started = UsingBackup ? false : await startRoblox();
+      if (!started && BACK_UP_EXECUTE_URL !== "") {
+        if (!UsingBackup) {
+          BackUpEndTime = Math.floor(
+            (Date.now() + BACKUP_SERVER_WAIT_TIME) / 1000
+          );
+          setTimeout(() => {
+            UsingBackup = false;
+          }, BACKUP_SERVER_WAIT_TIME);
+        }
+        UsingBackup = true;
+        logBot(
+          "Roblox Server",
+          "Failed to start primary Roblox server, attempting backup..."
+        );
+        started = await startRoblox(
+          BACK_UP_EXECUTE_URL,
+          BACK_UP_KEY,
+          BACKUP_LUAU_MODULE
+        );
+      }
+      if (!started) {
         Object.keys(ExecuteTasks).forEach((key) => {
           const task = ExecuteTasks[key];
           if (!task) return;
@@ -838,8 +908,8 @@ async function main() {
             content:
               code.length > 100
                 ? `sent input (${code.length} characters)`
-                : `sent '${censorText(code)}'`,
-            ephemeral: true,
+                : `sent '${code}'`,
+            
           });
 
           log(
@@ -876,7 +946,8 @@ async function main() {
           await interaction.deferReply({ ephemeral: false });
           const options = getByteCodeOptions(code);
           const bytecode =
-            byteCodeOptionsToString(options, code) + await getByteCode(options, code);
+            byteCodeOptionsToString(options, code) +
+            (await getByteCode(options, code));
           await reply(interaction, bytecode, false, "armasm");
         } else if (
           interaction.commandName === "bytecodeK" ||
@@ -939,8 +1010,8 @@ async function main() {
             parseInt(interaction.fields.getTextInputValue("debug_level"), 10) ||
             0;
 
-          options.native = options.architecture !== ""  
-            // interaction.fields.getTextInputValue("native") === "1";
+          options.native = options.architecture !== "";
+          // interaction.fields.getTextInputValue("native") === "1";
 
           const ephemeral =
             interaction.fields.getTextInputValue("ephemeral") === "1";
