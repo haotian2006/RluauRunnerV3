@@ -210,7 +210,7 @@ local function sendFileInChunks(token, data)
 	return numChunks
 end
 
-local function respondToInteraction(interactionToken, responseContent, logs, await)
+local function respondToInteraction(interactionToken, responseContent, logs, await, fileType)
 	local url = IP .. "/respond"
 	local headers = {
 		["Content-Type"] = "application/json",
@@ -225,8 +225,6 @@ local function respondToInteraction(interactionToken, responseContent, logs, awa
 		if #logs > 1000 then
 			sections = sendFileInChunks(interactionToken, logs)
 			logs = "[Log too large to send]"
-		else
-			logs = encode(logs)
 		end
 	end
 
@@ -239,6 +237,7 @@ local function respondToInteraction(interactionToken, responseContent, logs, awa
 			data = encode(responseContent),
 			serverNum = ServerNumber,
 			log = logs,
+			fileType = fileType,
 			sections = sections,
 		}),
 	}
@@ -272,8 +271,8 @@ local function executeCode(id, code, env)
 	local imports = ""
 	local updates = ""
 	for k in env do
-		imports ..= `\t{k} = imports.{k}\n`
-		updates ..= `\t\timports.{k} = {k}\n`
+		imports ..= `{k} = imports.{k};`
+		updates ..= `imports.{k} = {k};`
 	end
 	local fs = {}
 
@@ -284,10 +283,11 @@ local function executeCode(id, code, env)
 	env.optimize = code:match("%-%-!optimize%s*(%d+)") or 2
 	table.insert(fs, `--!optimize {env.optimize}`)
 	updates =
-		`\t_ = coroutine.running()\n--Hi I see that you decided to log this file\n\ttask.spawn(function()\n\t\tlocal _=_ while coroutine.status(_) ~= 'dead' do\n{updates}\ntask.wait()\n\t\tend\n\tend)\n`
+		`local _ = coroutine.running();task.spawn(function()local _=_ while coroutine.status(_) ~= 'dead' do {updates} task.wait();end;end);`
 
-	m.Source =
-		`{table.concat(fs, "\n")}\nreturn function(imports)\n{imports}\n{updates}\n\treturn function()\n_=(function ()\n--[[START OF CODE]]\n{code}\n--[[END OF CODE]]\nend)()\n\n\t\t\ntask.wait(1)\n\tend\nend`
+	local src =
+		`{table.concat(fs, "\n")}\nreturn function(imports){imports}{updates}return function() local _=(function () --[[START OF CODE]] \n{code}\n--[[END OF CODE]]\nend)()\n\n\t\t\ntask.wait(1)\n\tend\nend`
+	m.Source = src
 
 	m.Name = id
 	local f = require(m)
@@ -297,7 +297,13 @@ end
 
 local function decodeZstd(data)
 	return pcall(function()
-		return buffer.tostring(EncodingService:DecompressBuffer(EncodingService:Base64Decode(buffer.fromstring(data)), Enum.CompressionAlgorithm.Zstd, 10))
+		return buffer.tostring(
+			EncodingService:DecompressBuffer(
+				EncodingService:Base64Decode(buffer.fromstring(data)),
+				Enum.CompressionAlgorithm.Zstd,
+				10
+			)
+		)
 	end)
 end
 
@@ -388,6 +394,18 @@ local function runCode(compCode, data)
 	}, { __index = coroutine })
 	env.TIMESTAMP = false
 	env.OUTPUT_LOGS = false
+	thread.fileType = ''
+	thread.fileData = ''
+	env.writeFile = function(data, fileType)
+		thread.fileType = fileType
+		thread.fileData = data
+	end
+	env.readFile = function()
+		return thread.fileData or "", thread.fileType or "txt"
+	end
+	env.getOutput = function()
+		return table.concat(output)
+	end
 	local parsedInputs = {}
 	env.io = {
 		read = function()
@@ -549,6 +567,16 @@ local function runCode(compCode, data)
 			waitTime += task.wait(UPDATE_INTERVAL_SCALE(numOfResponses))
 		end
 
+		local fileType
+		local fileData = table.concat(thread.output)
+		if thread.fileType ~= '' then
+			(env :: any).OUTPUT_LOGS = "LOG"
+			fileType = tostring(thread.fileType):lower()
+			if thread.fileData ~= '' then
+				fileData = tostring(thread.fileData)
+			end
+		end
+
 		local shouldLog = (env :: any).OUTPUT_LOGS
 		if not sus then
 			local str = ((env :: any).TIMESTAMP ~= false) and string.format("[%.3f] ", os.clock() - start) or ""
@@ -604,15 +632,15 @@ local function runCode(compCode, data)
 				table.insert(log, "Inputs in Queue: " .. table.concat(inputs, " | ") .. "\n")
 			end
 			table.insert(log, "------------------------------\n")
-			table.insert(log, table.concat(thread.output))
+			table.insert(log, fileData)
 			log = table.concat(log)
 		elseif shouldLog == "LOG" then
-			log = table.concat(thread.output)
+			log = fileData
 		end
 		if truncated == "" then
 			truncated = "No Output"
 		end
-		respondToInteraction(data.token, truncated, log or "")
+		respondToInteraction(data.token, truncated, log or "", nil, fileType)
 
 		Processes[processID] = nil
 		ProcessesByUser[userid][processID] = nil
@@ -656,9 +684,9 @@ local function handleInputs()
 	for _, data in decodedData do
 		local id = data.id
 		table.insert(processedInputs, data.uid)
-		local sus,input = decodeZstd(data.input)
+		local sus, input = decodeZstd(data.input)
 		if not sus then
-			input = '[ERROR WHILE DECODING INPUT]: '..input
+			input = "[ERROR WHILE DECODING INPUT]: " .. input
 		end
 		for _, process in ProcessesByUser[id] or {} do
 			table.insert(process.inputs, input)

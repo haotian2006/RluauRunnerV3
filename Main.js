@@ -53,6 +53,31 @@ const SERVER_PING_TIMEOUT = 1000 * 5;
 const SERVER_TIME_OUT = "300s"; // this is how much before a server timeouts
 const BACKUP_SERVER_WAIT_TIME = 1000 * 60 * 2;
 
+const SupportedFileTypes = new Set([
+  "png",
+  "jpg",
+  "jpeg",
+  "gif",
+  "webp",
+  "svg",
+  "txt",
+  "ansi",
+  "lua",
+  "luau",
+  "json",
+  "xml",
+  "html",
+  "css",
+  "js",
+  "md",
+  "csv",
+  "mp3",
+  "wav",
+  "ogg",
+  "mp4",
+  "webm"
+]);
+
 let IP = "";
 let RunningServer = "";
 let RunningServerTime = 0;
@@ -657,10 +682,9 @@ async function reply(
 function decodeBuffer(data) {
   if (data.zbase64) {
     return zstd
-      .decompress(Buffer.from(data.zbase64, "base64"))
-      .toString("utf-8");
+      .decompress(Buffer.from(data.zbase64, "base64"));
   } else if (data.base64) {
-    return Buffer.from(data.base64, "base64").toString("utf-8");
+    return Buffer.from(data.base64, "base64");
   }
 }
 
@@ -687,9 +711,13 @@ app.patch("/respond", async (req, res) => {
   let _link;
   logBot("Respond Endpoint", `Received response for token: ${token}`);
   try {
-    let responseContent = decodeBuffer(JSON.parse(req.body.data));
+    let responseContent = decodeBuffer(JSON.parse(req.body.data)).toString("utf-8");
 
     let logs = req.body.log;
+    let fileType = req.body.fileType?.toLowerCase();
+    if (!fileType || !SupportedFileTypes.has(fileType)) {
+      fileType = 'ansi';
+    }
     let numSections = req.body.sections;
     const [interaction, originalInteraction] = CompilingTasks[token];
     if (!CompilingTasks[token]) {
@@ -758,9 +786,9 @@ app.patch("/respond", async (req, res) => {
           `Deleted chunked logs: ${logs.length}`
         );
         if (logs === "") {
-          logs = chunkedLogs
-            ? ` (received ${chunkedLogs.length}/${numSections} sections)`
-            : "Failed to retrieve logs";
+            logs = chunkedLogs
+            ? Buffer.from(` (received ${chunkedLogs.length}/${numSections} sections)`, "utf-8")
+            : Buffer.from("Failed to retrieve logs", "utf-8");
         }
       } else {
         logs = decodeBuffer(JSON.parse(logs));
@@ -770,8 +798,8 @@ app.patch("/respond", async (req, res) => {
         embeds: [embed],
         files: [
           {
-            name: "logs.ansi",
-            attachment: Buffer.from(logs, "utf-8"),
+        name: `logs.${fileType}`,
+        attachment: logs,
           },
         ],
       });
