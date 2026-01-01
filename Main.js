@@ -408,9 +408,8 @@ async function getCodeFromContextMenu(interaction, noCode) {
   }
   let codeBlocks = [...content.matchAll(regex)].map((m) => m[1].trim());
   if (attachments && attachments.url) {
-   
     let data = await checkAndGetAttachmentText(attachments);
-    
+
     if (data) {
       content = data;
       codeBlocks.unshift(content);
@@ -648,6 +647,10 @@ async function reply(
   }
 }
 
+function encodeZstd(str){
+  return zstd.compress(Buffer.from(str, "utf-8")).toString("base64");
+}
+
 function decodeBuffer(data) {
   if (data.zbase64) {
     return zstd
@@ -658,19 +661,36 @@ function decodeBuffer(data) {
   }
 }
 
-
 let UsingBackup = false;
+const Chunks = {};
+app.patch("/uploadChunk", async (req, res) => {
+  const chunk = req.body.chunk;
+  const token = req.body.token;
+  const index = req.body.index;
+  if (!Chunks[token]) {
+    Chunks[token] = [];
+    setTimeout(() => {
+      delete Chunks[token];
+    }, 80000);
+  }
+  Chunks[token].push({ index: index, data: chunk });
+  res.status(200).json({ message: "Chunk received" });
+});
+
 app.patch("/respond", async (req, res) => {
   const token = req.body.token;
   const serverNum = req.body.serverNum;
   let _interaction;
   let _link;
+  logBot("Respond Endpoint", `Received response for token: ${token}`);
   try {
     let responseContent = decodeBuffer(JSON.parse(req.body.data));
 
     let logs = req.body.log;
+    let numSections = req.body.sections;
     const [interaction, originalInteraction] = CompilingTasks[token];
     if (!CompilingTasks[token]) {
+      logBot("Respond Endpoint", `No compiling task found for token: ${token}`);
       res.status(500).json({
         message: "Failed to send response to Discord",
         error: "failed",
@@ -681,6 +701,7 @@ app.patch("/respond", async (req, res) => {
     const link = getLinkFromData(originalInteraction || interaction);
     _link = link;
     if (typeof logs === "string") {
+      logBot("Respond Endpoint", `Logs received for token: ${token}`);
       delete CompilingTasks[token];
     }
 
@@ -705,7 +726,42 @@ app.patch("/respond", async (req, res) => {
     }
 
     if (logs) {
-      logs = decodeBuffer(JSON.parse(logs));
+      if (numSections) {
+        logBot(
+          "Respond Endpoint",
+          `Retrieving chunked logs sections: ${numSections} for token: ${token}`
+        );
+        const startTime = Date.now();
+        const timeout = 60 * 1000;
+        logs = "";
+        while (true) {
+          if (Date.now() - startTime > timeout) {
+            break;
+          }
+          const chunkedLogs = Chunks[token];
+          if (chunkedLogs && chunkedLogs.length >= numSections) {
+            chunkedLogs.sort((a, b) => a.index - b.index);
+            logs = chunkedLogs.map((chunk) => chunk.data).join("");
+            logs = decodeBuffer(JSON.parse(logs));
+            delete Chunks[token];
+            break;
+          }
+          await wait(500);
+        }
+        const chunkedLogs = Chunks[token];
+        delete Chunks[token];
+        logBot(
+          "Respond Endpoint",
+          `Deleted chunked logs: ${logs.length}`
+        );
+        if (logs === "") {
+          logs = chunkedLogs
+            ? ` (received ${chunkedLogs.length}/${numSections} sections)`
+            : "Failed to retrieve logs";
+        }
+      } else {
+        logs = decodeBuffer(JSON.parse(logs));
+      }
 
       await interaction.editReply({
         embeds: [embed],
@@ -909,7 +965,6 @@ async function main() {
               code.length > 100
                 ? `sent input (${code.length} characters)`
                 : `sent '${code}'`,
-            
           });
 
           log(

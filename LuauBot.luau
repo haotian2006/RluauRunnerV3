@@ -3,12 +3,13 @@ local POLL_RATE = 1000 --ms
 local DEFAULT_TIMEOUT = 25 -- seconds
 local MAX_STR_HEIGHT = 25
 local MAX_RESPONSES_BEFORE_TIMEOUT = 50
+local MAX_FILE_CHUNK_SIZE = 25000
 
 --[[
 	Takes in the number of responses sent so far and returns how often should the next update be sent.
 ]]
 local function UPDATE_INTERVAL_SCALE(count)
-	if count <=10 then
+	if count <= 10 then
 		return 0.1
 	elseif count <= 25 then
 		return 0.25
@@ -27,8 +28,6 @@ local ServerId = Https:GenerateGUID()
 local Closed = false
 local Processes = {}
 local ProcessesByUser = {}
-
-
 
 local encoder = function(data)
 	return Https:JSONEncode(data)
@@ -172,6 +171,44 @@ local function encode(data)
 	return game:GetService("HttpService"):JSONEncode(buffer.fromstring(data))
 end
 
+local function attemptRequest(waitTime, maxAttempts, fx, ...)
+	local attempt = 0
+	local sus, res
+	while attempt < maxAttempts do
+		sus, res = pcall(fx, ...)
+		if sus then
+			return sus, res
+		end
+		attempt += 1
+		task.wait(waitTime)
+	end
+	return sus, res
+end
+
+local function sendFileInChunks(token, data)
+	local numChunks = math.ceil(#data / MAX_FILE_CHUNK_SIZE)
+	task.spawn(function()
+		for i = 1, numChunks do
+			local chunk = data:sub((i - 1) * MAX_FILE_CHUNK_SIZE + 1, i * MAX_FILE_CHUNK_SIZE)
+			local requestData = {
+				Url = IP .. "/uploadChunk",
+				Method = "PATCH",
+				Headers = {
+					["Content-Type"] = "application/json",
+				},
+				Body = Https:JSONEncode({
+					token = token,
+					chunk = chunk,
+					index = i - 1,
+				}),
+			}
+			attemptRequest(0.5, 5, Https.RequestAsync, Https, requestData)
+			task.wait(0.1)
+		end
+	end)
+	return numChunks
+end
+
 local function respondToInteraction(interactionToken, responseContent, logs, await)
 	local url = IP .. "/respond"
 	local headers = {
@@ -181,9 +218,15 @@ local function respondToInteraction(interactionToken, responseContent, logs, awa
 	if #responseContent > 1900 then
 		responseContent = responseContent:sub(1, 1900 - 10) .. "... [truncated]"
 	end
-
+	local sections = nil
 	if logs and logs ~= "" then
 		logs = encode(logs)
+		if #logs > 1000 then
+			sections = sendFileInChunks(interactionToken, logs)
+			logs = "[Log too large to send]"
+		else
+			logs = encode(logs)
+		end
 	end
 
 	local requestData = {
@@ -193,14 +236,18 @@ local function respondToInteraction(interactionToken, responseContent, logs, awa
 		Body = Https:JSONEncode({
 			token = interactionToken,
 			data = encode(responseContent),
-			log = logs,
 			serverNum = ServerNumber,
+			log = logs,
+			sections = sections,
 		}),
 	}
 	local a = function()
-		local sus, msg = pcall(function()
-			Https:RequestAsync(requestData)
-		end)
+		local sus, msg
+		if logs then
+			sus, msg = attemptRequest(0.5, 5, Https.RequestAsync, Https, requestData)
+		else
+			sus, msg = pcall(Https.RequestAsync, Https, requestData)
+		end
 		if not sus then
 			warn(msg)
 		end
@@ -532,9 +579,15 @@ local function runCode(code, data)
 			table.insert(log, `Run Time: {os.clock() - thread.start} Seconds\n`)
 			table.insert(log, `Channel Link: {link}\n`)
 			if #parsedInputs > 0 then
+				for i,v in parsedInputs do
+					parsedInputs[i] = v:sub(1, 20) .. ( #v > 20 and "[TRUNCATED]" or "" )
+				end
 				table.insert(log, "Inputs: " .. table.concat(parsedInputs, " | ") .. "\n")
 			end
 			if #inputs > 0 then
+				for i,v in inputs do
+					inputs[i] = v:sub(1, 20) .. ( #v > 20 and "[TRUNCATED]" or "" )
+				end
 				table.insert(log, "Inputs in Queue: " .. table.concat(inputs, " | ") .. "\n")
 			end
 			table.insert(log, "------------------------------\n")
