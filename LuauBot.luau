@@ -194,7 +194,7 @@ local function sendFileInChunks(token, data)
 end
 
 local FileIds = 1
-local function respondToInteraction(interactionToken, responseContent, logs, await, fileType, finished)
+local function respondToInteraction(interactionToken, responseContent, logs, await, fileType, finished, followUp)
 	if finished then
 		FinishedInteractions[interactionToken] = true
 	end
@@ -240,6 +240,7 @@ local function respondToInteraction(interactionToken, responseContent, logs, awa
 			fileType = fileType,
 			sections = sections,
 			finished = finished,
+			followUp = followUp,
 		}),
 	}
 	local a = function()
@@ -402,6 +403,7 @@ local function runCode(compCode, data)
 	}, { __index = coroutine })
 	env.TIMESTAMP = false
 	env.OUTPUT_LOGS = false
+	thread.followUp = false
 	thread.fileType = ""
 	thread.fileData = ""
 	local parsedInputs = {}
@@ -426,17 +428,20 @@ local function runCode(compCode, data)
 			local noTimeStamp = (env :: any).TIMESTAMP == false
 			table.insert(output, noTimeStamp and text or string.format(`[%.3f] %s\n`, time, text))
 		end,
-		writeFile = function(data, fileType)
+		followupnext = function()
+			thread.followUp = true
+		end,
+		writefile = function(data, fileType)
 			thread.fileType = fileType
 			thread.fileData = data
 		end,
-		readFile = function()
+		readfile = function()
 			return thread.fileData or "", thread.fileType or "txt"
 		end,
-		getOutput = function()
+		getoutput = function()
 			return table.concat(output)
 		end,
-		clear = function()
+		clearoutput = function()
 			table.clear(output)
 		end,
 	}
@@ -571,6 +576,9 @@ local function runCode(compCode, data)
 		do
 			TIMEOUT = env.TIMEOUT
 			local outStr = table.concat(truncateArray(thread.output))
+			if outStr == '' then
+				outStr = "  "
+			end
 			if
 				lastOutput ~= outStr
 				or (lastFlushFile ~= thread.fileData or lastFileType ~= thread.fileType)
@@ -586,7 +594,9 @@ local function runCode(compCode, data)
 				end
 				lastFlushFile = thread.fileData
 				lastFileType = thread.fileType
-				respondToInteraction(data.token, truncated, fileToSend or '', nil, fileTypeToSend)
+				local followUp = thread.followUp
+				thread.followUp = false
+				respondToInteraction(data.token, truncated, fileToSend or '', nil, fileTypeToSend,nil,followUp)
 			end
 			waitTime += task.wait(UPDATE_INTERVAL_SCALE(numOfResponses))
 		end
@@ -664,7 +674,7 @@ local function runCode(compCode, data)
 		if truncated == "" then
 			truncated = "No Output"
 		end
-		respondToInteraction(data.token, truncated, log or "", nil, fileType, true)
+		respondToInteraction(data.token, truncated, log or "", nil, fileType, true, thread.followUp)
 
 		Processes[processID] = nil
 		ProcessesByUser[userid][processID] = nil

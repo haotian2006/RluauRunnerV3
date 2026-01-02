@@ -717,6 +717,7 @@ app.patch("/respond", async (req, res) => {
     let logs = req.body.log;
     const isLast = req.body.finished;
     let fileType = req.body.fileType;
+    const followUp = req.body.followUp;
     let fileName;
     if (fileType && fileType.includes(".")) {
       fileName = fileType.split(".")[0];
@@ -821,7 +822,7 @@ app.patch("/respond", async (req, res) => {
         CompilingTasks[token][2] = [logs, fileType, fileName];
       }
       if (isNewResponse) {
-        await interaction.editReply({
+        const sent = await interaction.editReply({
           embeds: [embed],
           files: [
             {
@@ -830,9 +831,28 @@ app.patch("/respond", async (req, res) => {
             },
           ],
         });
+        if (followUp) {
+          embed.setTitle("Luau Compiler Follow-Up | Server #" + serverNum)
+          embed.setURL(sent.url);
+          await interaction.followUp({
+            ephemeral: true,
+            embeds: [embed],
+            files: [
+              {
+                name: `${fileName}.${fileType}`,
+                attachment: logs,
+              },
+            ],
+          });
+        }
       }
     } else if (isNewResponse) {
-      await interaction.editReply({ embeds: [embed] });
+      const sent = await interaction.editReply({ embeds: [embed] });
+      if (followUp) {
+        embed.setTitle("Luau Compiler Follow-Up | Server #" + serverNum)
+        embed.setURL(sent.url);
+        await interaction.followUp({ embeds: [embed], ephemeral: true });
+      }
     }
 
     res.json({
@@ -1229,7 +1249,7 @@ async function main() {
           interaction.commandName === "input" ||
           interaction.commandName === "hiddeninput"
         ) {
-          const input = interaction.options.getString("input") || '';
+          const input = interaction.options.getString("input") || "";
           const uid = generateUUID();
           Inputs[uid] = {
             uid: uid,
