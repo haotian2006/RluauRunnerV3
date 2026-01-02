@@ -3,7 +3,8 @@ local POLL_RATE = 1000 --ms
 local DEFAULT_TIMEOUT = 25 -- seconds
 local MAX_STR_HEIGHT = 25
 local MAX_RESPONSES_BEFORE_TIMEOUT = 50
-local MAX_FILE_CHUNK_SIZE = 25000
+local FILE_CHUNK_SIZE = 25000
+local MAX_FILE_SIZE = 2 * 1024 * 1024 -- 2 MB
 
 --[[
 	Takes in the number of responses sent so far and returns how often should the next update be sent.
@@ -145,28 +146,6 @@ local function getLinkFromData(data)
 	return msgID and `https://discord.com/channels/@me/{channel_id}/{msgID}` or ""
 end
 
-local function createEmbed(data, logs, image)
-	local link = getLinkFromData(data)
-	local msg = {
-		content = `Running {link or ""}\n`,
-		tts = false,
-		embeds = {
-			{
-				id = 391161511,
-				title = "Output",
-				description = ("```ansi\n%s```"):format(logs),
-				fields = {},
-				image = image and {
-					url = image,
-				},
-			},
-		},
-		components = {},
-		actions = {},
-	}
-
-	return msg
-end
 
 local function encode(data)
 	return game:GetService("HttpService"):JSONEncode(buffer.fromstring(data))
@@ -186,11 +165,14 @@ local function attemptRequest(waitTime, maxAttempts, fx, ...)
 	return sus, res
 end
 
+local SendingChunks = {}
+local FinishedInteractions = {}
 local function sendFileInChunks(token, data)
-	local numChunks = math.ceil(#data / MAX_FILE_CHUNK_SIZE)
+	local numChunks = math.ceil(#data / FILE_CHUNK_SIZE)
+	SendingChunks[token] = true
 	task.spawn(function()
 		for i = 1, numChunks do
-			local chunk = data:sub((i - 1) * MAX_FILE_CHUNK_SIZE + 1, i * MAX_FILE_CHUNK_SIZE)
+			local chunk = data:sub((i - 1) * FILE_CHUNK_SIZE + 1, i * FILE_CHUNK_SIZE)
 			local requestData = {
 				Url = IP .. "/uploadChunk",
 				Method = "PATCH",
@@ -206,11 +188,24 @@ local function sendFileInChunks(token, data)
 			attemptRequest(0.5, 5, Https.RequestAsync, Https, requestData)
 			task.wait(0.1)
 		end
+		SendingChunks[token] = nil
 	end)
 	return numChunks
 end
 
-local function respondToInteraction(interactionToken, responseContent, logs, await, fileType)
+local FileIds = 1
+local function respondToInteraction(interactionToken, responseContent, logs, await, fileType, finished)
+	if finished then
+		FinishedInteractions[interactionToken] = true
+	end
+	if SendingChunks[interactionToken] then
+		repeat
+			task.wait()
+		until not SendingChunks[interactionToken]
+		if not finished and FinishedInteractions[interactionToken] then
+			return
+		end
+	end
 	local url = IP .. "/respond"
 	local headers = {
 		["Content-Type"] = "application/json",
@@ -219,12 +214,16 @@ local function respondToInteraction(interactionToken, responseContent, logs, awa
 	if #responseContent > 1900 then
 		responseContent = responseContent:sub(1, 1900 - 10) .. "... [truncated]"
 	end
+	FileIds += 1
+	local fileId = FileIds
 	local sections = nil
 	if logs and logs ~= "" then
 		logs = encode(logs)
-		if #logs > 1000 then
-			sections = sendFileInChunks(interactionToken, logs)
+		if #logs > 10000 and #logs < MAX_FILE_SIZE then
+			sections = sendFileInChunks(fileId, logs)
 			logs = "[Log too large to send]"
+		elseif #logs >= MAX_FILE_SIZE then
+			logs = "[Log exceeded maximum size]"
 		end
 	end
 
@@ -237,8 +236,10 @@ local function respondToInteraction(interactionToken, responseContent, logs, awa
 			data = encode(responseContent),
 			serverNum = ServerNumber,
 			log = logs,
+			fileId = fileId,
 			fileType = fileType,
 			sections = sections,
+			finished = finished,
 		}),
 	}
 	local a = function()
@@ -310,7 +311,14 @@ end
 local function runCode(compCode, data)
 	local decodePass, code = decodeZstd(compCode)
 	if not decodePass then
-		respondToInteraction(data.token, `Error while decoding: {code} | {tableToString(compCode)}`, "")
+		respondToInteraction(
+			data.token,
+			`Error while decoding: {code} | {tableToString(compCode)}`,
+			nil,
+			nil,
+			nil,
+			true
+		)
 		return
 	end
 	if code:sub(1, 1) == "=" then
@@ -394,18 +402,8 @@ local function runCode(compCode, data)
 	}, { __index = coroutine })
 	env.TIMESTAMP = false
 	env.OUTPUT_LOGS = false
-	thread.fileType = ''
-	thread.fileData = ''
-	env.writeFile = function(data, fileType)
-		thread.fileType = fileType
-		thread.fileData = data
-	end
-	env.readFile = function()
-		return thread.fileData or "", thread.fileType or "txt"
-	end
-	env.getOutput = function()
-		return table.concat(output)
-	end
+	thread.fileType = ""
+	thread.fileData = ""
 	local parsedInputs = {}
 	env.io = {
 		read = function()
@@ -427,6 +425,19 @@ local function runCode(compCode, data)
 			end
 			local noTimeStamp = (env :: any).TIMESTAMP == false
 			table.insert(output, noTimeStamp and text or string.format(`[%.3f] %s\n`, time, text))
+		end,
+		writeFile = function(data, fileType)
+			thread.fileType = fileType
+			thread.fileData = data
+		end,
+		readFile = function()
+			return thread.fileData or "", thread.fileType or "txt"
+		end,
+		getOutput = function()
+			return table.concat(output)
+		end,
+		clear = function()
+			table.clear(output)
 		end,
 	}
 	env.loadstring = function(...)
@@ -516,7 +527,7 @@ local function runCode(compCode, data)
 		if isCommand and code:find("%-%-") then
 			warning = "Detected comments in command, try an application command instead or remove comments.\n"
 		end
-		respondToInteraction(data.token, warning .. err:match(":(%d+: .+)"), "")
+		respondToInteraction(data.token, warning .. err:match(":(%d+: .+)"), nil, nil, nil, true)
 		return false
 	end
 	local module
@@ -549,6 +560,8 @@ local function runCode(compCode, data)
 	thread.timeOutThread = task.spawn(function()
 		local waitTime = 0
 		local TIMEOUT = env.TIMEOUT
+		local lastFlushFile = nil
+		local lastFileType = nil
 		while
 			(
 				(os.clock() - thread.start < TIMEOUT or numOfResponses < MAX_RESPONSES_BEFORE_TIMEOUT)
@@ -558,21 +571,32 @@ local function runCode(compCode, data)
 		do
 			TIMEOUT = env.TIMEOUT
 			local outStr = table.concat(truncateArray(thread.output))
-			if lastOutput ~= outStr then
+			if
+				lastOutput ~= outStr
+				or (lastFlushFile ~= thread.fileData or lastFileType ~= thread.fileType)
+			then
 				local truncated = truncateString(outStr)
 				lastOutput = outStr
 				numOfResponses += 1
-				respondToInteraction(data.token, truncated)
+				local fileToSend = thread.fileData
+				local fileTypeToSend = thread.fileType
+				if fileToSend == lastFlushFile and lastFileType == fileTypeToSend then
+					fileToSend = nil
+					fileTypeToSend = nil
+				end
+				lastFlushFile = thread.fileData
+				lastFileType = thread.fileType
+				respondToInteraction(data.token, truncated, fileToSend or '', nil, fileTypeToSend)
 			end
 			waitTime += task.wait(UPDATE_INTERVAL_SCALE(numOfResponses))
 		end
 
 		local fileType
 		local fileData = table.concat(thread.output)
-		if thread.fileType ~= '' then
+		if thread.fileType ~= "" then
 			(env :: any).OUTPUT_LOGS = "LOG"
 			fileType = tostring(thread.fileType):lower()
-			if thread.fileData ~= '' then
+			if thread.fileData ~= "" then
 				fileData = tostring(thread.fileData)
 			end
 		end
@@ -640,7 +664,7 @@ local function runCode(compCode, data)
 		if truncated == "" then
 			truncated = "No Output"
 		end
-		respondToInteraction(data.token, truncated, log or "", nil, fileType)
+		respondToInteraction(data.token, truncated, log or "", nil, fileType, true)
 
 		Processes[processID] = nil
 		ProcessesByUser[userid][processID] = nil

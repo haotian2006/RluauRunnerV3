@@ -52,6 +52,7 @@ const SERVER_CHECK_INTERVAL = 1000;
 const SERVER_PING_TIMEOUT = 1000 * 5;
 const SERVER_TIME_OUT = "300s"; // this is how much before a server timeouts
 const BACKUP_SERVER_WAIT_TIME = 1000 * 60 * 2;
+const MAX_INPUT_SIZE = 1000000;
 
 const SupportedFileTypes = new Set([
   "png",
@@ -75,7 +76,7 @@ const SupportedFileTypes = new Set([
   "wav",
   "ogg",
   "mp4",
-  "webm"
+  "webm",
 ]);
 
 let IP = "";
@@ -601,16 +602,16 @@ async function createCompileModal(data, code) {
     msgLink: msgLink,
     data: data,
   };
+
+  setTimeout(() => {
+    delete byteCodeModalData[data.user.id];
+  }, 5 * 60 * 1000);
   await data.showModal(modal);
-
-  await wait(5 * 60 * 1000);
-  delete byteCodeModalData[data.user.id];
 }
 
-function encodeZstd(str){
-  return zstd.compress(Buffer.from(str, "utf-8"),10).toString("base64");
+function encodeZstd(str) {
+  return zstd.compress(Buffer.from(str, "utf-8"), 10).toString("base64");
 }
-
 
 async function sendCompileRequestToRoblox(
   code,
@@ -635,6 +636,7 @@ async function sendCompileRequestToRoblox(
   };
   CompilingTasks[interaction.token] = [interaction, originalInteraction];
   setTimeout(() => {
+    delete CompilingTasks[interaction.token];
     delete ExecuteTasks[uuid];
   }, 1000 * 60 * 6);
 }
@@ -678,11 +680,9 @@ async function reply(
   }
 }
 
-
 function decodeBuffer(data) {
   if (data.zbase64) {
-    return zstd
-      .decompress(Buffer.from(data.zbase64, "base64"));
+    return zstd.decompress(Buffer.from(data.zbase64, "base64"));
   } else if (data.base64) {
     return Buffer.from(data.base64, "base64");
   }
@@ -692,15 +692,15 @@ let UsingBackup = false;
 const Chunks = {};
 app.patch("/uploadChunk", async (req, res) => {
   const chunk = req.body.chunk;
-  const token = req.body.token;
+  const fileChunksId = req.body.token;
   const index = req.body.index;
-  if (!Chunks[token]) {
-    Chunks[token] = [];
+  if (!Chunks[fileChunksId]) {
+    Chunks[fileChunksId] = [];
     setTimeout(() => {
-      delete Chunks[token];
+      delete Chunks[fileChunksId];
     }, 80000);
   }
-  Chunks[token].push({ index: index, data: chunk });
+  Chunks[fileChunksId].push({ index: index, data: chunk });
   res.status(200).json({ message: "Chunk received" });
 });
 
@@ -709,30 +709,53 @@ app.patch("/respond", async (req, res) => {
   const serverNum = req.body.serverNum;
   let _interaction;
   let _link;
-  logBot("Respond Endpoint", `Received response for token: ${token}`);
   try {
-    let responseContent = decodeBuffer(JSON.parse(req.body.data)).toString("utf-8");
+    let responseContent = decodeBuffer(JSON.parse(req.body.data)).toString(
+      "utf-8"
+    );
 
     let logs = req.body.log;
-    let fileType = req.body.fileType?.toLowerCase();
+    const isLast = req.body.finished;
+    let fileType = req.body.fileType;
+    let fileName;
+    if (fileType && fileType.includes(".")) {
+      fileName = fileType.split(".")[0];
+      fileType = fileType.split(".")[1];
+    }
+    fileType = fileType ? fileType.toLowerCase() : null;
     if (!fileType || !SupportedFileTypes.has(fileType)) {
-      fileType = 'ansi';
+      fileType = "ansi";
+    }
+    if (!fileName) {
+      fileName = "output";
     }
     let numSections = req.body.sections;
-    const [interaction, originalInteraction] = CompilingTasks[token];
+    let respondID = req.body.fileId;
+
     if (!CompilingTasks[token]) {
-      logBot("Respond Endpoint", `No compiling task found for token: ${token}`);
       res.status(500).json({
         message: "Failed to send response to Discord",
         error: "failed",
       });
       return;
     }
+
+    const [interaction, originalInteraction, prevLog, prevResponseId = 0] =
+      CompilingTasks[token];
+    let alreadyParsed = false;
+    if (!logs && prevLog) {
+      [logs, fileType, fileName] = prevLog;
+      alreadyParsed = true;
+    }
+    const isNewResponse = respondID > prevResponseId;
+    if (isNewResponse) {
+      CompilingTasks[token][3] = respondID;
+    }
+
     _interaction = interaction;
     const link = getLinkFromData(originalInteraction || interaction);
     _link = link;
-    if (typeof logs === "string") {
-      logBot("Respond Endpoint", `Logs received for token: ${token}`);
+    if (isLast) {
       delete CompilingTasks[token];
     }
 
@@ -760,7 +783,7 @@ app.patch("/respond", async (req, res) => {
       if (numSections) {
         logBot(
           "Respond Endpoint",
-          `Retrieving chunked logs sections: ${numSections} for token: ${token}`
+          `Retrieving chunked logs sections: ${numSections} from: ${interaction.user.id} link: ${link}`
         );
         const startTime = Date.now();
         const timeout = 60 * 1000;
@@ -769,41 +792,46 @@ app.patch("/respond", async (req, res) => {
           if (Date.now() - startTime > timeout) {
             break;
           }
-          const chunkedLogs = Chunks[token];
+          const chunkedLogs = Chunks[respondID];
           if (chunkedLogs && chunkedLogs.length >= numSections) {
             chunkedLogs.sort((a, b) => a.index - b.index);
-            logs = chunkedLogs.map((chunk) => chunk.data).join("");
-            logs = decodeBuffer(JSON.parse(logs));
-            delete Chunks[token];
+            const concatenated = chunkedLogs
+              .map((chunk) => chunk.data)
+              .join("");
+            logs = decodeBuffer(JSON.parse(concatenated));
+            delete Chunks[respondID];
             break;
           }
           await wait(500);
         }
-        const chunkedLogs = Chunks[token];
-        delete Chunks[token];
-        logBot(
-          "Respond Endpoint",
-          `Deleted chunked logs: ${logs.length}`
-        );
+        const chunkedLogs = Chunks[respondID];
+        delete Chunks[respondID];
         if (logs === "") {
-            logs = chunkedLogs
-            ? Buffer.from(` (received ${chunkedLogs.length}/${numSections} sections)`, "utf-8")
+          logs = chunkedLogs
+            ? Buffer.from(
+                ` (received ${chunkedLogs.length}/${numSections} sections)`,
+                "utf-8"
+              )
             : Buffer.from("Failed to retrieve logs", "utf-8");
         }
-      } else {
+      } else if (!alreadyParsed) {
         logs = decodeBuffer(JSON.parse(logs));
       }
-
-      await interaction.editReply({
-        embeds: [embed],
-        files: [
-          {
-        name: `logs.${fileType}`,
-        attachment: logs,
-          },
-        ],
-      });
-    } else {
+      if (CompilingTasks[token] && isNewResponse) {
+        CompilingTasks[token][2] = [logs, fileType, fileName];
+      }
+      if (isNewResponse) {
+        await interaction.editReply({
+          embeds: [embed],
+          files: [
+            {
+              name: `${fileName}.${fileType}`,
+              attachment: logs,
+            },
+          ],
+        });
+      }
+    } else if (isNewResponse) {
       await interaction.editReply({ embeds: [embed] });
     }
 
@@ -813,7 +841,7 @@ app.patch("/respond", async (req, res) => {
     });
   } catch (error) {
     console.error("Error handling /respond:", error);
-
+    logBot("Respond Endpoint Error", `${error.message} stack: ${error.stack}`);
     if (_interaction) {
       const errorEmbed = new EmbedBuilder()
         .setTitle("Discord Error")
@@ -865,7 +893,7 @@ app.post("/getInputs", async (req, res) => {
 
   for (const id in Inputs) {
     if (!interacted.includes(Inputs[id].uid)) {
-      if (!Inputs[id].encoded){
+      if (!Inputs[id].encoded) {
         Inputs[id].input = encodeZstd(Inputs[id].input);
         Inputs[id].encoded = true;
       }
@@ -989,12 +1017,28 @@ async function main() {
       if (interaction.isMessageContextMenuCommand()) {
         if (interaction.commandName === "input") {
           const code = await getCodeFromContextMenu(interaction, true);
+          const eSize = encodeZstd(code).length;
+
+          if (eSize > MAX_INPUT_SIZE) {
+            interaction.reply({
+              content: `Input exceeds maximum size of ${Math.floor(
+                MAX_INPUT_SIZE / 1024
+              )} KB after compression (current size: ${Math.floor(
+                eSize / 1024
+              )} KB).`,
+              ephemeral: true,
+            });
+
+            return;
+          }
+
           const uid = generateUUID();
           Inputs[uid] = {
             uid: uid,
             id: interaction.user.id,
             input: code,
           };
+
           interaction.reply({
             content:
               code.length > 100
@@ -1185,7 +1229,7 @@ async function main() {
           interaction.commandName === "input" ||
           interaction.commandName === "hiddeninput"
         ) {
-          const input = interaction.options.getString("input");
+          const input = interaction.options.getString("input") || '';
           const uid = generateUUID();
           Inputs[uid] = {
             uid: uid,
@@ -1197,6 +1241,12 @@ async function main() {
             content: `sent '${censorText(input)}'`,
             ephemeral: interaction.commandName === "hiddeninput",
           });
+          if (interaction.commandName === "hiddeninput") {
+            setTimeout(() => {
+              interaction.deleteReply();
+            }, 3000);
+          }
+
           log(
             interaction.user.id,
             interaction.user.username,
