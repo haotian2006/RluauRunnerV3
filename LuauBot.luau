@@ -14,7 +14,7 @@ local function UPDATE_INTERVAL_SCALE(count)
 		return 0.1
 	elseif count <= 25 then
 		return 0.25
-	elseif count <= 50 then
+	elseif count <= 35 then
 		return 0.5
 	end
 	return 1
@@ -145,7 +145,6 @@ local function getLinkFromData(data)
 	local channel_id, msgID = data.channelId, data.targetId
 	return msgID and `https://discord.com/channels/@me/{channel_id}/{msgID}` or ""
 end
-
 
 local function encode(data)
 	return game:GetService("HttpService"):JSONEncode(buffer.fromstring(data))
@@ -559,6 +558,11 @@ local function runCode(compCode, data)
 			sus, msg = pcall(msg)
 		end
 	end)
+	thread.stopped = false
+	thread.forceStop = function()
+		env.warn("Force Stop Triggered!")
+		thread.stopped = true
+	end
 	table.insert(runningThreads, thread.running)
 	task.wait(0.5)
 	local numOfResponses = 0
@@ -569,20 +573,19 @@ local function runCode(compCode, data)
 		local lastFileType = nil
 		while
 			(
-				(os.clock() - thread.start < TIMEOUT or numOfResponses < MAX_RESPONSES_BEFORE_TIMEOUT)
-				and sus
-				and numRunning() > 1
-			) or thread.blocked
+				(
+					(os.clock() - thread.start < TIMEOUT or numOfResponses < MAX_RESPONSES_BEFORE_TIMEOUT)
+					and sus
+					and numRunning() > 1
+				) or thread.blocked
+			) and not thread.stopped
 		do
 			TIMEOUT = env.TIMEOUT
 			local outStr = table.concat(truncateArray(thread.output))
-			if outStr == '' then
+			if outStr == "" then
 				outStr = "  "
 			end
-			if
-				lastOutput ~= outStr
-				or (lastFlushFile ~= thread.fileData or lastFileType ~= thread.fileType)
-			then
+			if lastOutput ~= outStr or (lastFlushFile ~= thread.fileData or lastFileType ~= thread.fileType) then
 				local truncated = truncateString(outStr)
 				lastOutput = outStr
 				numOfResponses += 1
@@ -596,7 +599,7 @@ local function runCode(compCode, data)
 				lastFileType = thread.fileType
 				local followUp = thread.followUp
 				thread.followUp = false
-				respondToInteraction(data.token, truncated, fileToSend or '', nil, fileTypeToSend,nil,followUp)
+				respondToInteraction(data.token, truncated, fileToSend or "", nil, fileTypeToSend, nil, followUp)
 			end
 			waitTime += task.wait(UPDATE_INTERVAL_SCALE(numOfResponses))
 		end
@@ -611,6 +614,10 @@ local function runCode(compCode, data)
 			end
 		end
 
+		if thread.stopped then
+			sus = false
+			msg = "Script was forcefully stopped."
+		end
 		local shouldLog = (env :: any).OUTPUT_LOGS
 		if not sus then
 			local str = ((env :: any).TIMESTAMP ~= false) and string.format("[%.3f] ", os.clock() - start) or ""
@@ -626,7 +633,7 @@ local function runCode(compCode, data)
 				thread.output,
 				string.format(`[2;36m[%.3f] %s[0m`, os.clock() - start, `Script Reached its lifespan ({TIMEOUT}s)`)
 			)
-		elseif shouldLog ~= "LOG" and hasRunning() then
+		elseif shouldLog ~= "LOG" and hasRunning() and not thread.stopped then
 			table.insert(thread.output, createText(`Script Reached its max lifespan ({TIMEOUT}s)\n`, 2))
 			table.insert(thread.output, createText(`You can increase it by setting the "TIMEOUT" global`, 2))
 		end
@@ -722,8 +729,15 @@ local function handleInputs()
 		if not sus then
 			input = "[ERROR WHILE DECODING INPUT]: " .. input
 		end
-		for _, process in ProcessesByUser[id] or {} do
-			table.insert(process.inputs, input)
+		local isStop = input == "STOP_ALL_SESSIONS_PLS"
+		if not isStop then
+			for _, process in ProcessesByUser[id] or {} do
+				table.insert(process.inputs, input)
+			end
+		else
+			for _, process in ProcessesByUser[id] or {} do
+				process.forceStop()
+			end
 		end
 	end
 end

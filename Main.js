@@ -741,8 +741,13 @@ app.patch("/respond", async (req, res) => {
       return;
     }
 
-    const [interaction, originalInteraction, prevLog, prevResponseId = 0] =
-      CompilingTasks[token];
+    const [
+      interaction,
+      originalInteraction,
+      prevLog,
+      prevResponseId = 0,
+      dmMessage = null,
+    ] = CompilingTasks[token];
     let alreadyParsed = false;
     if (!logs && prevLog) {
       [logs, fileType, fileName] = prevLog;
@@ -831,27 +836,112 @@ app.patch("/respond", async (req, res) => {
             },
           ],
         });
-        if (followUp) {
-          embed.setTitle("Luau Compiler Follow-Up | Server #" + serverNum)
+        if (followUp || dmMessage) {
+          embed.setTitle("Follow up request");
           embed.setURL(sent.url);
-          await interaction.followUp({
-            ephemeral: true,
-            embeds: [embed],
-            files: [
-              {
-                name: `${fileName}.${fileType}`,
-                attachment: logs,
-              },
-            ],
-          });
+          if (interaction.guild) {
+            await interaction.followUp({
+              ephemeral: true,
+              embeds: [embed],
+              files: [
+                {
+                  name: `${fileName}.${fileType}`,
+                  attachment: logs,
+                },
+              ],
+            });
+          } else {
+            try {
+              embed.addFields(
+                {
+                  name: "Info",
+                  value:
+                    "This is a follow up request. You can still use `/input` to send inputs to the bot. The purpose of this is allow you to send inputs without having to scroll up to find the changes. This will also update the main interaction message.",
+                  inline: false,
+                },
+                {
+                  name: "Tip",
+                  value: "Use `/hiddeninput` to not flood dms with inputs",
+                  inline: true,
+                }
+              );
+
+              if (dmMessage) {
+                await dmMessage.edit({
+                  embeds: [embed],
+                  files: [
+                    {
+                      name: `${fileName}.${fileType}`,
+                      attachment: logs,
+                    },
+                  ],
+                });
+              } else {
+                const newDmMessage = await interaction.user.send({
+                  embeds: [embed],
+                  files: [
+                    {
+                      name: `${fileName}.${fileType}`,
+                      attachment: logs,
+                    },
+                  ],
+                });
+                interaction.followUp({
+                  content:
+                    "A new DM has been sent to you with the follow up response. " +
+                    newDmMessage.url,
+                  ephemeral: true,
+                });
+                if (CompilingTasks[token]) {
+                  CompilingTasks[token][4] = newDmMessage;
+                }
+              }
+            } catch (err) {}
+          }
         }
       }
     } else if (isNewResponse) {
       const sent = await interaction.editReply({ embeds: [embed] });
-      if (followUp) {
-        embed.setTitle("Luau Compiler Follow-Up | Server #" + serverNum)
+      if (followUp || dmMessage) {
+        embed.setTitle("Follow up request");
         embed.setURL(sent.url);
-        await interaction.followUp({ embeds: [embed], ephemeral: true });
+
+        if (interaction.guild) {
+          await interaction.followUp({ embeds: [embed], ephemeral: true });
+        } else {
+          try {
+            embed.addFields(
+              {
+                name: "Info",
+                value:
+                  "This is a follow up request. You can still use `/input` to send inputs to the bot. The purpose of this is allow you to send inputs without having to scroll up to find the changes. This will also update the main interaction message.",
+                inline: false,
+              },
+              {
+                name: "Tip",
+                value: "Use `/hiddeninput` to not flood dms with inputs",
+                inline: true,
+              }
+            );
+
+            if (dmMessage) {
+              await dmMessage.edit({ embeds: [embed] });
+            } else {
+              const newDmMessage = await interaction.user.send({
+                embeds: [embed],
+              });
+              interaction.followUp({
+                content:
+                  "A new DM has been sent to you with the follow up response. " +
+                  newDmMessage.url,
+                ephemeral: true,
+              });
+              if (CompilingTasks[token]) {
+                CompilingTasks[token][4] = newDmMessage;
+              }
+            }
+          } catch (err) {}
+        }
       }
     }
 
@@ -1247,9 +1337,10 @@ async function main() {
           });
         } else if (
           interaction.commandName === "input" ||
-          interaction.commandName === "hiddeninput"
+          interaction.commandName === "hiddeninput" || interaction.commandName === "stopall"
         ) {
-          const input = interaction.options.getString("input") || "";
+          const isStop = interaction.commandName === "stopall";
+          const input = isStop ? "STOP_ALL_SESSIONS_PLS" : interaction.options.getString("input") || "";
           const uid = generateUUID();
           Inputs[uid] = {
             uid: uid,
@@ -1258,8 +1349,8 @@ async function main() {
           };
 
           interaction.reply({
-            content: `sent '${censorText(input)}'`,
-            ephemeral: interaction.commandName === "hiddeninput",
+            content: `sent '${isStop ? "a stop command":censorText(input)}'`,
+            ephemeral: interaction.commandName === "hiddeninput" || interaction.commandName === "stopall",
           });
           if (interaction.commandName === "hiddeninput") {
             setTimeout(() => {
@@ -1273,6 +1364,34 @@ async function main() {
             interaction.commandName,
             `Input Length: ${input.length} characters`
           );
+
+          if (isStop){
+            try {
+              const userId = interaction.user.id;
+              let removed = 0;
+              for (const token in CompilingTasks) {
+                const entry = CompilingTasks[token];
+                if (!entry || !entry[0] || !entry[0].user) continue;
+                if (entry[0].user.id === userId) {
+                  delete CompilingTasks[token];
+                  removed++;
+                  for (const taskId in ExecuteTasks) {
+                    if (ExecuteTasks[taskId] && ExecuteTasks[taskId].token === token) {
+                      delete ExecuteTasks[taskId];
+                    }
+                  }
+                }
+              }
+              log(
+                interaction.user.id,
+                interaction.user.username,
+                interaction.commandName,
+                `Stopped ${removed} session(s)`
+              );
+            } catch (err) {
+              console.error("Error stopping sessions:", err);
+            }
+          }
           wait(1000 * 30).then(() => {
             delete Inputs[uid];
           });

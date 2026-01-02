@@ -13,6 +13,13 @@ const commands = [
     type: 1,
   },
   {
+    name: "stopall",
+    description: "Stops all running sessions that you own",
+    integration_types: [0, 1],
+    contexts: [0, 1, 2],
+    type: 1,
+  },
+  {
     name: "help",
     description: "check out this site!",
     integration_types: [0, 1],
