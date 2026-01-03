@@ -54,6 +54,10 @@ const SERVER_TIME_OUT = "300s"; // this is how much before a server timeouts
 const BACKUP_SERVER_WAIT_TIME = 1000 * 60 * 2;
 const MAX_INPUT_SIZE = 1000000;
 
+let botSrcEncoded = fs.existsSync(path.join(__dirname, "luauBot.b64"))
+  ? fs.readFileSync(path.join(__dirname, "luauBot.b64"), "utf-8")
+  : "";
+
 const SupportedFileTypes = new Set([
   "png",
   "jpg",
@@ -237,9 +241,20 @@ async function startRoblox(
   key = ROBLOX_API_KEY,
   module = LUAU_MODULE
 ) {
-  let script = `task.delay(0,function() script.Source = '' end) require(${
+  let script = `require(${
     module !== "" ? module : "workspace.LuauBot"
   }).start("${IP}") `;
+  if (botSrcEncoded) {
+    script = `local EncodingService = game:GetService("EncodingService")
+
+  local str = [[${botSrcEncoded}]]
+  local decoded = EncodingService:Base64Decode(buffer.fromstring(str))
+  decoded = EncodingService:DecompressBuffer(decoded,Enum.CompressionAlgorithm.Zstd)
+  local Instances =  game:GetService("SerializationService"):DeserializeInstancesAsync(decoded)
+  local module = Instances[1]
+     require(module).start("${IP}")
+`;
+  }
   LastServerCreation = Date.now();
   const res = await fetch(path, {
     method: "POST",
@@ -289,6 +304,34 @@ function fetchFileContent(url) {
 
         response.on("end", () => {
           resolve(data);
+        });
+      })
+      .on("error", (err) => {
+        reject(err);
+      });
+  });
+}
+
+function fetchBinaryFile(url) {
+  return new Promise((resolve, reject) => {
+    https
+      .get(url, (response) => {
+        if (response.statusCode !== 200) {
+          reject(
+            new Error(`Failed to get data. Status Code: ${response.statusCode}`)
+          );
+          return;
+        }
+
+        const chunks = [];
+
+        response.on("data", (chunk) => {
+          chunks.push(chunk);
+        });
+
+        response.on("end", () => {
+          const buffer = Buffer.concat(chunks);
+          resolve(buffer);
         });
       })
       .on("error", (err) => {
@@ -369,29 +412,6 @@ function byteCodeOptionsToString(options) {
   return str;
 }
 
-function getByteCodeOLD(options, code) {
-  let optionStr = "-a ";
-  if (options.remarks) {
-    optionStr += "--remarks ";
-  }
-  if (options.binary) {
-    optionStr += "--binary ";
-  }
-  optionStr += `-O${options.optimizeLevel} -g${options.debugLevel}`;
-
-  let pointer = luauModule.ccall(
-    "exportCompileRaw",
-    "number",
-    ["string", "string"],
-    [optionStr, code]
-  );
-  const size = luauModule.ccall("getSize", "number", [], []);
-  const bytes = new Uint8Array(luauModule.HEAPU8.buffer, pointer, size);
-  const decoder = new TextDecoder("utf-8");
-  const str = decoder.decode(bytes);
-  return str;
-}
-
 async function getByteCode(options, code) {
   const result = await compileLuau(code, {
     pathToLuau: PATH_TO_COMPILER,
@@ -421,7 +441,26 @@ async function checkAndGetAttachmentText(attachment) {
 /**
  * @param {import('discord.js').MessageContextMenuCommandInteraction} interaction
  */
-async function getCodeFromContextMenu(interaction, noCode) {
+async function getInputsFromContext(interaction) {
+  let content = interaction.targetMessage.content;
+  const attachments = interaction.targetMessage.attachments;
+
+  if (attachments.size === 0) {
+    return [content];
+  } else {
+    const inputs = [];
+    for (const attachment of attachments.values()) {
+      const data = await fetchBinaryFile(attachment.url);
+      inputs.push(data);
+    }
+    return inputs;
+  }
+}
+
+/**
+ * @param {import('discord.js').MessageContextMenuCommandInteraction} interaction
+ */
+async function getCodeFromContextMenu(interaction) {
   let content = interaction.targetMessage.content;
   const attachments = interaction.targetMessage.attachments.first();
 
@@ -442,9 +481,7 @@ async function getCodeFromContextMenu(interaction, noCode) {
       codeBlocks.unshift(content);
     }
   }
-  if (noCode) {
-    return content;
-  }
+
   if (codeBlocks.length === 0) {
     return content;
   }
@@ -609,10 +646,21 @@ async function createCompileModal(data, code) {
   await data.showModal(modal);
 }
 
-function encodeZstd(str) {
-  return zstd.compress(Buffer.from(str, "utf-8"), 10).toString("base64");
-}
+function encodeZstd(input) {
+  let buffer;
 
+  if (Buffer.isBuffer(input)) {
+    buffer = input;
+  } else if (typeof input === "string") {
+    buffer = Buffer.from(input, "utf-8");
+  } else {
+    logBot("Encode Zstd Error", "Input is not a string or Buffer");
+    throw new TypeError("Input must be a string or Buffer");
+  }
+
+  const compressed = zstd.compress(buffer, 10);
+  return compressed.toString("base64");
+}
 async function sendCompileRequestToRoblox(
   code,
   interactionId,
@@ -1000,12 +1048,16 @@ app.post("/getInputs", async (req, res) => {
   const interacted = req.body.i;
 
   data = [];
-
+  let totalDataSize = 0;
   for (const id in Inputs) {
     if (!interacted.includes(Inputs[id].uid)) {
       if (!Inputs[id].encoded) {
         Inputs[id].input = encodeZstd(Inputs[id].input);
         Inputs[id].encoded = true;
+      }
+      totalDataSize += Inputs[id].input.length;
+      if (totalDataSize > MAX_INPUT_SIZE) {
+        break;
       }
       data.push(Inputs[id]);
     }
@@ -1126,45 +1178,48 @@ async function main() {
     try {
       if (interaction.isMessageContextMenuCommand()) {
         if (interaction.commandName === "input") {
-          const code = await getCodeFromContextMenu(interaction, true);
-          const eSize = encodeZstd(code).length;
+          const inputs = await getInputsFromContext(interaction);
+          for (const input of inputs) {
+            try {
+              const eSize = encodeZstd(input).length;
 
-          if (eSize > MAX_INPUT_SIZE) {
-            interaction.reply({
-              content: `Input exceeds maximum size of ${Math.floor(
-                MAX_INPUT_SIZE / 1024
-              )} KB after compression (current size: ${Math.floor(
-                eSize / 1024
-              )} KB).`,
-              ephemeral: true,
-            });
+              if (eSize > MAX_INPUT_SIZE) {
+                interaction.reply({
+                  content: `Input exceeds maximum size of ${Math.floor(
+                    MAX_INPUT_SIZE / 1024
+                  )} KB after compression (current size: ${Math.floor(
+                    eSize / 1024
+                  )} KB).`,
+                  ephemeral: true,
+                });
 
-            return;
+                return;
+              }
+
+              const uid = generateUUID();
+              Inputs[uid] = {
+                uid: uid,
+                id: interaction.user.id,
+                input: input,
+              };
+
+              log(
+                interaction.user.id,
+                interaction.user.username,
+                interaction.commandName,
+                `Input Length: ${input.length} characters`
+              );
+              setTimeout(() => {
+                delete Inputs[uid];
+              }, 1000 * 30);
+            } catch (err) {
+              logBot("Input Error", `Error processing input: ${err.message}`);
+            }
           }
-
-          const uid = generateUUID();
-          Inputs[uid] = {
-            uid: uid,
-            id: interaction.user.id,
-            input: code,
-          };
-
           interaction.reply({
-            content:
-              code.length > 100
-                ? `sent input (${code.length} characters)`
-                : `sent '${code}'`,
+            content: "Sent " + inputs.length + " Input(s)",
           });
 
-          log(
-            interaction.user.id,
-            interaction.user.username,
-            interaction.commandName,
-            `Input Length: ${code.length} characters`
-          );
-          wait(1000 * 30).then(() => {
-            delete Inputs[uid];
-          });
           return;
         }
 
@@ -1176,15 +1231,6 @@ async function main() {
           interaction.commandName,
           `Code length: ${code.length} characters`
         );
-        // if (code.length > MAX_BYTECODE_LENGTH) {
-        //   interaction.reply({
-        //     content: `Code exceeds maximum length of ${
-        //       MAX_BYTECODE_LENGTH / 1024
-        //     } KB.`,
-        //     ephemeral: true,
-        //   });
-        //   return;
-        // }
 
         if (interaction.commandName === "bytecode") {
           await interaction.deferReply({ ephemeral: false });
@@ -1337,10 +1383,13 @@ async function main() {
           });
         } else if (
           interaction.commandName === "input" ||
-          interaction.commandName === "hiddeninput" || interaction.commandName === "stopall"
+          interaction.commandName === "hiddeninput" ||
+          interaction.commandName === "stopall"
         ) {
           const isStop = interaction.commandName === "stopall";
-          const input = isStop ? "STOP_ALL_SESSIONS_PLS" : interaction.options.getString("input") || "";
+          const input = isStop
+            ? "STOP_ALL_SESSIONS_PLS"
+            : interaction.options.getString("input") || "";
           const uid = generateUUID();
           Inputs[uid] = {
             uid: uid,
@@ -1349,8 +1398,10 @@ async function main() {
           };
 
           interaction.reply({
-            content: `sent '${isStop ? "a stop command":censorText(input)}'`,
-            ephemeral: interaction.commandName === "hiddeninput" || interaction.commandName === "stopall",
+            content: `sent '${isStop ? "a stop command" : censorText(input)}'`,
+            ephemeral:
+              interaction.commandName === "hiddeninput" ||
+              interaction.commandName === "stopall",
           });
           if (interaction.commandName === "hiddeninput") {
             setTimeout(() => {
@@ -1365,7 +1416,7 @@ async function main() {
             `Input Length: ${input.length} characters`
           );
 
-          if (isStop){
+          if (isStop) {
             try {
               const userId = interaction.user.id;
               let removed = 0;
@@ -1376,7 +1427,10 @@ async function main() {
                   delete CompilingTasks[token];
                   removed++;
                   for (const taskId in ExecuteTasks) {
-                    if (ExecuteTasks[taskId] && ExecuteTasks[taskId].token === token) {
+                    if (
+                      ExecuteTasks[taskId] &&
+                      ExecuteTasks[taskId].token === token
+                    ) {
                       delete ExecuteTasks[taskId];
                     }
                   }

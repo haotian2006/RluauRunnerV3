@@ -11,6 +11,24 @@ workspace
     - LuauBot
 ```
 
+You could also make it so that the bot code is fetched by loading a rbxm encoded as base64 by loading it into `luauBot.b64` file.
+
+Encode it to base64 by using this script
+```lua
+local EncodingService = game:GetService("EncodingService")
+local ToEncode = workspace.LuauBot
+
+
+local Ser = game:GetService("SerializationService"):SerializeInstancesAsync({ToEncode})
+Ser = EncodingService:CompressBuffer(Ser,Enum.CompressionAlgorithm.Zstd,22)
+local encodedString = buffer.tostring(EncodingService:Base64Encode(Ser))
+if not workspace:FindFirstChild("Output") then
+	Instance.new("ModuleScript",workspace).Name = "Output"
+end
+game:GetService("ScriptEditorService"):UpdateSourceAsync(workspace.Output,
+	function() return encodedString end )
+```
+
 Make sure to have these .env variables set:
 
 ```
