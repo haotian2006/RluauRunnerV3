@@ -384,7 +384,10 @@ local function runCode(compCode, data)
 
 	ProcessesByUser[userid] = ProcessesByUser[userid] or {}
 	ProcessesByUser[userid][processID] = thread
-
+	env.user = table.freeze({
+		Name = data.username,
+		UserId = data.userId,
+	})
 	env.spawn = wrapThread(spawn)
 	env.delay = wrapThread(delay)
 
@@ -450,6 +453,11 @@ local function runCode(compCode, data)
 			setfenv(f, env)
 		end
 		return f, e
+	end
+
+	env.colorstring = function(text, color)
+		color = color or ""
+		return (colorsLower[color:lower()] or "") .. tostring(text) 
 	end
 
 	env.log = function(text, color, newLine)
@@ -576,7 +584,7 @@ local function runCode(compCode, data)
 				(
 					(os.clock() - thread.start < TIMEOUT or numOfResponses < MAX_RESPONSES_BEFORE_TIMEOUT)
 					and sus
-					and numRunning() > 1
+					and numRunning() > 0
 				) or thread.blocked
 			) and not thread.stopped
 		do

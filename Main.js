@@ -494,6 +494,7 @@ async function getCodeFromContextMenu(interaction) {
       code = code + "\n" + additionalCode;
     }
   }
+  code = code.replace(/--\[==\[IGNORE START\]==\][\s\S]*?--\[==\[IGNORE END\]==\]/g, '');
   return code;
 }
 
