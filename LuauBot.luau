@@ -450,7 +450,8 @@ local function runCode(compCode, data)
 	env.loadstring = function(...)
 		local f, e = loadstring(...)
 		if f then
-			setfenv(f, env)
+			local meta = setmetatable(env, { __index = getfenv() })
+			setfenv(f, meta)
 		end
 		return f, e
 	end
