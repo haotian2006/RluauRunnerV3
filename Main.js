@@ -821,18 +821,23 @@ app.patch("/respond", async (req, res) => {
           ? `[WARNING] Server creation quota reached. New sessions will be created less often. Frees <t:${BackUpEndTime}:R>. \n`
           : "") +
           `Requested by: <@${interaction.user.id}>` +
-          `\`\`\`ansi\n${censorText(responseContent)}\n\`\`\``
+          `\`\`\`ansi\n${censorText(responseContent)}\n\`\`\``,
       )
-      .setColor(UsingBackup ? 16488960 : 3447003);
+      .setColor(UsingBackup ? 16488960 : 0x00ff00);
 
-    // .addFields({
-    //   name: "Remember To Follow the TOS",
-    //   value: `<https://haotian2006.github.io/LuauBotSite/TOS/>`,
-    // })
-
-    if (link) {
-      embed.setURL(link);
+    if (isLast){
+      let runtime = req.body.runtime || 0;
+      embed.setFooter({ text: "Compilation completed | " + runtime });
+      embed.setColor(UsingBackup ? 16488960 : 3447003);
     }
+      if (link) {
+        // .addFields({
+        //   name: "Remember To Follow the TOS",
+        //   value: `<https://haotian2006.github.io/LuauBotSite/TOS/>`,
+        // })
+
+        embed.setURL(link);
+      }
 
     if (logs) {
       if (numSections) {

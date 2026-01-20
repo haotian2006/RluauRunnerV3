@@ -238,7 +238,8 @@ local function respondToInteraction(interactionToken, responseContent, logs, awa
 			fileId = fileId,
 			fileType = fileType,
 			sections = sections,
-			finished = finished,
+			runtime = type(finished) == "number" and finished or 0,
+			finished = finished and true or false,
 			followUp = followUp,
 		}),
 	}
@@ -323,6 +324,10 @@ local function runCode(compCode, data)
 	end
 	if code:sub(1, 1) == "=" then
 		code = `print({code:sub(2)})`
+	end
+	local foundSignalUsage = false
+	if code:find('connect') or code:find('Connect') or code:find('once') or code:find('Once') then
+		foundSignalUsage = true
 	end
 	local processID = game:GetService("HttpService"):GenerateGUID(false)
 	local env = {}
@@ -585,7 +590,7 @@ local function runCode(compCode, data)
 				(
 					(os.clock() - thread.start < TIMEOUT or numOfResponses < MAX_RESPONSES_BEFORE_TIMEOUT)
 					and sus
-					and numRunning() > 0
+					and (numRunning() > 0 or foundSignalUsage)
 				) or thread.blocked
 			) and not thread.stopped
 		do
@@ -690,7 +695,7 @@ local function runCode(compCode, data)
 		if truncated == "" then
 			truncated = "No Output"
 		end
-		respondToInteraction(data.token, truncated, log or "", nil, fileType, true, thread.followUp)
+		respondToInteraction(data.token, truncated, log or "", nil, fileType, os.clock() - thread.start, thread.followUp)
 
 		Processes[processID] = nil
 		ProcessesByUser[userid][processID] = nil
