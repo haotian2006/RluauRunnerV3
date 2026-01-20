@@ -823,7 +823,7 @@ app.patch("/respond", async (req, res) => {
           `Requested by: <@${interaction.user.id}>` +
           `\`\`\`ansi\n${censorText(responseContent)}\n\`\`\``,
       )
-      .setColor(UsingBackup ? 16488960 : 0x00ff00);
+      .setColor(UsingBackup ? 16488960 : 0x8ce4ff);
 
     if (isLast){
       let runtime = req.body.runtime || 0;
