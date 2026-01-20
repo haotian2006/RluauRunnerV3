@@ -52,7 +52,8 @@ const SERVER_CHECK_INTERVAL = 1000;
 const SERVER_PING_TIMEOUT = 1000 * 5;
 const SERVER_TIME_OUT = "300s"; // this is how much before a server timeouts
 const BACKUP_SERVER_WAIT_TIME = 1000 * 60 * 2;
-const MAX_INPUT_SIZE = 1000000;
+const FILE_CHUNK_SIZE = 50000;
+const MAX_DATA_TO_SEND = 10000 * 200; // 2 MB
 
 let botSrcEncoded = fs.existsSync(path.join(__dirname, "luauBot.b64"))
   ? fs.readFileSync(path.join(__dirname, "luauBot.b64"), "utf-8")
@@ -241,6 +242,8 @@ async function startRoblox(
   key = ROBLOX_API_KEY,
   module = LUAU_MODULE
 ) {
+
+  
   let script = `require(${
     module !== "" ? module : "workspace.LuauBot"
   }).start("${IP}") `;
@@ -737,19 +740,61 @@ function decodeBuffer(data) {
   }
 }
 
+
+const CHUNK_TO_DATA = {};
+let CHUNK_ID = 0;
+function splitData(info){
+  if (info.checkedSplit){
+    return false;
+  }
+  // info will contain a `content` field that is a string
+  const content = info.content;
+  info.checkedSplit = true;
+  const totalChunks = Math.ceil(content.length / FILE_CHUNK_SIZE);
+  if (totalChunks <= 1){
+    return false;
+  }
+  
+  if (content.length > MAX_DATA_TO_SEND){
+    info.content = "Data too large. Must be less than " + MAX_DATA_TO_SEND + " characters.";
+    return false;
+  }
+
+  const chunks = [];
+  for (let i = 0; i < totalChunks; i++) {
+    const start = i * FILE_CHUNK_SIZE;
+    const end = start + FILE_CHUNK_SIZE;
+    const chunk = content.slice(start, end);
+    const id = CHUNK_ID.toString();
+    CHUNK_TO_DATA[id] = chunk;
+    chunks.push(id);
+    CHUNK_ID++;
+  }
+  info.content = chunks;
+  setTimeout(() => {
+    info.checkedSplit = false;
+    info.content = content;
+    for (const id of chunks){
+      delete CHUNK_TO_DATA[id];
+    }
+  },  60 * 1000);
+  return true;
+}
+
+
 let UsingBackup = false;
-const Chunks = {};
+const RecvChunks = {};
 app.patch("/uploadChunk", async (req, res) => {
   const chunk = req.body.chunk;
   const fileChunksId = req.body.token;
   const index = req.body.index;
-  if (!Chunks[fileChunksId]) {
-    Chunks[fileChunksId] = [];
+  if (!RecvChunks[fileChunksId]) {
+    RecvChunks[fileChunksId] = [];
     setTimeout(() => {
-      delete Chunks[fileChunksId];
+      delete RecvChunks[fileChunksId];
     }, 80000);
   }
-  Chunks[fileChunksId].push({ index: index, data: chunk });
+  RecvChunks[fileChunksId].push({ index: index, data: chunk });
   res.status(200).json({ message: "Chunk received" });
 });
 
@@ -852,20 +897,20 @@ app.patch("/respond", async (req, res) => {
           if (Date.now() - startTime > timeout) {
             break;
           }
-          const chunkedLogs = Chunks[respondID];
+          const chunkedLogs = RecvChunks[respondID];
           if (chunkedLogs && chunkedLogs.length >= numSections) {
             chunkedLogs.sort((a, b) => a.index - b.index);
             const concatenated = chunkedLogs
               .map((chunk) => chunk.data)
               .join("");
             logs = decodeBuffer(JSON.parse(concatenated));
-            delete Chunks[respondID];
+            delete RecvChunks[respondID];
             break;
           }
           await wait(500);
         }
-        const chunkedLogs = Chunks[respondID];
-        delete Chunks[respondID];
+        const chunkedLogs = RecvChunks[respondID];
+        delete RecvChunks[respondID];
         if (logs === "") {
           logs = chunkedLogs
             ? Buffer.from(
@@ -1032,6 +1077,22 @@ app.patch("/respond", async (req, res) => {
   }
 });
 
+app.post("/debug", async (req, res) => {
+  const message = req.body.message;
+  console.log("Debug Message:", message);
+  logBot("Debug Endpoint", message);
+  res.status(200).json({ message: "Debug message logged" });
+});
+
+app.post("/chunk", async (req, res) => {
+  const chunkId = req.body.id;
+  if (chunkId in CHUNK_TO_DATA) {
+    res.status(200).json({ chunk: CHUNK_TO_DATA[chunkId] });
+  } else {
+    res.status(404).json({ message: "Chunk not found" });
+  }
+});
+
 app.get("/", (req, res) => {
   res.send("Bot is running!");
 });
@@ -1054,17 +1115,16 @@ app.post("/getInputs", async (req, res) => {
   const interacted = req.body.i;
 
   data = [];
-  let totalDataSize = 0;
   for (const id in Inputs) {
     if (!interacted.includes(Inputs[id].uid)) {
       if (!Inputs[id].encoded) {
-        Inputs[id].input = encodeZstd(Inputs[id].input);
+        Inputs[id].content = encodeZstd(Inputs[id].input);
         Inputs[id].encoded = true;
+        delete Inputs[id].input;
       }
-      totalDataSize += Inputs[id].input.length;
-      if (totalDataSize > MAX_INPUT_SIZE) {
-        break;
-      }
+
+      splitData(Inputs[id]);
+
       data.push(Inputs[id]);
     }
   }
@@ -1089,6 +1149,7 @@ app.post("/getAll", async (req, res) => {
 app.post("/get", async (req, res) => {
   const TaskId = req.body.TaskId;
   if (TaskId in ExecuteTasks) {
+    splitData(ExecuteTasks[TaskId]);
     res.json(ExecuteTasks[TaskId]);
     delete ExecuteTasks[TaskId];
     return;
@@ -1189,12 +1250,12 @@ async function main() {
             try {
               const eSize = encodeZstd(input).length;
 
-              if (eSize > MAX_INPUT_SIZE) {
+              if (eSize > MAX_DATA_TO_SEND) {
                 interaction.reply({
                   content: `Input exceeds maximum size of ${Math.floor(
-                    MAX_INPUT_SIZE / 1024
+                    MAX_DATA_TO_SEND / 1024,
                   )} KB after compression (current size: ${Math.floor(
-                    eSize / 1024
+                    eSize / 1024,
                   )} KB).`,
                   ephemeral: true,
                 });

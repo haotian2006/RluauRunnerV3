@@ -3,7 +3,7 @@ local POLL_RATE = 1000 --ms
 local DEFAULT_TIMEOUT = 25 -- seconds
 local MAX_STR_HEIGHT = 25
 local MAX_RESPONSES_BEFORE_TIMEOUT = 50
-local FILE_CHUNK_SIZE = 25000
+local FILE_CHUNK_SIZE = 50000
 local MAX_FILE_SIZE = 2 * 1024 * 1024 -- 2 MB
 
 --[[
@@ -268,7 +268,7 @@ if smt then
 	smt:Destroy()
 end
 
-local function executeCode(id, code, env)
+local function executeCode(id, code, env,thread)
 	local m = Instance.new("ModuleScript")
 	local imports = ""
 	local updates = ""
@@ -289,12 +289,16 @@ local function executeCode(id, code, env)
 
 	local src =
 		`{table.concat(fs, "\n")}\nreturn function(imports){imports}{updates}return function() local _=(function () --[[START OF CODE]] \n{code}\n--[[END OF CODE]]\nend)()\n\n\t\t\ntask.wait(1)\n\tend\nend`
-	m.Source = src
-
-	m.Name = id
-	local f = require(m)
-	--m.Parent = game
-	return f, m
+	
+	if #src < 200000 then
+		m.Source = src
+		m.Name = id
+		local f = require(m)
+		return f, m
+	else
+		table.insert(thread.output,colorsLower.yellow .. '[WARNING] Script to long for normal execution. Using loadstring!')
+		return (loadstring::any)(src)(), m
+	end
 end
 
 local function decodeZstd(data)
@@ -307,6 +311,50 @@ local function decodeZstd(data)
 			)
 		)
 	end)
+end
+
+local function sendDebug(message)
+	Https:PostAsync(IP .. "/debug", encoder({ message = message }), Enum.HttpContentType.ApplicationJson)
+end
+
+local function getContentFromChunks(chunks)
+	local content = {}
+	local recv = 0
+	local failed = false
+	for i = 1, #chunks do
+		task.spawn(function()
+			local pass, data = attemptRequest(
+				0.5,
+				4,
+				HttpService.PostAsync,
+				HttpService,
+				IP .. "/chunk",
+				encoder({ id = chunks[i] }),
+				Enum.HttpContentType.ApplicationJson
+			)
+
+			
+			if pass then
+				local decoded = HttpService:JSONDecode(data)
+				content[i] = decoded.chunk
+				if not decoded.chunk then
+					failed = "Chunk returned no data"
+				end
+	
+			else
+				failed = data or "Failed to retrieve chunk"
+			end
+			recv += 1
+		end)
+	end
+	while recv < #chunks and not failed do
+		task.wait()
+	end
+
+	if failed then
+		return false, failed
+	end
+	return true, table.concat(content)
 end
 
 local function runCode(compCode, data)
@@ -326,7 +374,7 @@ local function runCode(compCode, data)
 		code = `print({code:sub(2)})`
 	end
 	local foundSignalUsage = false
-	if code:find('connect') or code:find('Connect') or code:find('once') or code:find('Once') then
+	if code:find("connect") or code:find("Connect") or code:find("once") or code:find("Once") then
 		foundSignalUsage = true
 	end
 	local processID = game:GetService("HttpService"):GenerateGUID(false)
@@ -463,7 +511,7 @@ local function runCode(compCode, data)
 
 	env.colorstring = function(text, color)
 		color = color or ""
-		return (colorsLower[color:lower()] or "") .. tostring(text) 
+		return (colorsLower[color:lower()] or "") .. tostring(text)
 	end
 
 	env.log = function(text, color, newLine)
@@ -549,7 +597,7 @@ local function runCode(compCode, data)
 		return false
 	end
 	local module
-	fx, module = executeCode(id, code, env)
+	fx, module = executeCode(id, code, env,thread)
 	thread.module = module
 
 	if isCommand and code:find("%-%-") then
@@ -695,7 +743,15 @@ local function runCode(compCode, data)
 		if truncated == "" then
 			truncated = "No Output"
 		end
-		respondToInteraction(data.token, truncated, log or "", nil, fileType, os.clock() - thread.start, thread.followUp)
+		respondToInteraction(
+			data.token,
+			truncated,
+			log or "",
+			nil,
+			fileType,
+			os.clock() - thread.start,
+			thread.followUp
+		)
 
 		Processes[processID] = nil
 		ProcessesByUser[userid][processID] = nil
@@ -718,8 +774,21 @@ local function handleRequest(uuid)
 		return
 	end
 	local decodedData = Https:JSONDecode(data)
-
-	runCode(decodedData.content, decodedData)
+	local content = decodedData.content
+	if type(content) == "table" then
+		local pass, content_ = getContentFromChunks(content)
+		if not pass then
+			content = "Failed to retrieve all chunks: " .. content_
+		else
+			content = content_
+		end
+	end
+	decodedData.content = content
+	
+	local runSus, runErr = pcall(runCode, decodedData.content, decodedData)
+	if not runSus then
+		respondToInteraction(decodedData.token, `Error while running code: {runErr}`, nil, nil, nil, true)
+	end
 end
 
 local processedInputs = {}
@@ -735,24 +804,35 @@ local function handleInputs()
 	if res.StatusCode ~= 200 then
 		return
 	end
-	local decodedData: { { input: string, id: number, uid: string } } = Https:JSONDecode(res.Body)
+	local decodedData: { { content: string, id: number, uid: string } } = Https:JSONDecode(res.Body)
 	for _, data in decodedData do
-		local id = data.id
-		table.insert(processedInputs, data.uid)
-		local sus, input = decodeZstd(data.input)
-		if not sus then
-			input = "[ERROR WHILE DECODING INPUT]: " .. input
-		end
-		local isStop = input == "STOP_ALL_SESSIONS_PLS"
-		if not isStop then
-			for _, process in ProcessesByUser[id] or {} do
-				table.insert(process.inputs, input)
+		task.spawn(function()
+			local id = data.id
+			table.insert(processedInputs, data.uid)
+			local content = data.content
+			if type(content) == "table" then
+				local pass, content_ = getContentFromChunks(content)
+				if not pass then
+					content = "Failed to retrieve all chunks: " .. content_
+				else
+					content = content_
+				end
 			end
-		else
-			for _, process in ProcessesByUser[id] or {} do
-				process.forceStop()
+			local sus, input = decodeZstd(content)
+			if not sus then
+				input = "[ERROR WHILE DECODING INPUT]: " .. input ..' ' ..tableToString(content)
 			end
-		end
+			local isStop = input == "STOP_ALL_SESSIONS_PLS"
+			if not isStop then
+				for _, process in ProcessesByUser[id] or {} do
+					table.insert(process.inputs, input)
+				end
+			else
+				for _, process in ProcessesByUser[id] or {} do
+					process.forceStop()
+				end
+			end
+		end)
 	end
 end
 
