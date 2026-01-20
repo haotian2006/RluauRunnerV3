@@ -296,7 +296,7 @@ local function executeCode(id, code, env,thread)
 		local f = require(m)
 		return f, m
 	else
-		table.insert(thread.output,colorsLower.yellow .. '[WARNING] Script to long for normal execution. Using loadstring!')
+		table.insert(thread.output,colorsLower.yellow .. '[WARNING] Script to long for normal execution. Using loadstring!\n')
 		return (loadstring::any)(src)(), m
 	end
 end
