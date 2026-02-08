@@ -52,8 +52,8 @@ const SERVER_CHECK_INTERVAL = 1000;
 const SERVER_PING_TIMEOUT = 1000 * 5;
 const SERVER_TIME_OUT = "300s"; // this is how much before a server timeouts
 const BACKUP_SERVER_WAIT_TIME = 1000 * 60 * 2;
-const FILE_CHUNK_SIZE = 50000;
-const MAX_DATA_TO_SEND = 10000 * 200; // 2 MB
+const FILE_CHUNK_SIZE = 1024 * 1024*10; // 10 MB
+const MAX_DATA_TO_SEND = 1024 * 1024 * 100; // 100 MB
 
 let botSrcEncoded = fs.existsSync(path.join(__dirname, "luauBot.b64"))
   ? fs.readFileSync(path.join(__dirname, "luauBot.b64"), "utf-8")
@@ -82,6 +82,7 @@ const SupportedFileTypes = new Set([
   "ogg",
   "mp4",
   "webm",
+  "rbxm"
 ]);
 
 let IP = "";
@@ -470,11 +471,12 @@ async function getCodeFromContextMenu(interaction) {
   // let codeBlocks = [...content.matchAll(/```(?:lua)?\s*([\s\S]*?)\s*```/g)].map(
   //   (m) => m[1]
   // );
-  if (/```lua/.test(content)) {
-    regex = /```lua\s*([\s\S]*?)\s*```/g;
-  } else {
-    regex = /```\w*\s*([\s\S]*?)\s*```/g;
-  }
+  // if (/```lua/.test(content)) {
+  //   regex = /```lua\s*([\s\S]*?)\s*```/g;
+  // } else {
+  //   regex = /```\w*\s*([\s\S]*?)\s*```/g;
+  // }
+  regex = /```\w*\s*([\s\S]*?)\s*```/g;
   let codeBlocks = [...content.matchAll(regex)].map((m) => m[1].trim());
   if (attachments && attachments.url) {
     let data = await checkAndGetAttachmentText(attachments);
@@ -895,6 +897,7 @@ app.patch("/respond", async (req, res) => {
         logs = "";
         while (true) {
           if (Date.now() - startTime > timeout) {
+            
             break;
           }
           const chunkedLogs = RecvChunks[respondID];

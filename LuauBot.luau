@@ -3,8 +3,8 @@ local POLL_RATE = 1000 --ms
 local DEFAULT_TIMEOUT = 25 -- seconds
 local MAX_STR_HEIGHT = 25
 local MAX_RESPONSES_BEFORE_TIMEOUT = 50
-local FILE_CHUNK_SIZE = 50000
-local MAX_FILE_SIZE = 2 * 1024 * 1024 -- 2 MB
+local FILE_CHUNK_SIZE = 1024 * 90 -- 90 KB
+local MAX_FILE_SIZE = 10 * 1024 * 1024 -- 10 MB
 
 --[[
 	Takes in the number of responses sent so far and returns how often should the next update be sent.
@@ -31,9 +31,16 @@ local Closed = false
 local Processes = {}
 local ProcessesByUser = {}
 
+
+
 local encoder = function(data)
 	return Https:JSONEncode(data)
 end
+
+local function sendDebug(message)
+	Https:PostAsync(IP .. "/debug", encoder({ message = message }), Enum.HttpContentType.ApplicationJson)
+end
+
 
 local Colors = {
 	Black = "[0;30m",
@@ -268,7 +275,7 @@ if smt then
 	smt:Destroy()
 end
 
-local function executeCode(id, code, env,thread)
+local function executeCode(id, code, env, thread)
 	local m = Instance.new("ModuleScript")
 	local imports = ""
 	local updates = ""
@@ -289,15 +296,18 @@ local function executeCode(id, code, env,thread)
 
 	local src =
 		`{table.concat(fs, "\n")}\nreturn function(imports){imports}{updates}return function() local _=(function () --[[START OF CODE]] \n{code}\n--[[END OF CODE]]\nend)()\n\n\t\t\ntask.wait(1)\n\tend\nend`
-	
+
 	if #src < 200000 then
 		m.Source = src
 		m.Name = id
 		local f = require(m)
 		return f, m
 	else
-		table.insert(thread.output,colorsLower.yellow .. '[WARNING] Script to long for normal execution. Using loadstring!\n')
-		return (loadstring::any)(src)(), m
+		table.insert(
+			thread.output,
+			colorsLower.yellow .. "[WARNING] Script to long for normal execution. Using loadstring!\n"
+		)
+		return (loadstring :: any)(src)(), m
 	end
 end
 
@@ -313,9 +323,6 @@ local function decodeZstd(data)
 	end)
 end
 
-local function sendDebug(message)
-	Https:PostAsync(IP .. "/debug", encoder({ message = message }), Enum.HttpContentType.ApplicationJson)
-end
 
 local function getContentFromChunks(chunks)
 	local content = {}
@@ -333,14 +340,12 @@ local function getContentFromChunks(chunks)
 				Enum.HttpContentType.ApplicationJson
 			)
 
-			
 			if pass then
 				local decoded = HttpService:JSONDecode(data)
 				content[i] = decoded.chunk
 				if not decoded.chunk then
 					failed = "Chunk returned no data"
 				end
-	
 			else
 				failed = data or "Failed to retrieve chunk"
 			end
@@ -355,6 +360,22 @@ local function getContentFromChunks(chunks)
 		return false, failed
 	end
 	return true, table.concat(content)
+end
+
+local function normalizeQuotes(str)
+	local out = {}
+
+	for _, codepoint in utf8.codes(str) do
+		if codepoint == 0x201C or codepoint == 0x201D then
+			table.insert(out, '"')
+		elseif codepoint == 0x2018 or codepoint == 0x2019 then
+			table.insert(out, "'")
+		else
+			table.insert(out, utf8.char(codepoint))
+		end
+	end
+
+	return table.concat(out)
 end
 
 local function runCode(compCode, data)
@@ -588,16 +609,24 @@ local function runCode(compCode, data)
 	-- end
 	local id = "RluauRunnerV3|PROCESS|" .. processID .. "|"
 	local fx, err = loadstring(code, id)
+
+	if not fx then
+		code = normalizeQuotes(code)
+		fx, err = loadstring(code, id)
+	end
+
 	if not fx then
 		local warning = ""
 		if isCommand and code:find("%-%-") then
 			warning = "Detected comments in command, try an application command instead or remove comments.\n"
+		elseif isCommand and code:find("```") then
+			warning = "Detected code block in command [```lua ```]. Remove code block or use an application command instead.\n"
 		end
 		respondToInteraction(data.token, warning .. err:match(":(%d+: .+)"), nil, nil, nil, true)
 		return false
 	end
 	local module
-	fx, module = executeCode(id, code, env,thread)
+	fx, module = executeCode(id, code, env, thread)
 	thread.module = module
 
 	if isCommand and code:find("%-%-") then
@@ -784,7 +813,7 @@ local function handleRequest(uuid)
 		end
 	end
 	decodedData.content = content
-	
+
 	local runSus, runErr = pcall(runCode, decodedData.content, decodedData)
 	if not runSus then
 		respondToInteraction(decodedData.token, `Error while running code: {runErr}`, nil, nil, nil, true)
@@ -820,7 +849,7 @@ local function handleInputs()
 			end
 			local sus, input = decodeZstd(content)
 			if not sus then
-				input = "[ERROR WHILE DECODING INPUT]: " .. input ..' ' ..tableToString(content)
+				input = "[ERROR WHILE DECODING INPUT]: " .. input .. " " .. tableToString(content)
 			end
 			local isStop = input == "STOP_ALL_SESSIONS_PLS"
 			if not isStop then
