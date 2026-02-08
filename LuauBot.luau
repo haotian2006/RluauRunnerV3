@@ -508,6 +508,9 @@ local function runCode(compCode, data)
 			thread.followUp = true
 		end,
 		writefile = function(data, fileType)
+			if type(data) == "buffer" then
+				data = buffer.tostring(data)
+			end
 			thread.fileType = fileType
 			thread.fileData = data
 		end,
