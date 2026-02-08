@@ -620,7 +620,7 @@ local function runCode(compCode, data)
 		if isCommand and code:find("%-%-") then
 			warning = "Detected comments in command, try an application command instead or remove comments.\n"
 		elseif isCommand and code:find("```") then
-			warning = "Detected code block in command [```lua ```]. Remove code block or use an application command instead.\n"
+			warning = "Detected code block in command ['``lua {CODE} ``']. Remove code block or use an application command instead.\n"
 		end
 		respondToInteraction(data.token, warning .. err:match(":(%d+: .+)"), nil, nil, nil, true)
 		return false
