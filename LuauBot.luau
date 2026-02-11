@@ -510,6 +510,8 @@ local function runCode(compCode, data)
 		writefile = function(data, fileType)
 			if type(data) == "buffer" then
 				data = buffer.tostring(data)
+			elseif type(data) ~= "string" then
+				error("Data must be a string or buffer for writefile",2)
 			end
 			thread.fileType = fileType
 			thread.fileData = data
@@ -669,8 +671,8 @@ local function runCode(compCode, data)
 			(
 				(
 					(os.clock() - thread.start < TIMEOUT or numOfResponses < MAX_RESPONSES_BEFORE_TIMEOUT)
-					and sus
-					and (numRunning() > 0 or foundSignalUsage)
+						and sus
+						and (numRunning() > 0 or foundSignalUsage)
 				) or thread.blocked
 			) and not thread.stopped
 		do
