@@ -915,9 +915,11 @@ app.patch("/respond", async (req, res) => {
         const chunkedLogs = RecvChunks[respondID];
         delete RecvChunks[respondID];
         if (logs === "") {
+          fileName = "failed_to_retrieve_logs";
+          fileType = "txt";
           logs = chunkedLogs
             ? Buffer.from(
-                ` (received ${chunkedLogs.length}/${numSections} sections)`,
+                `Failed to retrieve logs (received ${chunkedLogs.length}/${numSections} sections)`,
                 "utf-8"
               )
             : Buffer.from("Failed to retrieve logs", "utf-8");
