@@ -716,6 +716,7 @@ local function runCode(compCode, data)
 		end
 		local shouldLog = (env :: any).OUTPUT_LOGS
 		if not sus then
+			task.wait(.5)
 			local str = ((env :: any).TIMESTAMP ~= false) and string.format("[%.3f] ", os.clock() - start) or ""
 			if msg:find("Script timeout: exhausted allowed execution time") then
 				table.insert(thread.output, createText(str .. "Script timeout: exhausted allowed execution time", 3))
