@@ -1380,7 +1380,7 @@ async function main() {
           // const useKonst =
           //   interaction.fields.getTextInputValue("konst") === "1";
           // options.binary = useKonst;
-
+          info.content = info.content.replace("--!optimize","--").replace("--!native", "--aaa");
           let bytecode = await getByteCode(options, info.content);
           let type = "armasm";
           // if (useKonst) {
