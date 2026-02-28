@@ -52,7 +52,7 @@ const SERVER_CHECK_INTERVAL = 1000;
 const SERVER_PING_TIMEOUT = 1000 * 5;
 const SERVER_TIME_OUT = "300s"; // this is how much before a server timeouts
 const BACKUP_SERVER_WAIT_TIME = 1000 * 60 * 2;
-const FILE_CHUNK_SIZE = 1024 * 1024*10; // 10 MB
+const FILE_CHUNK_SIZE = 1024 * 1024 * 10; // 10 MB
 const MAX_DATA_TO_SEND = 1024 * 1024 * 100; // 100 MB
 
 let botSrcEncoded = fs.existsSync(path.join(__dirname, "luauBot.b64"))
@@ -82,7 +82,7 @@ const SupportedFileTypes = new Set([
   "ogg",
   "mp4",
   "webm",
-  "rbxm"
+  "rbxm",
 ]);
 
 let IP = "";
@@ -141,7 +141,7 @@ function log(userid, name, commandName, data) {
         headers: {
           "Content-Type": "application/x-www-form-urlencoded",
         },
-      }
+      },
     )
     .catch(() => {});
 }
@@ -241,10 +241,8 @@ let SERVERS_CREATED = 0;
 async function startRoblox(
   path = EXECUTE_LUAU,
   key = ROBLOX_API_KEY,
-  module = LUAU_MODULE
+  module = LUAU_MODULE,
 ) {
-
-  
   let script = `require(${
     module !== "" ? module : "workspace.LuauBot"
   }).start("${IP}") `;
@@ -297,7 +295,9 @@ function fetchFileContent(url) {
 
         if (response.statusCode !== 200) {
           reject(
-            new Error(`Failed to get data. Status Code: ${response.statusCode}`)
+            new Error(
+              `Failed to get data. Status Code: ${response.statusCode}`,
+            ),
           );
           return;
         }
@@ -322,7 +322,9 @@ function fetchBinaryFile(url) {
       .get(url, (response) => {
         if (response.statusCode !== 200) {
           reject(
-            new Error(`Failed to get data. Status Code: ${response.statusCode}`)
+            new Error(
+              `Failed to get data. Status Code: ${response.statusCode}`,
+            ),
           );
           return;
         }
@@ -433,7 +435,7 @@ async function getByteCode(options, code) {
 async function checkAndGetAttachmentText(attachment) {
   const validTextExtensions = [".txt", ".lua", ".luau", ".json"];
   const isTextFile = validTextExtensions.some((ext) =>
-    attachment.name.toLowerCase().endsWith(ext)
+    attachment.name.toLowerCase().endsWith(ext),
   );
 
   if (!isTextFile) {
@@ -499,7 +501,10 @@ async function getCodeFromContextMenu(interaction) {
       code = code + "\n" + additionalCode;
     }
   }
-  code = code.replace(/--\[==\[IGNORE START\]==\][\s\S]*?--\[==\[IGNORE END\]==\]/g, '');
+  code = code.replace(
+    /--\[==\[IGNORE START\]==\][\s\S]*?--\[==\[IGNORE END\]==\]/g,
+    "",
+  );
   return code;
 }
 
@@ -569,7 +574,7 @@ async function createByteModal(data, code) {
     new ActionRowBuilder().addComponents(debugInput),
     // new ActionRowBuilder().addComponents(useKonst),
     new ActionRowBuilder().addComponents(remarksInput),
-    new ActionRowBuilder().addComponents(ephemeralInput)
+    new ActionRowBuilder().addComponents(ephemeralInput),
   );
 
   byteCodeModalData[data.user.id] = {
@@ -627,7 +632,7 @@ async function createCompileModal(data, code) {
     .setLabel("Additional Code (Optional)")
     .setStyle(TextInputStyle.Paragraph)
     .setValue(
-      `--native\n--optimize 2\nlocal function run()\n\t{CODE}\nend\nlocal results = run()`
+      `--native\n--optimize 2\nlocal function run()\n\t{CODE}\nend\nlocal results = run()`,
     )
     .setRequired(false);
 
@@ -636,7 +641,7 @@ async function createCompileModal(data, code) {
     new ActionRowBuilder().addComponents(logInput),
     new ActionRowBuilder().addComponents(timestamps),
     new ActionRowBuilder().addComponents(runTime),
-    new ActionRowBuilder().addComponents(ephemeralInput)
+    new ActionRowBuilder().addComponents(ephemeralInput),
   );
 
   byteCodeModalData[data.user.id] = {
@@ -646,9 +651,12 @@ async function createCompileModal(data, code) {
     data: data,
   };
 
-  setTimeout(() => {
-    delete byteCodeModalData[data.user.id];
-  }, 5 * 60 * 1000);
+  setTimeout(
+    () => {
+      delete byteCodeModalData[data.user.id];
+    },
+    5 * 60 * 1000,
+  );
   await data.showModal(modal);
 }
 
@@ -675,7 +683,7 @@ async function sendCompileRequestToRoblox(
   targetId,
   interaction,
   originalInteraction,
-  isCommand = false
+  isCommand = false,
 ) {
   const uuid = generateUUID();
   ExecuteTasks[uuid] = {
@@ -689,10 +697,13 @@ async function sendCompileRequestToRoblox(
     isCommand: isCommand,
   };
   CompilingTasks[interaction.token] = [interaction, originalInteraction];
-  setTimeout(() => {
-    delete CompilingTasks[interaction.token];
-    delete ExecuteTasks[uuid];
-  }, 1000 * 60 * 6);
+  setTimeout(
+    () => {
+      delete CompilingTasks[interaction.token];
+      delete ExecuteTasks[uuid];
+    },
+    1000 * 60 * 6,
+  );
 }
 
 async function reply(
@@ -700,7 +711,7 @@ async function reply(
   content,
   ephemeral = false,
   fileType = "lua",
-  msgLink = null
+  msgLink = null,
 ) {
   try {
     const len = content.length;
@@ -742,23 +753,23 @@ function decodeBuffer(data) {
   }
 }
 
-
 const CHUNK_TO_DATA = {};
 let CHUNK_ID = 0;
-function splitData(info){
-  if (info.checkedSplit){
+function splitData(info) {
+  if (info.checkedSplit) {
     return false;
   }
   // info will contain a `content` field that is a string
   const content = info.content;
   info.checkedSplit = true;
   const totalChunks = Math.ceil(content.length / FILE_CHUNK_SIZE);
-  if (totalChunks <= 1){
+  if (totalChunks <= 1) {
     return false;
   }
-  
-  if (content.length > MAX_DATA_TO_SEND){
-    info.content = "Data too large. Must be less than " + MAX_DATA_TO_SEND + " characters.";
+
+  if (content.length > MAX_DATA_TO_SEND) {
+    info.content =
+      "Data too large. Must be less than " + MAX_DATA_TO_SEND + " characters.";
     return false;
   }
 
@@ -776,13 +787,203 @@ function splitData(info){
   setTimeout(() => {
     info.checkedSplit = false;
     info.content = content;
-    for (const id of chunks){
+    for (const id of chunks) {
       delete CHUNK_TO_DATA[id];
     }
-  },  60 * 1000);
+  }, 60 * 1000);
   return true;
 }
 
+/**
+ * Retry a Discord operation with exponential backoff
+ * @param {Function} operation - The async Discord operation to retry
+ * @param {number} maxRetries - Maximum number of retry attempts
+ * @param {string} operationName - Name of the operation for logging
+ * @returns {Promise<any>} - Result of the operation
+ */
+async function retryDiscordOperation(
+  operation,
+  maxRetries = 3,
+  operationName = "Discord operation",
+) {
+  let lastError;
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      return await operation();
+    } catch (error) {
+      lastError = error;
+      logBot(
+        "Discord Retry",
+        `${operationName} failed (attempt ${attempt}/${maxRetries}): ${error.message}`,
+      );
+
+      if (attempt < maxRetries) {
+        const delay = Math.min(1000 * Math.pow(2, attempt - 1), 5000);
+        await wait(delay);
+      }
+    }
+  }
+  throw lastError;
+}
+
+/**
+ * Create embed with consistent formatting
+ */
+function createResponseEmbed(
+  serverNum,
+  userId,
+  responseContent,
+  isLast,
+  runtime,
+  msgLink,
+) {
+  const embed = new EmbedBuilder()
+    .setTitle("Luau Compiler Results | Server #" + serverNum)
+    .setDescription(
+      (UsingBackup
+        ? `[WARNING] Server creation quota reached. New sessions will be created less often. Frees <t:${BackUpEndTime}:R>. \n`
+        : "") +
+        `Requested by: <@${userId}>` +
+        `\`\`\`ansi\n${censorText(responseContent)}\n\`\`\``,
+    )
+    .setColor(UsingBackup ? 16488960 : 0x8ce4ff);
+
+  if (isLast) {
+    embed.setFooter({ text: `Compilation completed | ${runtime}s` });
+    embed.setColor(UsingBackup ? 16488960 : 3447003);
+  }
+
+  if (msgLink) {
+    embed.setURL(msgLink);
+  }
+
+  return embed;
+}
+
+/**
+ * Handle follow-up response in Discord
+ */
+async function handleFollowUpResponse(
+  interaction,
+  embed,
+  sentUrl,
+  logs,
+  fileName,
+  fileType,
+  dmMessage,
+) {
+  const followUpEmbed = new EmbedBuilder(embed.data)
+    .setTitle("Follow up request")
+    .setURL(sentUrl);
+
+  if (interaction.guild) {
+    await retryDiscordOperation(
+      () =>
+        interaction.followUp({
+          ephemeral: true,
+          embeds: [followUpEmbed],
+          ...(logs && {
+            files: [{ name: `${fileName}.${fileType}`, attachment: logs }],
+          }),
+        }),
+      3,
+      "Follow-up in guild",
+    );
+  } else {
+    try {
+      followUpEmbed.addFields(
+        {
+          name: "Info",
+          value:
+            "This is a follow up request. You can still use `/input` to send inputs to the bot. The purpose of this is allow you to send inputs without having to scroll up to find the changes. This will also update the main interaction message.",
+          inline: false,
+        },
+        {
+          name: "Tip",
+          value: "Use `/hiddeninput` to not flood dms with inputs",
+          inline: true,
+        },
+      );
+
+      const files = logs
+        ? [{ name: `${fileName}.${fileType}`, attachment: logs }]
+        : undefined;
+
+      if (dmMessage) {
+        await retryDiscordOperation(
+          () =>
+            dmMessage.edit({
+              embeds: [followUpEmbed],
+              ...(files && { files }),
+            }),
+          3,
+          "Edit DM message",
+        );
+      } else {
+        const newDmMessage = await retryDiscordOperation(
+          () =>
+            interaction.user.send({
+              embeds: [followUpEmbed],
+              ...(files && { files }),
+            }),
+          3,
+          "Send DM",
+        );
+
+        await interaction.followUp({
+          content:
+            "A new DM has been sent to you with the follow up response. " +
+            newDmMessage.url,
+          ephemeral: true,
+        });
+
+        return newDmMessage;
+      }
+    } catch (err) {
+      logBot("Follow-up Error", `Failed to send DM follow-up: ${err.message}`);
+    }
+  }
+  return null;
+}
+
+/**
+ * Retrieve chunked logs with timeout
+ */
+async function retrieveChunkedLogs(respondID, numSections, interaction, link) {
+  logBot(
+    "Respond Endpoint",
+    `Retrieving chunked logs sections: ${numSections} from: ${interaction.user.id} link: ${link}`,
+  );
+
+  const startTime = Date.now();
+  const timeout = 60 * 1000;
+
+  while (Date.now() - startTime < timeout) {
+    const chunkedLogs = RecvChunks[respondID];
+    if (chunkedLogs && chunkedLogs.length >= numSections) {
+      chunkedLogs.sort((a, b) => a.index - b.index);
+      const concatenated = chunkedLogs.map((chunk) => chunk.data).join("");
+      delete RecvChunks[respondID];
+      return { success: true, data: decodeBuffer(JSON.parse(concatenated)) };
+    }
+    await wait(500);
+  }
+
+  const chunkedLogs = RecvChunks[respondID];
+  delete RecvChunks[respondID];
+
+  return {
+    success: false,
+    data: chunkedLogs
+      ? Buffer.from(
+          `Failed to retrieve logs (received ${chunkedLogs.length}/${numSections} sections)`,
+          "utf-8",
+        )
+      : Buffer.from("Failed to retrieve logs", "utf-8"),
+    fileName: "failed_to_retrieve_logs",
+    fileType: "txt",
+  };
+}
 
 let UsingBackup = false;
 const RecvChunks = {};
@@ -805,36 +1006,33 @@ app.patch("/respond", async (req, res) => {
   const serverNum = req.body.serverNum;
   let _interaction;
   let _link;
-  try {
-    let responseContent = decodeBuffer(JSON.parse(req.body.data)).toString(
-      "utf-8"
-    );
 
-    let logs = req.body.log;
+  try {
+    const responseContent = decodeBuffer(JSON.parse(req.body.data)).toString(
+      "utf-8",
+    );
     const isLast = req.body.finished;
-    let fileType = req.body.fileType;
     const followUp = req.body.followUp;
+    const runtime = req.body.runtime || 0;
+    const numSections = req.body.sections;
+    const respondID = req.body.fileId;
+
+    let fileType = req.body.fileType;
     let fileName;
     if (fileType && fileType.includes(".")) {
-      fileName = fileType.split(".")[0];
-      fileType = fileType.split(".")[1];
+      [fileName, fileType] = fileType.split(".");
     }
-    fileType = fileType ? fileType.toLowerCase() : null;
-    if (!fileType || !SupportedFileTypes.has(fileType)) {
-      fileType = "ansi";
-    }
-    if (!fileName) {
-      fileName = "output";
-    }
-    let numSections = req.body.sections;
-    let respondID = req.body.fileId;
+    fileType =
+      fileType && SupportedFileTypes.has(fileType.toLowerCase())
+        ? fileType.toLowerCase()
+        : "ansi";
+    fileName = fileName || "output";
 
     if (!CompilingTasks[token]) {
-      res.status(500).json({
+      return res.status(500).json({
         message: "Failed to send response to Discord",
-        error: "failed",
+        error: "Invalid or expired token",
       });
-      return;
     }
 
     const [
@@ -844,207 +1042,84 @@ app.patch("/respond", async (req, res) => {
       prevResponseId = 0,
       dmMessage = null,
     ] = CompilingTasks[token];
+
+    _interaction = interaction;
+    const link = getLinkFromData(originalInteraction || interaction);
+    _link = link;
+
+    let logs = req.body.log;
     let alreadyParsed = false;
+
     if (!logs && prevLog) {
       [logs, fileType, fileName] = prevLog;
       alreadyParsed = true;
+    } else if (logs) {
+      if (numSections) {
+        const result = await retrieveChunkedLogs(
+          respondID,
+          numSections,
+          interaction,
+          link,
+        );
+        logs = result.data;
+        if (!result.success) {
+          fileName = result.fileName;
+          fileType = result.fileType;
+        }
+      } else if (!alreadyParsed) {
+        logs = decodeBuffer(JSON.parse(logs));
+      }
     }
+
     const isNewResponse = respondID > prevResponseId;
     if (isNewResponse) {
       CompilingTasks[token][3] = respondID;
     }
 
-    _interaction = interaction;
-    const link = getLinkFromData(originalInteraction || interaction);
-    _link = link;
+    if (logs && CompilingTasks[token] && isNewResponse) {
+      CompilingTasks[token][2] = [logs, fileType, fileName];
+    }
+
     if (isLast) {
       delete CompilingTasks[token];
     }
 
-    const embed = new EmbedBuilder()
-      .setTitle("Luau Compiler Results | Server #" + serverNum)
-      .setDescription(
-        (UsingBackup
-          ? `[WARNING] Server creation quota reached. New sessions will be created less often. Frees <t:${BackUpEndTime}:R>. \n`
-          : "") +
-          `Requested by: <@${interaction.user.id}>` +
-          `\`\`\`ansi\n${censorText(responseContent)}\n\`\`\``,
-      )
-      .setColor(UsingBackup ? 16488960 : 0x8ce4ff);
+    const embed = createResponseEmbed(
+      serverNum,
+      interaction.user.id,
+      responseContent,
+      isLast,
+      runtime,
+      link,
+    );
 
-    if (isLast){
-      let runtime = req.body.runtime || 0;
-      embed.setFooter({ text: "Compilation completed | " + runtime });
-      embed.setColor(UsingBackup ? 16488960 : 3447003);
-    }
-      if (link) {
-        // .addFields({
-        //   name: "Remember To Follow the TOS",
-        //   value: `<https://haotian2006.github.io/LuauBotSite/TOS/>`,
-        // })
+    if (isNewResponse) {
+      const replyOptions = {
+        embeds: [embed],
+        ...(logs && {
+          files: [{ name: `${fileName}.${fileType}`, attachment: logs }],
+        }),
+      };
 
-        embed.setURL(link);
-      }
+      const sent = await retryDiscordOperation(
+        () => interaction.editReply(replyOptions),
+        3,
+        "Edit reply",
+      );
 
-    if (logs) {
-      if (numSections) {
-        logBot(
-          "Respond Endpoint",
-          `Retrieving chunked logs sections: ${numSections} from: ${interaction.user.id} link: ${link}`
-        );
-        const startTime = Date.now();
-        const timeout = 60 * 1000;
-        logs = "";
-        while (true) {
-          if (Date.now() - startTime > timeout) {
-            
-            break;
-          }
-          const chunkedLogs = RecvChunks[respondID];
-          if (chunkedLogs && chunkedLogs.length >= numSections) {
-            chunkedLogs.sort((a, b) => a.index - b.index);
-            const concatenated = chunkedLogs
-              .map((chunk) => chunk.data)
-              .join("");
-            logs = decodeBuffer(JSON.parse(concatenated));
-            delete RecvChunks[respondID];
-            break;
-          }
-          await wait(500);
-        }
-        const chunkedLogs = RecvChunks[respondID];
-        delete RecvChunks[respondID];
-        if (logs === "") {
-          fileName = "failed_to_retrieve_logs";
-          fileType = "txt";
-          logs = chunkedLogs
-            ? Buffer.from(
-                `Failed to retrieve logs (received ${chunkedLogs.length}/${numSections} sections)`,
-                "utf-8"
-              )
-            : Buffer.from("Failed to retrieve logs", "utf-8");
-        }
-      } else if (!alreadyParsed) {
-        logs = decodeBuffer(JSON.parse(logs));
-      }
-      if (CompilingTasks[token] && isNewResponse) {
-        CompilingTasks[token][2] = [logs, fileType, fileName];
-      }
-      if (isNewResponse) {
-        const sent = await interaction.editReply({
-          embeds: [embed],
-          files: [
-            {
-              name: `${fileName}.${fileType}`,
-              attachment: logs,
-            },
-          ],
-        });
-        if (followUp || dmMessage) {
-          embed.setTitle("Follow up request");
-          embed.setURL(sent.url);
-          if (interaction.guild) {
-            await interaction.followUp({
-              ephemeral: true,
-              embeds: [embed],
-              files: [
-                {
-                  name: `${fileName}.${fileType}`,
-                  attachment: logs,
-                },
-              ],
-            });
-          } else {
-            try {
-              embed.addFields(
-                {
-                  name: "Info",
-                  value:
-                    "This is a follow up request. You can still use `/input` to send inputs to the bot. The purpose of this is allow you to send inputs without having to scroll up to find the changes. This will also update the main interaction message.",
-                  inline: false,
-                },
-                {
-                  name: "Tip",
-                  value: "Use `/hiddeninput` to not flood dms with inputs",
-                  inline: true,
-                }
-              );
-
-              if (dmMessage) {
-                await dmMessage.edit({
-                  embeds: [embed],
-                  files: [
-                    {
-                      name: `${fileName}.${fileType}`,
-                      attachment: logs,
-                    },
-                  ],
-                });
-              } else {
-                const newDmMessage = await interaction.user.send({
-                  embeds: [embed],
-                  files: [
-                    {
-                      name: `${fileName}.${fileType}`,
-                      attachment: logs,
-                    },
-                  ],
-                });
-                interaction.followUp({
-                  content:
-                    "A new DM has been sent to you with the follow up response. " +
-                    newDmMessage.url,
-                  ephemeral: true,
-                });
-                if (CompilingTasks[token]) {
-                  CompilingTasks[token][4] = newDmMessage;
-                }
-              }
-            } catch (err) {}
-          }
-        }
-      }
-    } else if (isNewResponse) {
-      const sent = await interaction.editReply({ embeds: [embed] });
       if (followUp || dmMessage) {
-        embed.setTitle("Follow up request");
-        embed.setURL(sent.url);
+        const newDmMessage = await handleFollowUpResponse(
+          interaction,
+          embed,
+          sent.url,
+          logs,
+          fileName,
+          fileType,
+          dmMessage,
+        );
 
-        if (interaction.guild) {
-          await interaction.followUp({ embeds: [embed], ephemeral: true });
-        } else {
-          try {
-            embed.addFields(
-              {
-                name: "Info",
-                value:
-                  "This is a follow up request. You can still use `/input` to send inputs to the bot. The purpose of this is allow you to send inputs without having to scroll up to find the changes. This will also update the main interaction message.",
-                inline: false,
-              },
-              {
-                name: "Tip",
-                value: "Use `/hiddeninput` to not flood dms with inputs",
-                inline: true,
-              }
-            );
-
-            if (dmMessage) {
-              await dmMessage.edit({ embeds: [embed] });
-            } else {
-              const newDmMessage = await interaction.user.send({
-                embeds: [embed],
-              });
-              interaction.followUp({
-                content:
-                  "A new DM has been sent to you with the follow up response. " +
-                  newDmMessage.url,
-                ephemeral: true,
-              });
-              if (CompilingTasks[token]) {
-                CompilingTasks[token][4] = newDmMessage;
-              }
-            }
-          } catch (err) {}
+        if (newDmMessage && CompilingTasks[token]) {
+          CompilingTasks[token][4] = newDmMessage;
         }
       }
     }
@@ -1054,30 +1129,38 @@ app.patch("/respond", async (req, res) => {
       data: "pass",
     });
   } catch (error) {
-    console.error("Error handling /respond:", error);
     logBot("Respond Endpoint Error", `${error.message} stack: ${error.stack}`);
+
     if (_interaction) {
-      const errorEmbed = new EmbedBuilder()
-        .setTitle("Discord Error")
-        .setDescription(
-          ` Requested by: <@${_interaction.user.id}> \n ERROR: ${error.message}`
-        )
-        .setColor(0xff0000);
-
-      if (_link) {
-        errorEmbed.setURL(_link);
-      }
-
       try {
-        await _interaction.editReply({ embeds: [errorEmbed] });
+        const errorEmbed = new EmbedBuilder()
+          .setTitle("Discord Error")
+          .setDescription(
+            `Requested by: <@${_interaction.user.id}>\nERROR: ${error.message}`,
+          )
+          .setColor(0xff0000);
+
+        if (_link) {
+          errorEmbed.setURL(_link);
+        }
+
+        await retryDiscordOperation(
+          () => _interaction.editReply({ embeds: [errorEmbed] }),
+          2,
+          "Error reply",
+        );
       } catch (editError) {
-        console.error("Failed to edit reply with error:", editError);
+        logBot(
+          "Error Reply Failed",
+          `Failed to edit reply with error: ${editError.message}`,
+        );
       }
     }
+
     delete CompilingTasks[token];
     res.status(500).json({
       message: "Failed to send response to Discord",
-      error: "failed",
+      error: error.message,
     });
   }
 });
@@ -1180,8 +1263,8 @@ async function checkRobloxServer() {
       SERVERS_CREATED <= 2
         ? SERVER_CREATION_COOL_DOWN / 1.5
         : SERVERS_CREATED >= 5
-        ? SERVER_CREATION_COOL_DOWN * 1.5
-        : SERVER_CREATION_COOL_DOWN;
+          ? SERVER_CREATION_COOL_DOWN * 1.5
+          : SERVER_CREATION_COOL_DOWN;
     if (UsingBackup) {
       debounce = SERVER_CREATION_COOL_DOWN * 2;
     }
@@ -1194,7 +1277,7 @@ async function checkRobloxServer() {
       if (!started && BACK_UP_EXECUTE_URL !== "") {
         if (!UsingBackup) {
           BackUpEndTime = Math.floor(
-            (Date.now() + BACKUP_SERVER_WAIT_TIME) / 1000
+            (Date.now() + BACKUP_SERVER_WAIT_TIME) / 1000,
           );
           setTimeout(() => {
             UsingBackup = false;
@@ -1203,12 +1286,12 @@ async function checkRobloxServer() {
         UsingBackup = true;
         logBot(
           "Roblox Server",
-          "Failed to start primary Roblox server, attempting backup..."
+          "Failed to start primary Roblox server, attempting backup...",
         );
         started = await startRoblox(
           BACK_UP_EXECUTE_URL,
           BACK_UP_KEY,
-          BACKUP_LUAU_MODULE
+          BACKUP_LUAU_MODULE,
         );
       }
       if (!started) {
@@ -1279,7 +1362,7 @@ async function main() {
                 interaction.user.id,
                 interaction.user.username,
                 interaction.commandName,
-                `Input Length: ${input.length} characters`
+                `Input Length: ${input.length} characters`,
               );
               setTimeout(() => {
                 delete Inputs[uid];
@@ -1301,7 +1384,7 @@ async function main() {
           interaction.user.id,
           interaction.user.username,
           interaction.commandName,
-          `Code length: ${code.length} characters`
+          `Code length: ${code.length} characters`,
         );
 
         if (interaction.commandName === "bytecode") {
@@ -1328,7 +1411,7 @@ async function main() {
           const bytecodeK = await kCall(api, bytecode);
           reply(
             interaction,
-            byteCodeOptionsToString(options, code) + bytecodeK
+            byteCodeOptionsToString(options, code) + bytecodeK,
           );
         } else if (interaction.commandName === "bytecodeWOption") {
           createByteModal(interaction, code);
@@ -1351,7 +1434,7 @@ async function main() {
             interaction.token,
             interaction.channelId,
             interaction.targetId,
-            interaction
+            interaction,
           );
         }
       } else if (interaction.isModalSubmit()) {
@@ -1366,7 +1449,7 @@ async function main() {
           options.optimizeLevel =
             parseInt(
               interaction.fields.getTextInputValue("optimize_level"),
-              10
+              10,
             ) || 0;
           options.debugLevel =
             parseInt(interaction.fields.getTextInputValue("debug_level"), 10) ||
@@ -1380,7 +1463,9 @@ async function main() {
           // const useKonst =
           //   interaction.fields.getTextInputValue("konst") === "1";
           // options.binary = useKonst;
-          info.content = info.content.replace("--!optimize","--").replace("--!native", "--aaa");
+          info.content = info.content
+            .replace("--!optimize", "--")
+            .replace("--!native", "--aaa");
           let bytecode = await getByteCode(options, info.content);
           let type = "armasm";
           // if (useKonst) {
@@ -1394,7 +1479,7 @@ async function main() {
             byteCodeOptionsToString(options, info.content) + bytecode,
             ephemeral,
             type,
-            info.msgLink
+            info.msgLink,
           );
 
           delete byteCodeModalData[interaction.user.id];
@@ -1432,7 +1517,7 @@ async function main() {
             interaction.channelId,
             interaction.targetId,
             interaction,
-            originalInteraction
+            originalInteraction,
           );
         }
       } else if (interaction.isCommand()) {
@@ -1446,7 +1531,7 @@ async function main() {
             interaction.user.id,
             interaction.user.username,
             interaction.commandName,
-            `Pong! ${diff}ms.`
+            `Pong! ${diff}ms.`,
           );
           await interaction.editReply(`Pong! ${diff}ms.`);
         } else if (interaction.commandName === "help") {
@@ -1485,7 +1570,7 @@ async function main() {
             interaction.user.id,
             interaction.user.username,
             interaction.commandName,
-            `Input Length: ${input.length} characters`
+            `Input Length: ${input.length} characters`,
           );
 
           if (isStop) {
@@ -1512,7 +1597,7 @@ async function main() {
                 interaction.user.id,
                 interaction.user.username,
                 interaction.commandName,
-                `Stopped ${removed} session(s)`
+                `Stopped ${removed} session(s)`,
               );
             } catch (err) {
               console.error("Error stopping sessions:", err);
@@ -1528,7 +1613,7 @@ async function main() {
             interaction.user.id,
             interaction.user.username,
             interaction.commandName,
-            `Code length: ${code.length} characters`
+            `Code length: ${code.length} characters`,
           );
 
           // const options = getByteCodeOptions(code);
@@ -1548,7 +1633,7 @@ async function main() {
             interaction.targetId,
             interaction,
             null,
-            true
+            true,
           );
         }
       }

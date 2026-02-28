@@ -204,6 +204,7 @@ local function respondToInteraction(interactionToken, responseContent, logs, awa
 	if finished then
 		FinishedInteractions[interactionToken] = true
 	end
+	FileIds += 1
 	if SendingChunks[interactionToken] then
 		repeat
 			task.wait()
@@ -220,7 +221,6 @@ local function respondToInteraction(interactionToken, responseContent, logs, awa
 	if #responseContent > 1900 then
 		responseContent = responseContent:sub(1, 1900 - 10) .. "... [truncated]"
 	end
-	FileIds += 1
 	local fileId = FileIds
 	local sections = nil
 	if logs and logs ~= "" then
@@ -260,6 +260,7 @@ local function respondToInteraction(interactionToken, responseContent, logs, awa
 		if not sus then
 			warn(msg)
 		end
+
 	end
 
 	if await then
@@ -716,7 +717,6 @@ local function runCode(compCode, data)
 		end
 		local shouldLog = (env :: any).OUTPUT_LOGS
 		if not sus then
-			task.wait(.5)
 			local str = ((env :: any).TIMESTAMP ~= false) and string.format("[%.3f] ", os.clock() - start) or ""
 			if msg:find("Script timeout: exhausted allowed execution time") then
 				table.insert(thread.output, createText(str .. "Script timeout: exhausted allowed execution time", 3))
@@ -778,13 +778,17 @@ local function runCode(compCode, data)
 		if truncated == "" then
 			truncated = "No Output"
 		end
+		local time = os.clock() - thread.start
+		pcall(task.cancel, thread.timeOutThread)
+		stopAll()
+		task.wait(0.5)
 		respondToInteraction(
 			data.token,
 			truncated,
 			log or "",
 			nil,
 			fileType,
-			os.clock() - thread.start,
+			time,
 			thread.followUp
 		)
 
@@ -793,9 +797,8 @@ local function runCode(compCode, data)
 		--// ![AFAIK] theres no way to fully cleanup a thread (this included sub-threads). If this was in a live environment I could execute it from a script and destroy it later but
 		--// for now we just have to keep the sub-threads running. Either way, this session only runs for a max of 5 mins.
 		--// 10/30/25, wrapped tasks and coroutine creations to be tracked and closed on script end.
-		pcall(task.cancel, thread.timeOutThread)
-		stopAll()
 		module:Destroy()
+		
 	end)
 
 	return true
