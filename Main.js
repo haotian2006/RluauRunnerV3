@@ -1034,6 +1034,7 @@ app.patch("/respond", async (req, res) => {
         error: "Invalid or expired token",
       });
     }
+  
 
     const [
       interaction,
@@ -1076,7 +1077,7 @@ app.patch("/respond", async (req, res) => {
       CompilingTasks[token][3] = respondID;
     }
 
-    if (logs && isNewResponse && CompilingTasks[token]) {
+    if (logs && CompilingTasks[token] && isNewResponse) {
       CompilingTasks[token][2] = [logs, fileType, fileName];
     }
 
