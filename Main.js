@@ -1072,11 +1072,11 @@ app.patch("/respond", async (req, res) => {
     }
 
     const isNewResponse = respondID > prevResponseId;
-    if (isNewResponse) {
+    if (isNewResponse && CompilingTasks[token]) {
       CompilingTasks[token][3] = respondID;
     }
 
-    if (logs && CompilingTasks[token] && isNewResponse) {
+    if (logs && isNewResponse && CompilingTasks[token]) {
       CompilingTasks[token][2] = [logs, fileType, fileName];
     }
 
