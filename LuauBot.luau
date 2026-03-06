@@ -128,7 +128,7 @@ local function tableToString(t, indent, lookup, bypass)
 	local indentString = string.rep("  ", indent)
 	local result = "{\n"
 	lookup[t] = true
-	for key, value in t do
+	for key, value in pairs(t) do
 		local key_ = typeof(key) == "string" and `"{key}"` or tostring(key)
 		result = result .. indentString .. "  [" .. tostring(key_) .. "] = "
 
