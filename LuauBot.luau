@@ -227,9 +227,9 @@ local function respondToInteraction(interactionToken, responseContent, logs, awa
 		logs = encode(logs)
 		if #logs > 10000 and #logs < MAX_FILE_SIZE then
 			sections = sendFileInChunks(fileId, logs)
-			logs = "[Log too large to send]"
+			logs = encode("[Log too large to send]")
 		elseif #logs >= MAX_FILE_SIZE then
-			logs = "[Log exceeded maximum size]"
+			logs = encode("[Log exceeded maximum size]")
 		end
 	end
 
