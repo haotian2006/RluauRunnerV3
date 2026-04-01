@@ -402,9 +402,7 @@ function getAnalysisOptions(code) {
     code = "";
   }
   const annotateMatch = code.match("--!annotate");
-  if (annotateMatch) {
-    code = code.replace("--!annotate", "");
-  }
+
   return {
     annotate: !!annotateMatch,
   };
@@ -1428,7 +1426,8 @@ async function main() {
         } else if (interaction.commandName === "analyze") {
           await interaction.deferReply({ ephemeral: false });
           const options = getAnalysisOptions(code);
-          const analysis = await analyzeLuau(code, options);
+          
+          const analysis = await analyzeLuau(code.replace("--!annotate", ""), options);
           await reply(interaction, analysis.output, false, "lua");
         }else if (interaction.commandName === "ast") {
           await interaction.deferReply({ ephemeral: false });
