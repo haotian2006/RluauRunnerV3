@@ -107,6 +107,18 @@ const commands = [
     contexts: [0, 1, 2],
     type: 3,
   },
+  {
+    name: "analyze",
+    integration_types: [0, 1],
+    contexts: [0, 1, 2],
+    type: 3,
+  },
+    {
+    name: "ast",
+    integration_types: [0, 1],
+    contexts: [0, 1, 2],
+    type: 3,
+  },
   // { // decompile using konstant BROKEN FOR NOW
   //   name: "decompile",
   //   integration_types: [0,1],

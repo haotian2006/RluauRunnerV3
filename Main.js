@@ -30,6 +30,8 @@ const FILTER_BAD_WORDS = true;
 require("dotenv").config();
 
 const PATH_TO_COMPILER = path.join(__dirname, "luau-compile");
+const PATH_TO_ANALYZER = path.join(__dirname, "luau-analyze");
+const PATH_TO_AST = path.join(__dirname, "luau-ast");
 const DISCORD_TOKEN = process.env.BOT_TOKEN;
 const DISCORD_APP_ID = process.env.CLIENT_ID;
 const ROBLOX_API_KEY = process.env.ROBLOX_API_KEY;
@@ -171,46 +173,20 @@ function logBot(name, data) {
 //   });
 // });
 
-async function compileLuau(code, options) {
-  const {
-    pathToLuau,
-    optimizationLevel,
-    debugLevel,
-    native,
-    remarks,
-    binary,
-    architecture,
-  } = options;
-
+async function execute(executablePath, code, args) {
   return new Promise((resolve, reject) => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "luau-"));
 
     const inputPath = path.join(tmpDir, "Code.luau");
-    const outputPath = path.join(tmpDir, "Bytecode.luau");
+    const outputPath = path.join(tmpDir, "Output.luau");
 
     fs.writeFileSync(inputPath, code, "utf8");
 
-    const args = [];
-
-    if (native) {
-      args.push("--codegen");
-      args.push(`--target=${architecture}`);
-    } else if (remarks) {
-      args.push("--remarks");
-    } else if (binary) {
-      args.push("--binary");
-    }
-    args.push(`-g${debugLevel}`);
-    args.push(`-O${optimizationLevel}`);
-    args.push("--vector-lib=Vector3");
-    args.push("--vector-ctor=new");
-    args.push("--vector-type=Vector3");
-
     args.push(inputPath);
-    console.log(args);
+
     const outputStream = fs.createWriteStream(outputPath);
 
-    const child = spawn(pathToLuau, args);
+    const child = spawn(executablePath, args);
 
     child.stdout.pipe(outputStream);
     child.stderr.pipe(outputStream);
@@ -231,6 +207,50 @@ async function compileLuau(code, options) {
       });
     });
   });
+}
+
+async function analyzeLuau(code, options) {
+  const { annotate } = options;
+
+  const args = [];
+  if (annotate) {
+    args.push("--annotate");
+  }
+
+  return await execute(PATH_TO_ANALYZER, code, args);
+}
+
+async function generateAST(code) {
+  return await execute(PATH_TO_AST, code, []);
+}
+
+async function compileLuau(code, options) {
+  const {
+    optimizationLevel,
+    debugLevel,
+    native,
+    remarks,
+    binary,
+    architecture,
+  } = options;
+
+  const args = [];
+
+  if (native) {
+    args.push("--codegen");
+    args.push(`--target=${architecture}`);
+  } else if (remarks) {
+    args.push("--remarks");
+  } else if (binary) {
+    args.push("--binary");
+  }
+  args.push(`-g${debugLevel}`);
+  args.push(`-O${optimizationLevel}`);
+  args.push("--vector-lib=Vector3");
+  args.push("--vector-ctor=new");
+  args.push("--vector-type=Vector3");
+
+  return await execute(PATH_TO_COMPILER, code, args);
 }
 
 function wait(ms) {
@@ -377,6 +397,20 @@ async function kCall(api, bytecode) {
   return content;
 }
 
+function getAnalysisOptions(code) {
+  if (!code) {
+    code = "";
+  }
+  const annotateMatch = code.match("--!annotate");
+  if (annotateMatch) {
+    code = code.replace("--!annotate", "");
+  }
+  return {
+    annotate: !!annotateMatch,
+  };
+
+}
+
 /**
  * @param {string?} code
  */
@@ -419,18 +453,12 @@ function byteCodeOptionsToString(options) {
 }
 
 async function getByteCode(options, code) {
-  const result = await compileLuau(code, {
-    pathToLuau: PATH_TO_COMPILER,
-    optimizationLevel: options.optimizeLevel,
-    debugLevel: options.debugLevel,
-    binary: options.binary,
-    native: options.native,
-    remarks: options.remarks,
-    architecture: options.architecture,
-  });
-
+  console.log("Compiling with options: ", options);
+  const result = await compileLuau(code, options);
+  console.log("Compilation result: ", result);
   return result.output;
 }
+
 
 async function checkAndGetAttachmentText(attachment) {
   const validTextExtensions = [".txt", ".lua", ".luau", ".json"];
@@ -716,7 +744,7 @@ async function reply(
   try {
     const len = content.length;
     const link = msgLink || getLinkFromData(interaction);
-    if (len > 1900) {
+    if (len > 1300) {
       await interaction.editReply({
         content:
           "Results For " + link + ":\nOutput too long sending as a file...",
@@ -1034,7 +1062,6 @@ app.patch("/respond", async (req, res) => {
         error: "Invalid or expired token",
       });
     }
-  
 
     const [
       interaction,
@@ -1329,6 +1356,7 @@ async function main() {
   if (TUNNEL_URL) {
     IP = TUNNEL_URL;
   }
+  console.log("Bot is starting...");
   logBot("Discord", "Registering interaction handler...");
   client.on("interactionCreate", async (interaction) => {
     try {
@@ -1387,14 +1415,25 @@ async function main() {
           interaction.commandName,
           `Code length: ${code.length} characters`,
         );
+        console.log(`User ${interaction.user.username} (${interaction.user.id}) invoked ${interaction.commandName} with code length: ${code.length} characters`);
 
         if (interaction.commandName === "bytecode") {
           await interaction.deferReply({ ephemeral: false });
+          console.log("Generating bytecode with options...");
           const options = getByteCodeOptions(code);
           const bytecode =
             byteCodeOptionsToString(options, code) +
             (await getByteCode(options, code));
           await reply(interaction, bytecode, false, "armasm");
+        } else if (interaction.commandName === "analyze") {
+          await interaction.deferReply({ ephemeral: false });
+          const options = getAnalysisOptions(code);
+          const analysis = await analyzeLuau(code, options);
+          await reply(interaction, analysis.output, false, "lua");
+        }else if (interaction.commandName === "ast") {
+          await interaction.deferReply({ ephemeral: false });
+          const ast = await generateAST(code);
+          await reply(interaction, ast.output, false, "json");
         } else if (
           interaction.commandName === "bytecodeK" ||
           interaction.commandName === "decompile"
@@ -1640,6 +1679,7 @@ async function main() {
       }
     } catch (error) {
       console.error("Error handling interaction:", error);
+      logBot("Interaction Error", `Error handling interaction: ${error.message}`);
     }
   });
 
