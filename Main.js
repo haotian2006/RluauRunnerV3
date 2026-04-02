@@ -213,7 +213,7 @@ async function analyzeLuau(code, options) {
   const { annotate } = options;
 
   const args = [];
-  if (annotate) {
+  if (annotate || true) {
     args.push("--annotate");
   }
 
