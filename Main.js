@@ -216,6 +216,7 @@ async function analyzeLuau(code, options) {
   if (annotate || true) {
     args.push("--annotate");
   }
+  args.push("--fflags=LuauSolverV2=true");
 
   return await execute(PATH_TO_ANALYZER, code, args);
 }
@@ -232,6 +233,7 @@ async function compileLuau(code, options) {
     remarks,
     binary,
     architecture,
+    constants
   } = options;
 
   const args = [];
@@ -243,6 +245,8 @@ async function compileLuau(code, options) {
     args.push("--remarks");
   } else if (binary) {
     args.push("--binary");
+  }else if (constants) {
+    args.push("--dump-constants");
   }
   args.push(`-g${debugLevel}`);
   args.push(`-O${optimizationLevel}`);
@@ -424,6 +428,7 @@ function getByteCodeOptions(code) {
     native: code.indexOf("--!native") !== -1,
     binary: code.indexOf("--!binary") !== -1,
     remarks: code.indexOf("--!remarks") !== -1,
+    constants: code.indexOf("--!dump-constants") !== -1,
     optimizeLevel: oMatch ? parseInt(oMatch[1]) : 2,
     debugLevel: dMatch ? parseInt(dMatch[1]) : 0,
   };
@@ -451,9 +456,7 @@ function byteCodeOptionsToString(options) {
 }
 
 async function getByteCode(options, code) {
-  console.log("Compiling with options: ", options);
   const result = await compileLuau(code, options);
-  console.log("Compilation result: ", result);
   return result.output;
 }
 
