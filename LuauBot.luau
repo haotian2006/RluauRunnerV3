@@ -30,8 +30,7 @@ local ServerId = Https:GenerateGUID()
 local Closed = false
 local Processes = {}
 local ProcessesByUser = {}
-
-
+local UserGlobals = {}
 
 local encoder = function(data)
 	return Https:JSONEncode(data)
@@ -40,7 +39,6 @@ end
 local function sendDebug(message)
 	Https:PostAsync(IP .. "/debug", encoder({ message = message }), Enum.HttpContentType.ApplicationJson)
 end
-
 
 local Colors = {
 	Black = "[0;30m",
@@ -260,7 +258,6 @@ local function respondToInteraction(interactionToken, responseContent, logs, awa
 		if not sus then
 			warn(msg)
 		end
-
 	end
 
 	if await then
@@ -276,7 +273,7 @@ if smt then
 	smt:Destroy()
 end
 
-local function executeCode(id, code, env, thread)
+local function executeCode(id, code, env, thread, delay)
 	local m = Instance.new("ModuleScript")
 	local imports = ""
 	local updates = ""
@@ -296,7 +293,7 @@ local function executeCode(id, code, env, thread)
 		`local _ = coroutine.running();task.spawn(function()local _=_ while coroutine.status(_) ~= 'dead' do {updates} task.wait();end;end);`
 
 	local src =
-		`{table.concat(fs, "\n")}\nreturn function(imports){imports}{updates}return function() local _=(function () --[[START OF CODE]] \n{code}\n--[[END OF CODE]]\nend)()\n\n\t\t\ntask.wait(1)\n\tend\nend`
+		`{table.concat(fs, "\n")}\nreturn function(imports){imports}{updates}return function() local _=(function () --[[START OF CODE]] \n{code}\n--[[END OF CODE]]\nend)()\n\n\t\t\ntask.wait({delay or 1})\n\tend\nend`
 
 	if #src < 200000 then
 		m.Source = src
@@ -323,7 +320,6 @@ local function decodeZstd(data)
 		)
 	end)
 end
-
 
 local function getContentFromChunks(chunks)
 	local content = {}
@@ -459,6 +455,7 @@ local function runCode(compCode, data)
 
 	ProcessesByUser[userid] = ProcessesByUser[userid] or {}
 	ProcessesByUser[userid][processID] = thread
+	local userGlobal = UserGlobals[userid] or {}
 	env.user = table.freeze({
 		Name = data.username,
 		UserId = data.userId,
@@ -478,6 +475,7 @@ local function runCode(compCode, data)
 			return wrapThread(fx)
 		end,
 	}, { __index = coroutine })
+	env._G = userGlobal
 	env.TIMESTAMP = false
 	env.OUTPUT_LOGS = false
 	thread.followUp = false
@@ -512,7 +510,7 @@ local function runCode(compCode, data)
 			if type(data) == "buffer" then
 				data = buffer.tostring(data)
 			elseif type(data) ~= "string" then
-				error("Data must be a string or buffer for writefile",2)
+				error("Data must be a string or buffer for writefile", 2)
 			end
 			thread.fileType = fileType
 			thread.fileData = data
@@ -593,6 +591,19 @@ local function runCode(compCode, data)
 			noTimeStamp and createText(text, 2) .. "\n" or createText(string.format(`[%.3f] %s\n`, time, text), 2)
 		)
 	end
+	local id = "RluauRunnerV3|PROCESS|" .. processID .. "|"
+
+	env._execute = function(code)
+		local fx, err = loadstring(code, id)
+		if not fx then
+			return false, err
+		end
+		fx = executeCode(id, code, env, thread, 0)
+		return function()
+			fx = fx(env)
+			return fx()
+		end
+	end
 
 	env.TIMEOUT = DEFAULT_TIMEOUT
 
@@ -613,7 +624,7 @@ local function runCode(compCode, data)
 	-- 	task.defer(coroutine.close, running)
 	-- 	coroutine.yield()
 	-- end
-	local id = "RluauRunnerV3|PROCESS|" .. processID .. "|"
+
 	local fx, err = loadstring(code, id)
 
 	if not fx then
@@ -626,7 +637,8 @@ local function runCode(compCode, data)
 		if isCommand and code:find("%-%-") then
 			warning = "Detected comments in command, try an application command instead or remove comments.\n"
 		elseif isCommand and code:find("```") then
-			warning = "Detected code block in command ['``lua {CODE} ``']. Remove code block or use an application command instead.\n"
+			warning =
+				"Detected code block in command ['``lua {CODE} ``']. Remove code block or use an application command instead.\n"
 		end
 		respondToInteraction(data.token, warning .. err:match(":(%d+: .+)"), nil, nil, nil, true)
 		return false
@@ -672,8 +684,8 @@ local function runCode(compCode, data)
 			(
 				(
 					(os.clock() - thread.start < TIMEOUT or numOfResponses < MAX_RESPONSES_BEFORE_TIMEOUT)
-						and sus
-						and (numRunning() > 0 or foundSignalUsage)
+					and sus
+					and (numRunning() > 0 or foundSignalUsage)
 				) or thread.blocked
 			) and not thread.stopped
 		do
@@ -782,15 +794,7 @@ local function runCode(compCode, data)
 		pcall(task.cancel, thread.timeOutThread)
 		stopAll()
 		task.wait(0.5)
-		respondToInteraction(
-			data.token,
-			truncated,
-			log or "",
-			nil,
-			fileType,
-			time,
-			thread.followUp
-		)
+		respondToInteraction(data.token, truncated, log or "", nil, fileType, time, thread.followUp)
 
 		Processes[processID] = nil
 		ProcessesByUser[userid][processID] = nil
@@ -798,7 +802,6 @@ local function runCode(compCode, data)
 		--// for now we just have to keep the sub-threads running. Either way, this session only runs for a max of 5 mins.
 		--// 10/30/25, wrapped tasks and coroutine creations to be tracked and closed on script end.
 		module:Destroy()
-		
 	end)
 
 	return true
