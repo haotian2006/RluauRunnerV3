@@ -5,6 +5,7 @@ local MAX_STR_HEIGHT = 25
 local MAX_RESPONSES_BEFORE_TIMEOUT = 50
 local FILE_CHUNK_SIZE = 1024 * 90 -- 90 KB
 local MAX_FILE_SIZE = 10 * 1024 * 1024 -- 10 MB
+local MAX_WRITE_FILES = 8 -- max files queued via io.writefile
 
 --[[
 	Takes in the number of responses sent so far and returns how often should the next update be sent.
@@ -277,9 +278,11 @@ local function executeCode(id, code, env, thread, delay)
 	local m = Instance.new("ModuleScript")
 	local imports = ""
 	local updates = ""
+	local checks = ""
 	for k in env do
 		imports ..= `{k} = imports.{k};`
 		updates ..= `imports.{k} = {k};`
+		checks ..= `if _c.{k} ~= {k} then imports.{k} = {k}; end; {k} = imports.{k} _c.{k} = {k};`
 	end
 	local fs = {}
 
@@ -290,7 +293,7 @@ local function executeCode(id, code, env, thread, delay)
 	env.optimize = code:match("%-%-!optimize%s*(%d+)") or 2
 	table.insert(fs, `--!optimize {env.optimize}`)
 	updates =
-		`local _ = coroutine.running();task.spawn(function()local _=_ while coroutine.status(_) ~= 'dead' do {updates} task.wait();end;end);`
+		`local _ = coroutine.running();task.spawn(function()local _c = {"{}"}local _=_ while coroutine.status(_) ~= 'dead' do {checks} task.wait();end;end);`
 
 	local src =
 		`{table.concat(fs, "\n")}\nreturn function(imports){imports}{updates}return function() local _=(function () --[[START OF CODE]] \n{code}\n--[[END OF CODE]]\nend)()\n\n\t\t\ntask.wait({delay or 1})\n\tend\nend`
@@ -456,6 +459,7 @@ local function runCode(compCode, data)
 	ProcessesByUser[userid] = ProcessesByUser[userid] or {}
 	ProcessesByUser[userid][processID] = thread
 	local userGlobal = UserGlobals[userid] or {}
+	UserGlobals[userid] = userGlobal
 	env.user = table.freeze({
 		Name = data.username,
 		UserId = data.userId,
@@ -479,8 +483,8 @@ local function runCode(compCode, data)
 	env.TIMESTAMP = false
 	env.OUTPUT_LOGS = false
 	thread.followUp = false
-	thread.fileType = ""
-	thread.fileData = ""
+	thread.files = {} -- ordered array of {data, fileType}
+	thread.filesByKey = {} -- map fileType -> index for dedup
 	local parsedInputs = {}
 	env.io = {
 		read = function()
@@ -512,11 +516,35 @@ local function runCode(compCode, data)
 			elseif type(data) ~= "string" then
 				error("Data must be a string or buffer for writefile", 2)
 			end
-			thread.fileType = fileType
-			thread.fileData = data
+			local idx = thread.filesByKey[fileType]
+			if idx and thread.files[idx] and thread.files[idx].fileType == fileType then
+				thread.files[idx].data = data
+			else
+				if #thread.files >= MAX_WRITE_FILES then
+					local firstKey = thread.files[1].fileType
+					table.remove(thread.files, 1)
+					thread.filesByKey[firstKey] = nil
+					for k, v in thread.filesByKey do
+						thread.filesByKey[k] = v - 1
+					end
+				end
+				table.insert(thread.files, { data = data, fileType = fileType })
+				thread.filesByKey[fileType] = #thread.files
+			end
 		end,
-		readfile = function()
-			return thread.fileData or "", thread.fileType or "txt"
+		readfile = function(fileType)
+			if fileType then
+				local idx = thread.filesByKey[fileType]
+				if idx then
+					local f = thread.files[idx]
+					return f.data, f.fileType
+				end
+				return "", fileType
+			end
+			if #thread.files > 0 then
+				return thread.files[1].data, thread.files[1].fileType
+			end
+			return "", "txt"
 		end,
 		getoutput = function()
 			return table.concat(output)
@@ -678,8 +706,7 @@ local function runCode(compCode, data)
 	thread.timeOutThread = task.spawn(function()
 		local waitTime = 0
 		local TIMEOUT = env.TIMEOUT
-		local lastFlushFile = nil
-		local lastFileType = nil
+		local lastSentFiles = {} -- {[fileType] = lastSentData}
 		while
 			(
 				(
@@ -694,34 +721,35 @@ local function runCode(compCode, data)
 			if outStr == "" then
 				outStr = "  "
 			end
-			if lastOutput ~= outStr or (lastFlushFile ~= thread.fileData or lastFileType ~= thread.fileType) then
+			local hasNewFiles = false
+			for _, file in thread.files do
+				if lastSentFiles[file.fileType] ~= file.data then
+					hasNewFiles = true
+					break
+				end
+			end
+			if lastOutput ~= outStr or hasNewFiles then
 				local truncated = truncateString(outStr)
 				lastOutput = outStr
 				numOfResponses += 1
-				local fileToSend = thread.fileData
-				local fileTypeToSend = thread.fileType
-				if fileToSend == lastFlushFile and lastFileType == fileTypeToSend then
-					fileToSend = nil
-					fileTypeToSend = nil
-				end
-				lastFlushFile = thread.fileData
-				lastFileType = thread.fileType
 				local followUp = thread.followUp
 				thread.followUp = false
-				respondToInteraction(data.token, truncated, fileToSend or "", nil, fileTypeToSend, nil, followUp)
+				local sentAny = false
+				for _, file in thread.files do
+					if lastSentFiles[file.fileType] ~= file.data then
+						lastSentFiles[file.fileType] = file.data
+						respondToInteraction(data.token, truncated, file.data, nil, file.fileType, nil, not sentAny and followUp or false)
+						sentAny = true
+					end
+				end
+				if not sentAny then
+					respondToInteraction(data.token, truncated, "", nil, nil, nil, followUp)
+				end
 			end
 			waitTime += task.wait(UPDATE_INTERVAL_SCALE(numOfResponses))
 		end
 
-		local fileType
 		local fileData = table.concat(thread.output)
-		if thread.fileType ~= "" then
-			(env :: any).OUTPUT_LOGS = "LOG"
-			fileType = tostring(thread.fileType):lower()
-			if thread.fileData ~= "" then
-				fileData = tostring(thread.fileData)
-			end
-		end
 
 		if thread.stopped then
 			sus = false
@@ -794,7 +822,12 @@ local function runCode(compCode, data)
 		pcall(task.cancel, thread.timeOutThread)
 		stopAll()
 		task.wait(0.5)
-		respondToInteraction(data.token, truncated, log or "", nil, fileType, time, thread.followUp)
+	
+		for _, file in thread.files do
+			respondToInteraction(data.token, truncated, file.data, true, file.fileType, nil, false)
+		end
+		
+		respondToInteraction(data.token, truncated, log or "", nil, log and "log.ansi", time, thread.followUp)
 
 		Processes[processID] = nil
 		ProcessesByUser[userid][processID] = nil

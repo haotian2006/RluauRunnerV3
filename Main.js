@@ -56,6 +56,7 @@ const SERVER_TIME_OUT = "300s"; // this is how much before a server timeouts
 const BACKUP_SERVER_WAIT_TIME = 1000 * 60 * 2;
 const FILE_CHUNK_SIZE = 1024 * 1024 * 10; // 10 MB
 const MAX_DATA_TO_SEND = 1024 * 1024 * 100; // 100 MB
+const MAX_RESPONSE_FILES = 8; 
 
 let botSrcEncoded = fs.existsSync(path.join(__dirname, "luauBot.b64"))
   ? fs.readFileSync(path.join(__dirname, "luauBot.b64"), "utf-8")
@@ -725,14 +726,14 @@ async function sendCompileRequestToRoblox(
     username: interaction.user.username,
     isCommand: isCommand,
   };
-  CompilingTasks[interaction.token] = [interaction, originalInteraction];
-  setTimeout(
+  const timeoutId = setTimeout(
     () => {
       delete CompilingTasks[interaction.token];
       delete ExecuteTasks[uuid];
     },
     1000 * 60 * 6,
   );
+  CompilingTasks[interaction.token] = [interaction, originalInteraction, null, 0, null, timeoutId];
 }
 
 async function reply(
@@ -896,14 +897,20 @@ async function handleFollowUpResponse(
   interaction,
   embed,
   sentUrl,
-  logs,
-  fileName,
-  fileType,
+  fileMap,
   dmMessage,
 ) {
   const followUpEmbed = new EmbedBuilder(embed.data)
     .setTitle("Follow up request")
     .setURL(sentUrl);
+
+  const files =
+    fileMap?.size > 0
+      ? [...fileMap.values()].map(([l, ft, fn]) => ({
+          name: `${fn}.${ft}`,
+          attachment: l,
+        }))
+      : undefined;
 
   if (interaction.guild) {
     await retryDiscordOperation(
@@ -911,9 +918,7 @@ async function handleFollowUpResponse(
         interaction.followUp({
           ephemeral: true,
           embeds: [followUpEmbed],
-          ...(logs && {
-            files: [{ name: `${fileName}.${fileType}`, attachment: logs }],
-          }),
+          ...(files && { files }),
         }),
       3,
       "Follow-up in guild",
@@ -933,10 +938,6 @@ async function handleFollowUpResponse(
           inline: true,
         },
       );
-
-      const files = logs
-        ? [{ name: `${fileName}.${fileType}`, attachment: logs }]
-        : undefined;
 
       if (dmMessage) {
         await retryDiscordOperation(
@@ -1067,7 +1068,7 @@ app.patch("/respond", async (req, res) => {
     const [
       interaction,
       originalInteraction,
-      prevLog,
+      fileMap,
       prevResponseId = 0,
       dmMessage = null,
     ] = CompilingTasks[token];
@@ -1077,12 +1078,8 @@ app.patch("/respond", async (req, res) => {
     _link = link;
 
     let logs = req.body.log;
-    let alreadyParsed = false;
 
-    if (!logs && prevLog) {
-      [logs, fileType, fileName] = prevLog;
-      alreadyParsed = true;
-    } else if (logs) {
+    if (logs) {
       if (numSections) {
         const result = await retrieveChunkedLogs(
           respondID,
@@ -1095,7 +1092,7 @@ app.patch("/respond", async (req, res) => {
           fileName = result.fileName;
           fileType = result.fileType;
         }
-      } else if (!alreadyParsed) {
+      } else {
         logs = decodeBuffer(JSON.parse(logs));
       }
     }
@@ -1106,10 +1103,20 @@ app.patch("/respond", async (req, res) => {
     }
 
     if (logs && CompilingTasks[token] && isNewResponse) {
-      CompilingTasks[token][2] = [logs, fileType, fileName];
+      if (!CompilingTasks[token][2]) {
+        CompilingTasks[token][2] = new Map();
+      }
+      const map = CompilingTasks[token][2];
+      if (map.size >= MAX_RESPONSE_FILES) {
+        map.delete(map.keys().next().value);
+      }
+      map.set(`${fileName}.${fileType}`, [logs, fileType, fileName]);
     }
 
+    const currentFileMap = CompilingTasks[token]?.[2] ?? fileMap;
+
     if (isLast) {
+      clearTimeout(CompilingTasks[token]?.[5]);
       delete CompilingTasks[token];
     }
 
@@ -1123,11 +1130,17 @@ app.patch("/respond", async (req, res) => {
     );
 
     if (isNewResponse) {
+      const files =
+        currentFileMap?.size > 0
+          ? [...currentFileMap.values()].map(([l, ft, fn]) => ({
+              name: `${fn}.${ft}`,
+              attachment: l,
+            }))
+          : undefined;
+
       const replyOptions = {
         embeds: [embed],
-        ...(logs && {
-          files: [{ name: `${fileName}.${fileType}`, attachment: logs }],
-        }),
+        ...(files && { files }),
       };
 
       const sent = await retryDiscordOperation(
@@ -1141,9 +1154,7 @@ app.patch("/respond", async (req, res) => {
           interaction,
           embed,
           sent.url,
-          logs,
-          fileName,
-          fileType,
+          currentFileMap,
           dmMessage,
         );
 
@@ -1186,6 +1197,7 @@ app.patch("/respond", async (req, res) => {
       }
     }
 
+    clearTimeout(CompilingTasks[token]?.[5]);
     delete CompilingTasks[token];
     res.status(500).json({
       message: "Failed to send response to Discord",
@@ -1337,6 +1349,7 @@ async function checkRobloxServer() {
               });
             } catch (error) {}
             delete ExecuteTasks[key];
+            clearTimeout(CompilingTasks[task.token]?.[5]);
             delete CompilingTasks[task.token];
           }
         });
@@ -1623,6 +1636,7 @@ async function main() {
                 const entry = CompilingTasks[token];
                 if (!entry || !entry[0] || !entry[0].user) continue;
                 if (entry[0].user.id === userId) {
+                  clearTimeout(entry[5]);
                   delete CompilingTasks[token];
                   removed++;
                   for (const taskId in ExecuteTasks) {
