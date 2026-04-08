@@ -228,7 +228,7 @@ async function generateAST(code) {
 
 async function compileLuau(code, options) {
   const {
-    optimizationLevel: optimizeLevel,
+    optimizeLevel,
     debugLevel,
     native,
     remarks,
