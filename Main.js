@@ -31,6 +31,7 @@ require("dotenv").config();
 
 const PATH_TO_COMPILER = path.join(__dirname, "luau-compile");
 const PATH_TO_ANALYZER = path.join(__dirname, "luau-analyze");
+const PATH_TO_FORMATTER = path.join(__dirname, "stylua");
 const PATH_TO_AST = path.join(__dirname, "luau-ast");
 const DISCORD_TOKEN = process.env.BOT_TOKEN;
 const DISCORD_APP_ID = process.env.CLIENT_ID;
@@ -89,6 +90,7 @@ const SupportedFileTypes = new Set([
 ]);
 
 let IP = "";
+const SECRET_TOKEN = Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2);
 let RunningServer = "";
 let RunningServerTime = 0;
 let LastServerPing = 0;
@@ -114,6 +116,13 @@ const CompilingTasks = {};
 const Inputs = {};
 const app = express();
 app.use(express.json());
+
+function requireSecret(req, res, next) {
+  if (req.headers["x-secret-token"] !== SECRET_TOKEN) {
+    return res.status(403).json({ message: "Forbidden" });
+  }
+  next();
+}
 const client = new Client({
   intents: [GatewayIntentBits.Guilds],
 });
@@ -226,6 +235,27 @@ async function generateAST(code) {
   return await execute(PATH_TO_AST, code, []);
 }
 
+async function formatLuau(code) {
+  return new Promise((resolve, reject) => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "luau-"));
+    const inputPath = path.join(tmpDir, "Code.luau");
+    fs.writeFileSync(inputPath, code, "utf8");
+
+    let stderr = "";
+    const child = spawn(PATH_TO_FORMATTER, ["--syntax=Luau", inputPath]);
+    child.stderr.on("data", (chunk) => { stderr += chunk; });
+    child.on("error", reject);
+    child.on("close", (exitCode) => {
+      try {
+        const output = exitCode !== 0 ? stderr : fs.readFileSync(inputPath, "utf8");
+        try { fs.unlinkSync(inputPath); fs.rmdirSync(tmpDir); } catch {}
+        resolve({ code: exitCode, output });
+      } catch (err) { reject(err); }
+    });
+  });
+}
+
+
 async function compileLuau(code, options) {
   const {
     optimizationLevel,
@@ -270,7 +300,7 @@ async function startRoblox(
 ) {
   let script = `require(${
     module !== "" ? module : "workspace.LuauBot"
-  }).start("${IP}") `;
+  }).start("${IP}", "${SECRET_TOKEN}") `;
   if (botSrcEncoded) {
     script = `local EncodingService = game:GetService("EncodingService")
 
@@ -279,7 +309,8 @@ async function startRoblox(
   decoded = EncodingService:DecompressBuffer(decoded,Enum.CompressionAlgorithm.Zstd)
   local Instances =  game:GetService("SerializationService"):DeserializeInstancesAsync(decoded)
   local module = Instances[1]
-     require(module).start("${IP}")
+    
+     require(module).start("${IP}", "${SECRET_TOKEN}")
 `;
   }
   LastServerCreation = Date.now();
@@ -1017,7 +1048,7 @@ async function retrieveChunkedLogs(respondID, numSections, interaction, link) {
 
 let UsingBackup = false;
 const RecvChunks = {};
-app.patch("/uploadChunk", async (req, res) => {
+app.patch("/uploadChunk", requireSecret, async (req, res) => {
   const chunk = req.body.chunk;
   const fileChunksId = req.body.token;
   const index = req.body.index;
@@ -1031,7 +1062,7 @@ app.patch("/uploadChunk", async (req, res) => {
   res.status(200).json({ message: "Chunk received" });
 });
 
-app.patch("/respond", async (req, res) => {
+app.patch("/respond", requireSecret, async (req, res) => {
   const token = req.body.token;
   const serverNum = req.body.serverNum;
   let _interaction;
@@ -1206,14 +1237,14 @@ app.patch("/respond", async (req, res) => {
   }
 });
 
-app.post("/debug", async (req, res) => {
+app.post("/debug", requireSecret, async (req, res) => {
   const message = req.body.message;
   console.log("Debug Message:", message);
   logBot("Debug Endpoint", message);
   res.status(200).json({ message: "Debug message logged" });
 });
 
-app.post("/chunk", async (req, res) => {
+app.post("/chunk", requireSecret, async (req, res) => {
   const chunkId = req.body.id;
   if (chunkId in CHUNK_TO_DATA) {
     res.status(200).json({ chunk: CHUNK_TO_DATA[chunkId] });
@@ -1226,21 +1257,21 @@ app.get("/", (req, res) => {
   res.send("Bot is running!");
 });
 let SERVER_NUMBERS = 0;
-app.post("/start", async (req, res) => {
+app.post("/start", requireSecret, async (req, res) => {
   RunningServer = req.body.ServerId;
   RunningServerTime = Date.now();
   SERVER_NUMBERS += 1;
   res.json({ message: "Server started", id: SERVER_NUMBERS % 256 });
 });
 
-app.post("/ping", (req, res) => {
+app.post("/ping", requireSecret, (req, res) => {
   if (req.body.ServerId === RunningServer) {
     LastServerPing = Date.now();
   }
   res.json({ message: "Ping received" });
 });
 
-app.post("/getInputs", async (req, res) => {
+app.post("/getInputs", requireSecret, async (req, res) => {
   const interacted = req.body.i;
 
   data = [];
@@ -1260,7 +1291,7 @@ app.post("/getInputs", async (req, res) => {
   res.json(data);
 });
 
-app.post("/getAll", async (req, res) => {
+app.post("/getAll", requireSecret, async (req, res) => {
   const ServerId = req.body.ServerId;
 
   if (ServerId === RunningServer) {
@@ -1275,7 +1306,7 @@ app.post("/getAll", async (req, res) => {
   }
 });
 
-app.post("/get", async (req, res) => {
+app.post("/get", requireSecret, async (req, res) => {
   const TaskId = req.body.TaskId;
   if (TaskId in ExecuteTasks) {
     splitData(ExecuteTasks[TaskId]);
@@ -1445,10 +1476,14 @@ async function main() {
           
           const analysis = await analyzeLuau(code.replace("--!annotate", ""), options);
           await reply(interaction, analysis.output, false, "lua");
-        }else if (interaction.commandName === "ast") {
+        } else if (interaction.commandName === "ast") {
           await interaction.deferReply({ ephemeral: false });
           const ast = await generateAST(code);
           await reply(interaction, ast.output, false, "json");
+        } else if (interaction.commandName === "format") {
+          await interaction.deferReply({ ephemeral: false });
+          const result = await formatLuau(code);
+          await reply(interaction, result.output, false, "lua");
         } else if (
           interaction.commandName === "bytecodeK" ||
           interaction.commandName === "decompile"

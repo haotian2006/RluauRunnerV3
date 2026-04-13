@@ -1,4 +1,5 @@
 local IP = ""
+local SecretToken = ""
 local POLL_RATE = 1000 --ms
 local DEFAULT_TIMEOUT = 25 -- seconds
 local MAX_STR_HEIGHT = 25
@@ -37,8 +38,20 @@ local encoder = function(data)
 	return Https:JSONEncode(data)
 end
 
+local function makeHeaders()
+	return {
+		["Content-Type"] = "application/json",
+		["x-secret-token"] = SecretToken,
+	}
+end
+
 local function sendDebug(message)
-	Https:PostAsync(IP .. "/debug", encoder({ message = message }), Enum.HttpContentType.ApplicationJson)
+	Https:RequestAsync({
+		Url = IP .. "/debug",
+		Method = "POST",
+		Headers = makeHeaders(),
+		Body = encoder({ message = message }),
+	})
 end
 
 local Colors = {
@@ -181,9 +194,7 @@ local function sendFileInChunks(token, data)
 			local requestData = {
 				Url = IP .. "/uploadChunk",
 				Method = "PATCH",
-				Headers = {
-					["Content-Type"] = "application/json",
-				},
+				Headers = makeHeaders(),
 				Body = Https:JSONEncode({
 					token = token,
 					chunk = chunk,
@@ -213,9 +224,7 @@ local function respondToInteraction(interactionToken, responseContent, logs, awa
 		end
 	end
 	local url = IP .. "/respond"
-	local headers = {
-		["Content-Type"] = "application/json",
-	}
+	local headers = makeHeaders()
 
 	if #responseContent > 1900 then
 		responseContent = responseContent:sub(1, 1900 - 10) .. "... [truncated]"
@@ -288,28 +297,36 @@ local function executeCode(id, code, env, thread, delay)
 
 	if code:find("--!native") then
 		table.insert(fs, "--!native")
+		code = code:gsub("%-%-!native%s*\r?\n", "", 1)
 		env.native = true
 	end
-	env.optimize = code:match("%-%-!optimize%s*(%d+)") or 2
-	table.insert(fs, `--!optimize {env.optimize}`)
+	local optimize = code:match("%-%-!optimize%s*(%d+)")
+	if optimize then
+		optimize = math.clamp(tonumber(optimize) or 2, 0, 2)
+		table.insert(fs, `--!optimize {optimize}`)
+		code = code:gsub("%-%-!optimize%s*%d+%s*\r?\n", "", 1)
+	end
+	env.optimize = optimize or 2
+
 	updates =
 		`local _ = coroutine.running();task.spawn(function()local _c = {"{}"}local _=_ while coroutine.status(_) ~= 'dead' do {checks} task.wait();end;end);`
-
+	local header = #fs == 0 and "" or (table.concat(fs, "\n") .. "\n")
 	local src =
-		`{table.concat(fs, "\n")}\nreturn function(imports){imports}{updates}return function() local _=(function () --[[START OF CODE]] \n{code}\n--[[END OF CODE]]\nend)()\n\n\t\t\ntask.wait({delay or 1})\n\tend\nend`
+		`{header}return function(imports){imports}{updates}return function() local _=(function () --[[START OF CODE]] {code}\n--[[END OF CODE]]\nend)()\n\n\t\t\ntask.wait({delay or 1})\n\tend\nend`
 
-	if #src < 200000 then
+	local pass, fx = pcall(function()
 		m.Source = src
 		m.Name = id
 		local f = require(m)
-		return f, m
-	else
-		table.insert(
-			thread.output,
-			colorsLower.yellow .. "[WARNING] Script to long for normal execution. Using loadstring!\n"
-		)
-		return (loadstring :: any)(src)(), m
+		return f
+	end)
+	if pass then
+		return fx, m
 	end
+
+	m:Destroy()
+	table.insert(thread.output, colorsLower.yellow .. "[WARNING] Failed To initialize module. Using loadstring!\n")
+	return (loadstring :: any)(src)(), m
 end
 
 local function decodeZstd(data)
@@ -330,15 +347,12 @@ local function getContentFromChunks(chunks)
 	local failed = false
 	for i = 1, #chunks do
 		task.spawn(function()
-			local pass, data = attemptRequest(
-				0.5,
-				4,
-				HttpService.PostAsync,
-				HttpService,
-				IP .. "/chunk",
-				encoder({ id = chunks[i] }),
-				Enum.HttpContentType.ApplicationJson
-			)
+			local pass, data = attemptRequest(0.5, 4, HttpService.RequestAsync, HttpService, {
+				Url = IP .. "/chunk",
+				Method = "POST",
+				Headers = makeHeaders(),
+				Body = encoder({ id = chunks[i] }),
+			})
 
 			if pass then
 				local decoded = HttpService:JSONDecode(data)
@@ -480,6 +494,9 @@ local function runCode(compCode, data)
 		end,
 	}, { __index = coroutine })
 	env._G = userGlobal
+	env.setenvkey = function(key, value)
+		env[key] = value
+	end
 	env.TIMESTAMP = false
 	env.OUTPUT_LOGS = false
 	thread.followUp = false
@@ -511,6 +528,7 @@ local function runCode(compCode, data)
 			thread.followUp = true
 		end,
 		writefile = function(data, fileType)
+			fileType = fileType or "output.txt"
 			if type(data) == "buffer" then
 				data = buffer.tostring(data)
 			elseif type(data) ~= "string" then
@@ -738,7 +756,15 @@ local function runCode(compCode, data)
 				for _, file in thread.files do
 					if lastSentFiles[file.fileType] ~= file.data then
 						lastSentFiles[file.fileType] = file.data
-						respondToInteraction(data.token, truncated, file.data, nil, file.fileType, nil, not sentAny and followUp or false)
+						respondToInteraction(
+							data.token,
+							truncated,
+							file.data,
+							nil,
+							file.fileType,
+							nil,
+							not sentAny and followUp or false
+						)
 						sentAny = true
 					end
 				end
@@ -822,11 +848,11 @@ local function runCode(compCode, data)
 		pcall(task.cancel, thread.timeOutThread)
 		stopAll()
 		task.wait(0.5)
-	
+
 		for _, file in thread.files do
 			respondToInteraction(data.token, truncated, file.data, true, file.fileType, nil, false)
 		end
-		
+
 		respondToInteraction(data.token, truncated, log or "", nil, log and "log.ansi", time, thread.followUp)
 
 		Processes[processID] = nil
@@ -842,7 +868,13 @@ end
 
 local function handleRequest(uuid)
 	local sus, data = pcall(function()
-		return Https:PostAsync(IP .. "/get", encoder({ TaskId = uuid }), Enum.HttpContentType.ApplicationJson)
+		local res = Https:RequestAsync({
+			Url = IP .. "/get",
+			Method = "POST",
+			Headers = makeHeaders(),
+			Body = encoder({ TaskId = uuid }),
+		})
+		return res.Body
 	end)
 	if not sus then
 		return
@@ -870,9 +902,7 @@ local function handleInputs()
 	local res = Https:RequestAsync({
 		Url = IP .. "/getInputs",
 		Method = "POST",
-		Headers = {
-			["Content-Type"] = "application/json",
-		},
+		Headers = makeHeaders(),
 		Body = encoder({ i = processedInputs }),
 	})
 	if res.StatusCode ~= 200 then
@@ -914,9 +944,7 @@ local function poll()
 	local res = Https:RequestAsync({
 		Url = IP .. "/getAll",
 		Method = "POST",
-		Headers = {
-			["Content-Type"] = "application/json",
-		},
+		Headers = makeHeaders(),
 		Body = encoder({ ServerId = ServerId }),
 	})
 	if res.StatusCode == 201 then
@@ -949,14 +977,21 @@ LogService.MessageOut:Connect(function(errmsg, type)
 	end
 end)
 local ready = false
-local function start(ip)
+local function start(ip, secretToken)
+	SecretToken = secretToken or ""
 	if ready then
 		error("Already started")
 	end
 	ready = true
 	IP = ip or IP
 	task.wait()
-	local res = Https:PostAsync(IP .. "/start", encoder({ ServerId = ServerId }))
+	local res = Https:RequestAsync({
+		Url = IP .. "/start",
+		Method = "POST",
+		Headers = makeHeaders(),
+		Body = encoder({ ServerId = ServerId }),
+	})
+	res = res.Body
 	task.spawn(function()
 		local data = HttpService:JSONDecode(res)
 		ServerNumber = data.id
