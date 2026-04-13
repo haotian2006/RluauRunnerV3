@@ -258,7 +258,7 @@ async function formatLuau(code) {
 
 async function compileLuau(code, options) {
   const {
-    optimizationLevel,
+    optimizeLevel,
     debugLevel,
     native,
     remarks,
@@ -280,7 +280,7 @@ async function compileLuau(code, options) {
     args.push("--dump-constants");
   }
   args.push(`-g${debugLevel}`);
-  args.push(`-O${optimizationLevel}`);
+  args.push(`-O${optimizeLevel}`);
   args.push("--vector-lib=Vector3");
   args.push("--vector-ctor=new");
   args.push("--vector-type=Vector3");
