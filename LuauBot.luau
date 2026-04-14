@@ -347,7 +347,7 @@ local function getContentFromChunks(chunks)
 	local failed = false
 	for i = 1, #chunks do
 		task.spawn(function()
-			local pass, data = attemptRequest(0.5, 4, HttpService.RequestAsync, HttpService, {
+			local pass, response = attemptRequest(0.5, 4, HttpService.RequestAsync, HttpService, {
 				Url = IP .. "/chunk",
 				Method = "POST",
 				Headers = makeHeaders(),
@@ -355,13 +355,23 @@ local function getContentFromChunks(chunks)
 			})
 
 			if pass then
-				local decoded = HttpService:JSONDecode(data)
-				content[i] = decoded.chunk
-				if not decoded.chunk then
-					failed = "Chunk returned no data"
+				if type(response) ~= "table" then
+					failed = "Invalid chunk response"
+				elseif response.StatusCode ~= 200 then
+					failed = `Chunk request failed: {response.StatusCode}`
+				else
+					local decodePass, decoded = pcall(HttpService.JSONDecode, HttpService, response.Body)
+					if not decodePass then
+						failed = `Failed to decode chunk JSON: {decoded}`
+					else
+						content[i] = decoded.chunk
+						if type(decoded.chunk) ~= "string" then
+							failed = "Chunk returned invalid data"
+						end
+					end
 				end
 			else
-				failed = data or "Failed to retrieve chunk"
+				failed = response or "Failed to retrieve chunk"
 			end
 			recv += 1
 		end)
