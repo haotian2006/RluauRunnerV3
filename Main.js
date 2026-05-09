@@ -31,8 +31,8 @@ require("dotenv").config();
 
 const PATH_TO_COMPILER = path.join(__dirname, "luau-compile");
 const PATH_TO_ANALYZER = path.join(__dirname, "luau-analyze");
-const PATH_TO_FORMATTER = path.join(__dirname, "stylua");
 const PATH_TO_AST = path.join(__dirname, "luau-ast");
+const PATH_TO_FORMATTER = path.join(__dirname, "stylua");
 const DISCORD_TOKEN = process.env.BOT_TOKEN;
 const DISCORD_APP_ID = process.env.CLIENT_ID;
 const ROBLOX_API_KEY = process.env.ROBLOX_API_KEY;
@@ -1483,7 +1483,11 @@ async function main() {
         } else if (interaction.commandName === "format") {
           await interaction.deferReply({ ephemeral: false });
           const result = await formatLuau(code);
-          await reply(interaction, result.output, false, "lua");
+          let formattedCode = result.output || "";
+          if (formattedCode.match("error: could not format file")) {
+            formattedCode = code;
+          }
+          await reply(interaction, formattedCode, false, "lua");
         } else if (
           interaction.commandName === "bytecodeK" ||
           interaction.commandName === "decompile"
