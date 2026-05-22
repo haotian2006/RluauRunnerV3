@@ -6,6 +6,8 @@ const {
   TextInputStyle,
   ActionRowBuilder,
   EmbedBuilder,
+  ButtonBuilder,
+  ButtonStyle,
 } = require("discord.js");
 const { https } = require("follow-redirects");
 const fs = require("fs");
@@ -29,16 +31,26 @@ const { zstdCompress } = require("zlib");
 const FILTER_BAD_WORDS = true;
 require("dotenv").config();
 
-const PATH_TO_COMPILER = path.join(__dirname, "luau-compile");
-const PATH_TO_ANALYZER = path.join(__dirname, "luau-analyze");
-const PATH_TO_AST = path.join(__dirname, "luau-ast");
-const PATH_TO_FORMATTER = path.join(__dirname, "stylua");
+function resolveExec(name) {
+  const base = path.join(__dirname, name);
+  if (process.platform === "win32") {
+    const withExe = base + ".exe";
+    if (fs.existsSync(withExe)) return withExe;
+  }
+  return base;
+}
+
+const PATH_TO_COMPILER = resolveExec("luau-compile");
+const PATH_TO_ANALYZER = resolveExec("luau-analyze");
+const PATH_TO_AST = resolveExec("luau-ast");
+const PATH_TO_FORMATTER = resolveExec("stylua");
 const DISCORD_TOKEN = process.env.BOT_TOKEN;
 const DISCORD_APP_ID = process.env.CLIENT_ID;
 const ROBLOX_API_KEY = process.env.ROBLOX_API_KEY;
 const UNIVERSE_ID = process.env.UNIVERSE_ID;
 const PLACE_ID = process.env.PLACE_ID;
 const PORT = process.env.PORT || 3000;
+const RESOURCES_URL = "https://api.github.com/repos/haotian2006/luau-runner-bot-resources/contents/resources?ref=main";
 const KONST_API = "http://api.plusgiant5.com";
 const EXECUTE_LUAU = `https://apis.roblox.com/cloud/v2/universes/${UNIVERSE_ID}/places/${PLACE_ID}/luau-execution-session-tasks`;
 const TUNNEL_URL = process.env.TUNNEL_URL;
@@ -1403,8 +1415,44 @@ async function main() {
   }
   console.log("Bot is starting...");
   logBot("Discord", "Registering interaction handler...");
+  let resourcesCache = null;
+  let resourcesCacheTime = 0;
+
+  async function getResources() {
+    if (resourcesCache && Date.now() - resourcesCacheTime < 1000 * 60 * 5) {
+      return resourcesCache;
+    }
+    const res = await axios.get(RESOURCES_URL, {
+      headers: { "User-Agent": "luau-runner-bot" },
+    });
+    resourcesCache = res.data.filter((f) => f.type === "file");
+    resourcesCacheTime = Date.now();
+    return resourcesCache;
+  }
+
+  function resourceDisplayName(filename) {
+    return filename.replace(/\.md$/i, "").replace(/-/g, " ");
+  }
+
   client.on("interactionCreate", async (interaction) => {
     try {
+      if (interaction.isAutocomplete()) {
+        if (interaction.commandName === "doc") {
+          const focused = interaction.options.getFocused().toLowerCase();
+          try {
+            const files = await getResources();
+            const choices = files
+              .filter((f) => resourceDisplayName(f.name).toLowerCase().includes(focused))
+              .slice(0, 25)
+              .map((f) => ({ name: resourceDisplayName(f.name), value: f.name }));
+            await interaction.respond(choices);
+          } catch (e) {
+            await interaction.respond([]);
+          }
+        }
+        return;
+      }
+
       if (interaction.isMessageContextMenuCommand()) {
         if (interaction.commandName === "input") {
           const inputs = await getInputsFromContext(interaction);
@@ -1730,6 +1778,34 @@ async function main() {
             null,
             true,
           );
+        } else if (interaction.commandName === "doc") {
+          await interaction.deferReply({ ephemeral: false });
+          const resourceName = interaction.options.getString("resource");
+          const target = interaction.options.getUser("target");
+          try {
+            const files = await getResources();
+            const file = files.find((f) => f.name === resourceName);
+            if (!file) {
+              await interaction.editReply({ content: `Resource \`${resourceName}\` not found.` });
+              return;
+            }
+            const contentRes = await axios.get(file.download_url);
+            const text = contentRes.data;
+            const displayName = resourceDisplayName(file.name);
+            const embed = new EmbedBuilder()
+              .setTitle(displayName)
+              .setDescription(text.length > 4096 ? text.substring(0, 4093) + "..." : text)
+              .setURL(file.html_url)
+              .setColor(0x5865f2);
+            const mention = target ? `<@${target.id}> ` : "";
+            await interaction.editReply({
+              content: mention || undefined,
+              embeds: [embed],
+              allowedMentions: { users: target ? [target.id] : [] },
+            });
+          } catch (e) {
+            await interaction.editReply({ content: `Failed to fetch resource: ${e.message}` });
+          }
         }
       }
     } catch (error) {
