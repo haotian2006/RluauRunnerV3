@@ -1413,7 +1413,7 @@ function stripNoShowForDisplay(text) {
     .replace(/--\[\[NO_EXECUTE\]\]\r?\n?/g, "");
 }
 
-function extractDocCodeBlocks(markdown, tagName) {
+function extractDocCodeBlocks(markdown) {
   const results = [];
   const fence = /```(?:lua|luau)[^\n]*\n([\s\S]*?)```/g;
   let match;
@@ -1866,7 +1866,7 @@ async function main() {
               .setColor(0x5865f2);
             const mention = target ? `<@${target.id}> ` : "";
 
-            const codeBlocks = extractDocCodeBlocks(text, displayName);
+            const codeBlocks = extractDocCodeBlocks(text);
             const components = [];
             if (codeBlocks.length > 0) {
               const uuids = codeBlocks.map((block) => {
