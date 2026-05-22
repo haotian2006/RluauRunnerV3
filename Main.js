@@ -1418,14 +1418,15 @@ function extractDocCodeBlocks(markdown) {
   const fence = /```(?:lua|luau)[^\n]*\n([\s\S]*?)```/g;
   let match;
   while ((match = fence.exec(markdown)) !== null) {
-    const raw = match[1].trim();
+    let raw = match[1].trim();
     if (!raw) continue;
     if (raw.includes("--[[NO_EXECUTE]]")) continue;
     let label = "";
     let codeBody = raw;
-    const nameMatch = raw.match(/^--name:\s*(.+)/);
+    const nameMatch = raw.match(/^--\[\[name:\s*(.+?)\]\]/);
     if (nameMatch) {
       label = nameMatch[1].trim();
+      raw = raw.slice(raw.indexOf("\n") + 1).trim();
     } else {
       const before = markdown.slice(0, match.index);
       const lines = before.split("\n").map((l) => l.trim());
