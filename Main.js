@@ -1474,8 +1474,8 @@ async function main() {
 
   client.on("interactionCreate", async (interaction) => {
     try {
-      if (interaction.isButton() && interaction.customId.startsWith("doc_run:")) {
-        const uuid = interaction.customId.slice("doc_run:".length);
+      if (interaction.isButton() && interaction.customId.startsWith("tag_run:")) {
+        const uuid = interaction.customId.slice("tag_run:".length);
         const code = docCodeStore[uuid];
         if (!code) {
           await interaction.reply({ content: "This button has expired.", ephemeral: true });
@@ -1496,7 +1496,7 @@ async function main() {
       }
 
       if (interaction.isAutocomplete()) {
-        if (interaction.commandName === "doc") {
+        if (interaction.commandName === "tag") {
           const focused = interaction.options.getFocused().toLowerCase();
           try {
             const files = await getResources();
@@ -1837,7 +1837,7 @@ async function main() {
             null,
             true,
           );
-        } else if (interaction.commandName === "doc") {
+        } else if (interaction.commandName === "tag") {
           await interaction.deferReply({ ephemeral: false });
           const resourceName = interaction.options.getString("resource");
           const target = interaction.options.getUser("target");
@@ -1874,7 +1874,7 @@ async function main() {
                 row.addComponents(
                   slice.map((block, j) =>
                     new ButtonBuilder()
-                      .setCustomId(`doc_run:${uuids[i + j]}`)
+                      .setCustomId(`tag_run:${uuids[i + j]}`)
                       .setLabel(block.label)
                       .setStyle(ButtonStyle.Primary)
                   )

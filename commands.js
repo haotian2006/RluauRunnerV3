@@ -13,7 +13,7 @@ const commands = [
     type: 1,
   },
   {
-    name: "doc",
+    name: "tag",
     description: "retrieves a resource",
     integration_types: [0, 1],
     contexts: [0, 1, 2],
@@ -156,7 +156,56 @@ const commands = [
   // },
 ];
 
+function httpsRequest(options, body) {
+  return new Promise((resolve, reject) => {
+    const req = https.request(options, (res) => {
+      let data = "";
+      res.on("data", (chunk) => { data += chunk; });
+      res.on("end", () => resolve({ statusCode: res.statusCode, body: data }));
+    });
+    req.on("error", reject);
+    if (body) req.write(body);
+    req.end();
+  });
+}
+
+async function deregisterCommand(name) {
+  const listRes = await httpsRequest({
+    method: "GET",
+    hostname: "discord.com",
+    path: `/api/v10/applications/${CLIENT_ID}/commands`,
+    headers: { Authorization: `Bot ${TOKEN}` },
+  });
+
+  if (listRes.statusCode !== 200) {
+    console.warn(`Failed to fetch commands: ${listRes.statusCode}`);
+    return;
+  }
+
+  const existing = JSON.parse(listRes.body);
+  const match = existing.find((c) => c.name === name);
+  if (!match) {
+    console.log(`Command "${name}" not found, nothing to deregister.`);
+    return;
+  }
+
+  const delRes = await httpsRequest({
+    method: "DELETE",
+    hostname: "discord.com",
+    path: `/api/v10/applications/${CLIENT_ID}/commands/${match.id}`,
+    headers: { Authorization: `Bot ${TOKEN}` },
+  });
+
+  if (delRes.statusCode === 204) {
+    console.log(`Deregistered command: ${name}`);
+  } else {
+    console.warn(`Failed to deregister "${name}": ${delRes.statusCode} ${delRes.body}`);
+  }
+}
+
 async function registerCommands() {
+ 
+
   for (const command of commands) {
     const data = JSON.stringify(command);
 
