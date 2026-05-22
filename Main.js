@@ -1421,18 +1421,24 @@ function extractDocCodeBlocks(markdown) {
     const raw = match[1].trim();
     if (!raw) continue;
     if (raw.includes("--[[NO_EXECUTE]]")) continue;
-    const before = markdown.slice(0, match.index);
-    const lines = before.split("\n").map((l) => l.trim());
     let label = "";
-    for (let i = lines.length - 1; i >= 0; i--) {
-      if (/^#+\s/.test(lines[i])) { label = lines[i]; break; }
+    let codeBody = raw;
+    const nameMatch = raw.match(/^--name:\s*(.+)/);
+    if (nameMatch) {
+      label = nameMatch[1].trim();
+    } else {
+      const before = markdown.slice(0, match.index);
+      const lines = before.split("\n").map((l) => l.trim());
+      for (let i = lines.length - 1; i >= 0; i--) {
+        if (/^#+\s/.test(lines[i])) { label = lines[i]; break; }
+      }
+      if (!label) {
+        const nonEmpty = lines.filter((l) => l.length > 0);
+        label = nonEmpty[nonEmpty.length - 1] || `Block ${results.length + 1}`;
+      }
+      label = label.replace(/^#+\s*/, "").replace(/\*\*/g, "").replace(/\*/g, "").trim();
+      label = label.split(" - ")[0].trim();
     }
-    if (!label) {
-      const nonEmpty = lines.filter((l) => l.length > 0);
-      label = nonEmpty[nonEmpty.length - 1] || `Block ${results.length + 1}`;
-    }
-    label = label.replace(/^#+\s*/, "").replace(/\*\*/g, "").replace(/\*/g, "").trim();
-    label = label.split(" - ")[0].trim();
     if (label.length > 80) label = label.slice(0, 77) + "...";
     const code = stripNoShowForExecution(raw);
     results.push({ code, label });
