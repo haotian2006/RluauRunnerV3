@@ -1410,7 +1410,8 @@ function stripNoShowForExecution(code) {
 function stripNoShowForDisplay(text) {
   return text
     .replace(/--\[\[NO_SHOW\]\][\s\S]*?--\[\[END\]\]/g, "")
-    .replace(/--\[\[NO_EXECUTE\]\]\r?\n?/g, "");
+    .replace(/--\[\[NO_EXECUTE\]\]\r?\n?/g, "")
+    .replace(/--\[\[name:[^\]]*\]\]\r?\n?/g, "");
 }
 
 function extractDocCodeBlocks(markdown) {
