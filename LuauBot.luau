@@ -312,7 +312,7 @@ local function executeCode(id, code, env, thread, delay)
 		`local _ = coroutine.running();task.spawn(function()local _c = {"{}"}local _=_ while coroutine.status(_) ~= 'dead' do {checks} task.wait();end;end);`
 	local header = #fs == 0 and "" or (table.concat(fs, "\n") .. "\n")
 	local src =
-		`{header}return function(imports){imports}{updates}return function() local _=(function () --[[START OF CODE]] {code}\n--[[END OF CODE]]\nend)()\n\n\t\t\ntask.wait({delay or 1})\n\tend\nend`
+		`{header}return function(imports){imports}{updates}return function() local _=(function (...) --[[START OF CODE]] {code}\n--[[END OF CODE]]\nend)()\n\n\t\t\ntask.wait({delay or 1})\n\tend\nend`
 
 	local pass, fx = pcall(function()
 		m.Source = src
@@ -592,13 +592,13 @@ local function runCode(compCode, data)
 
 	env.colorstring = function(text, color)
 		color = color or ""
-		return (colorsLower[color:lower()] or "") .. tostring(text)
+		return (colorsLower[color:lower()] or "") .. tostring(text) .. "\27[0m"
 	end
 
 	env.log = function(text, color, newLine)
 		local time = os.clock() - start
 		color = color or ""
-		text = (colorsLower[color:lower()] or "") .. tostring(text)
+		text = (colorsLower[color:lower()] or "") .. tostring(text) .. "\27[0m"
 		local noTimeStamp = (env :: any).TIMESTAMP == false
 		table.insert(
 			thread.output,

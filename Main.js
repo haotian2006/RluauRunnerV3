@@ -126,6 +126,7 @@ function censorText(text) {
 const ExecuteTasks = {};
 const CompilingTasks = {};
 const Inputs = {};
+const docCodeStore = {};
 const app = express();
 app.use(express.json());
 
@@ -917,7 +918,7 @@ function createResponseEmbed(
         ? `[WARNING] Server creation quota reached. New sessions will be created less often. Frees <t:${BackUpEndTime}:R>. \n`
         : "") +
         `Requested by: <@${userId}>` +
-        `\`\`\`ansi\n${censorText(responseContent)}\n\`\`\``,
+        `\`\`\`ansi\n${censorText(responseContent) || " "}\n\`\`\``,
     )
     .setColor(UsingBackup ? 16488960 : 0x8ce4ff);
 
@@ -1402,6 +1403,43 @@ async function checkRobloxServer() {
   }
 }
 
+function stripNoShowForExecution(code) {
+  return code.replace(/--\[\[NO_SHOW\]\]\r?\n?/g, "").replace(/--\[\[END\]\]\r?\n?/g, "");
+}
+
+function stripNoShowForDisplay(text) {
+  return text
+    .replace(/--\[\[NO_SHOW\]\][\s\S]*?--\[\[END\]\]/g, "")
+    .replace(/--\[\[NO_EXECUTE\]\]\r?\n?/g, "");
+}
+
+function extractDocCodeBlocks(markdown) {
+  const results = [];
+  const fence = /```(?:lua|luau)[^\n]*\n([\s\S]*?)```/g;
+  let match;
+  while ((match = fence.exec(markdown)) !== null) {
+    const raw = match[1].trim();
+    if (!raw) continue;
+    if (raw.includes("--[[NO_EXECUTE]]")) continue;
+    const before = markdown.slice(0, match.index);
+    const lines = before.split("\n").map((l) => l.trim());
+    let label = "";
+    for (let i = lines.length - 1; i >= 0; i--) {
+      if (/^#+\s/.test(lines[i])) { label = lines[i]; break; }
+    }
+    if (!label) {
+      const nonEmpty = lines.filter((l) => l.length > 0);
+      label = nonEmpty[nonEmpty.length - 1] || `Block ${results.length + 1}`;
+    }
+    label = label.replace(/^#+\s*/, "").replace(/\*\*/g, "").replace(/\*/g, "").trim();
+    label = label.split(" - ")[0].trim();
+    if (label.length > 80) label = label.slice(0, 77) + "...";
+    const code = stripNoShowForExecution(raw);
+    results.push({ code, label });
+  }
+  return results;
+}
+
 async function main() {
   // logBot("Luau Compiler", "Waiting");
   // while (!luauModule || !luauModule.HEAPU8) {
@@ -1436,6 +1474,27 @@ async function main() {
 
   client.on("interactionCreate", async (interaction) => {
     try {
+      if (interaction.isButton() && interaction.customId.startsWith("doc_run:")) {
+        const uuid = interaction.customId.slice("doc_run:".length);
+        const code = docCodeStore[uuid];
+        if (!code) {
+          await interaction.reply({ content: "This button has expired.", ephemeral: true });
+          return;
+        }
+        await interaction.deferReply({ ephemeral: false });
+        sendCompileRequestToRoblox(
+          code,
+          interaction.id,
+          interaction.token,
+          interaction.channelId,
+          null,
+          interaction,
+          null,
+          false,
+        );
+        return;
+      }
+
       if (interaction.isAutocomplete()) {
         if (interaction.commandName === "doc") {
           const focused = interaction.options.getFocused().toLowerCase();
@@ -1792,15 +1851,42 @@ async function main() {
             const contentRes = await axios.get(file.download_url);
             const text = contentRes.data;
             const displayName = resourceDisplayName(file.name);
+            const displayText = stripNoShowForDisplay(text);
             const embed = new EmbedBuilder()
               .setTitle(displayName)
-              .setDescription(text.length > 4096 ? text.substring(0, 4093) + "..." : text)
+              .setDescription(displayText.length > 4096 ? displayText.substring(0, 4093) + "..." : displayText)
               .setURL(file.html_url)
               .setColor(0x5865f2);
             const mention = target ? `<@${target.id}> ` : "";
+
+            const codeBlocks = extractDocCodeBlocks(text);
+            const components = [];
+            if (codeBlocks.length > 0) {
+              const uuids = codeBlocks.map((block) => {
+                const uuid = generateUUID();
+                docCodeStore[uuid] = `log("[${block.label}]", "cyan", true)\n${block.code}`;
+                setTimeout(() => { delete docCodeStore[uuid]; }, 1000 * 60 * 10);
+                return uuid;
+              });
+              for (let i = 0; i < Math.min(codeBlocks.length, 25); i += 5) {
+                const row = new ActionRowBuilder();
+                const slice = codeBlocks.slice(i, i + 5);
+                row.addComponents(
+                  slice.map((block, j) =>
+                    new ButtonBuilder()
+                      .setCustomId(`doc_run:${uuids[i + j]}`)
+                      .setLabel(block.label)
+                      .setStyle(ButtonStyle.Primary)
+                  )
+                );
+                components.push(row);
+              }
+            }
+
             await interaction.editReply({
               content: mention || undefined,
               embeds: [embed],
+              components,
               allowedMentions: { users: target ? [target.id] : [] },
             });
           } catch (e) {

@@ -13,6 +13,29 @@ const commands = [
     type: 1,
   },
   {
+    name: "doc",
+    description: "retrieves a resource",
+    integration_types: [0, 1],
+    contexts: [0, 1, 2],
+    type: 1,
+    options: [
+      {
+        name: "resource",
+        description: "name of the resource to view",
+        type: 3,
+        required: true,
+        autocomplete: true,
+      },
+      {
+        name: "target",
+        description: "User to mention",
+        type: 6,
+        required: false,
+      },
+    ],
+  },
+
+  {
     name: "stopall",
     description: "Stops all running sessions that you own",
     integration_types: [0, 1],
@@ -113,7 +136,7 @@ const commands = [
     contexts: [0, 1, 2],
     type: 3,
   },
-    {
+  {
     name: "ast",
     integration_types: [0, 1],
     contexts: [0, 1, 2],
