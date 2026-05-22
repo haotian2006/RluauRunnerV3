@@ -1413,7 +1413,7 @@ function stripNoShowForDisplay(text) {
     .replace(/--\[\[NO_EXECUTE\]\]\r?\n?/g, "");
 }
 
-function extractDocCodeBlocks(markdown) {
+function extractDocCodeBlocks(markdown, tagName) {
   const results = [];
   const fence = /```(?:lua|luau)[^\n]*\n([\s\S]*?)```/g;
   let match;
@@ -1866,12 +1866,12 @@ async function main() {
               .setColor(0x5865f2);
             const mention = target ? `<@${target.id}> ` : "";
 
-            const codeBlocks = extractDocCodeBlocks(text);
+            const codeBlocks = extractDocCodeBlocks(text, displayName);
             const components = [];
             if (codeBlocks.length > 0) {
               const uuids = codeBlocks.map((block) => {
                 const uuid = generateUUID();
-                docCodeStore[uuid] = `log("[${block.label}]", "cyan", true)\n${block.code}`;
+                docCodeStore[uuid] = `log("Running: ${block.label}", "cyan", true)\n${block.code}`;
                 setTimeout(() => { delete docCodeStore[uuid]; }, 1000 * 60 * 10);
                 return uuid;
               });
