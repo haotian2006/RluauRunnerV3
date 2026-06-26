@@ -305,6 +305,25 @@ function wait(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function isUserRestricted(interaction) {
+  if (!interaction.inGuild()) return false;
+  if (interaction.member?.isCommunicationDisabled()) return true;
+  const perms = interaction.memberPermissions;
+  if (perms && !perms.has("SendMessages")) return true;
+  return false;
+}
+
+function wrapEphemeral(interaction) {
+  if (!isUserRestricted(interaction)) return;
+  const origDefer = interaction.deferReply.bind(interaction);
+  const origReply = interaction.reply.bind(interaction);
+  interaction.deferReply = (opts = {}) => origDefer({ ...opts, ephemeral: true });
+  interaction.reply = (opts = {}) => {
+    if (typeof opts === "string") return origReply({ content: opts, ephemeral: true });
+    return origReply({ ...opts, ephemeral: true });
+  };
+}
+
 let SERVERS_CREATED = 0;
 async function startRoblox(
   path = EXECUTE_LUAU,
@@ -1482,6 +1501,8 @@ async function main() {
 
   client.on("interactionCreate", async (interaction) => {
     try {
+      wrapEphemeral(interaction);
+
       if (interaction.isButton() && interaction.customId.startsWith("tag_run:")) {
         const uuid = interaction.customId.slice("tag_run:".length);
         const code = docCodeStore[uuid];
@@ -1849,6 +1870,12 @@ async function main() {
           await interaction.deferReply({ ephemeral: false });
           const resourceName = interaction.options.getString("resource");
           const target = interaction.options.getUser("target");
+          log(
+            interaction.user.id,
+            interaction.user.username,
+            interaction.commandName,
+            `Tag: ${resourceName}`,
+          );
           try {
             const files = await getResources();
             const file = files.find((f) => f.name === resourceName);
