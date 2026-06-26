@@ -14,7 +14,6 @@ const fs = require("fs");
 const path = require("path");
 const axios = require("axios");
 const express = require("express");
-const { console } = require("inspector");
 const zstd = require("zstd-napi");
 
 const os = require("os");
@@ -50,7 +49,8 @@ const ROBLOX_API_KEY = process.env.ROBLOX_API_KEY;
 const UNIVERSE_ID = process.env.UNIVERSE_ID;
 const PLACE_ID = process.env.PLACE_ID;
 const PORT = process.env.PORT || 3000;
-const RESOURCES_URL = "https://api.github.com/repos/haotian2006/luau-runner-bot-resources/contents/resources?ref=main";
+const RESOURCES_URL =
+  "https://api.github.com/repos/haotian2006/luau-runner-bot-resources/contents/resources?ref=main";
 const KONST_API = "http://api.plusgiant5.com";
 const EXECUTE_LUAU = `https://apis.roblox.com/cloud/v2/universes/${UNIVERSE_ID}/places/${PLACE_ID}/luau-execution-session-tasks`;
 const TUNNEL_URL = process.env.TUNNEL_URL;
@@ -69,7 +69,7 @@ const SERVER_TIME_OUT = "300s"; // this is how much before a server timeouts
 const BACKUP_SERVER_WAIT_TIME = 1000 * 60 * 2;
 const FILE_CHUNK_SIZE = 1024 * 1024 * 10; // 10 MB
 const MAX_DATA_TO_SEND = 1024 * 1024 * 100; // 100 MB
-const MAX_RESPONSE_FILES = 8; 
+const MAX_RESPONSE_FILES = 8;
 
 let botSrcEncoded = fs.existsSync(path.join(__dirname, "luauBot.b64"))
   ? fs.readFileSync(path.join(__dirname, "luauBot.b64"), "utf-8")
@@ -102,7 +102,8 @@ const SupportedFileTypes = new Set([
 ]);
 
 let IP = "";
-const SECRET_TOKEN = Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2);
+const SECRET_TOKEN =
+  Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2);
 let RunningServer = "";
 let RunningServerTime = 0;
 let LastServerPing = 0;
@@ -256,18 +257,25 @@ async function formatLuau(code) {
 
     let stderr = "";
     const child = spawn(PATH_TO_FORMATTER, ["--syntax=Luau", inputPath]);
-    child.stderr.on("data", (chunk) => { stderr += chunk; });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk;
+    });
     child.on("error", reject);
     child.on("close", (exitCode) => {
       try {
-        const output = exitCode !== 0 ? stderr : fs.readFileSync(inputPath, "utf8");
-        try { fs.unlinkSync(inputPath); fs.rmdirSync(tmpDir); } catch {}
+        const output =
+          exitCode !== 0 ? stderr : fs.readFileSync(inputPath, "utf8");
+        try {
+          fs.unlinkSync(inputPath);
+          fs.rmdirSync(tmpDir);
+        } catch {}
         resolve({ code: exitCode, output });
-      } catch (err) { reject(err); }
+      } catch (err) {
+        reject(err);
+      }
     });
   });
 }
-
 
 async function compileLuau(code, options) {
   const {
@@ -277,7 +285,7 @@ async function compileLuau(code, options) {
     remarks,
     binary,
     architecture,
-    constants
+    constants,
   } = options;
 
   const args = [];
@@ -289,7 +297,7 @@ async function compileLuau(code, options) {
     args.push("--remarks");
   } else if (binary) {
     args.push("--binary");
-  }else if (constants) {
+  } else if (constants) {
     args.push("--dump-constants");
   }
   args.push(`-g${debugLevel}`);
@@ -307,7 +315,13 @@ function wait(ms) {
 
 function isUserRestricted(interaction) {
   if (!interaction.inGuild()) return false;
-  if (interaction.member?.isCommunicationDisabled()) return true;
+  const member = interaction.member;
+  if (!member) return false;
+  if (typeof member.isCommunicationDisabled === "function") {
+    if (member.isCommunicationDisabled()) return true;
+  } else if (member.communication_disabled_until) {
+    if (new Date(member.communication_disabled_until) > new Date()) return true;
+  }
   const perms = interaction.memberPermissions;
   if (perms && !perms.has("SendMessages")) return true;
   return false;
@@ -317,9 +331,12 @@ function wrapEphemeral(interaction) {
   if (!isUserRestricted(interaction)) return;
   const origDefer = interaction.deferReply.bind(interaction);
   const origReply = interaction.reply.bind(interaction);
-  interaction.deferReply = (opts = {}) => origDefer({ ...opts, ephemeral: true });
+  interaction.deferReply = (opts = {}) =>
+    origDefer({ ...opts, ephemeral: true });
   interaction.reply = (opts = {}) => {
-    if (typeof opts === "string") return origReply({ content: opts, ephemeral: true });
+    console.log("User is restricted, forcing ephemeral reply.");
+    if (typeof opts === "string")
+      return origReply({ content: opts, ephemeral: true });
     return origReply({ ...opts, ephemeral: true });
   };
 }
@@ -474,7 +491,6 @@ function getAnalysisOptions(code) {
   return {
     annotate: !!annotateMatch,
   };
-
 }
 
 /**
@@ -523,7 +539,6 @@ async function getByteCode(options, code) {
   const result = await compileLuau(code, options);
   return result.output;
 }
-
 
 async function checkAndGetAttachmentText(attachment) {
   const validTextExtensions = [".txt", ".lua", ".luau", ".json"];
@@ -796,7 +811,14 @@ async function sendCompileRequestToRoblox(
     },
     1000 * 60 * 6,
   );
-  CompilingTasks[interaction.token] = [interaction, originalInteraction, null, 0, null, timeoutId];
+  CompilingTasks[interaction.token] = [
+    interaction,
+    originalInteraction,
+    null,
+    0,
+    null,
+    timeoutId,
+  ];
 }
 
 async function reply(
@@ -1423,7 +1445,9 @@ async function checkRobloxServer() {
 }
 
 function stripNoShowForExecution(code) {
-  return code.replace(/--\[\[NO_SHOW\]\]\r?\n?/g, "").replace(/--\[\[END\]\]\r?\n?/g, "");
+  return code
+    .replace(/--\[\[NO_SHOW\]\]\r?\n?/g, "")
+    .replace(/--\[\[END\]\]\r?\n?/g, "");
 }
 
 function stripNoShowForDisplay(text) {
@@ -1451,13 +1475,20 @@ function extractDocCodeBlocks(markdown) {
       const before = markdown.slice(0, match.index);
       const lines = before.split("\n").map((l) => l.trim());
       for (let i = lines.length - 1; i >= 0; i--) {
-        if (/^#+\s/.test(lines[i])) { label = lines[i]; break; }
+        if (/^#+\s/.test(lines[i])) {
+          label = lines[i];
+          break;
+        }
       }
       if (!label) {
         const nonEmpty = lines.filter((l) => l.length > 0);
         label = nonEmpty[nonEmpty.length - 1] || `Block ${results.length + 1}`;
       }
-      label = label.replace(/^#+\s*/, "").replace(/\*\*/g, "").replace(/\*/g, "").trim();
+      label = label
+        .replace(/^#+\s*/, "")
+        .replace(/\*\*/g, "")
+        .replace(/\*/g, "")
+        .trim();
       label = label.split(" - ")[0].trim();
     }
     if (label.length > 80) label = label.slice(0, 77) + "...";
@@ -1503,11 +1534,17 @@ async function main() {
     try {
       wrapEphemeral(interaction);
 
-      if (interaction.isButton() && interaction.customId.startsWith("tag_run:")) {
+      if (
+        interaction.isButton() &&
+        interaction.customId.startsWith("tag_run:")
+      ) {
         const uuid = interaction.customId.slice("tag_run:".length);
         const code = docCodeStore[uuid];
         if (!code) {
-          await interaction.reply({ content: "This button has expired.", ephemeral: true });
+          await interaction.reply({
+            content: "This button has expired.",
+            ephemeral: true,
+          });
           return;
         }
         await interaction.deferReply({ ephemeral: false });
@@ -1530,9 +1567,14 @@ async function main() {
           try {
             const files = await getResources();
             const choices = files
-              .filter((f) => resourceDisplayName(f.name).toLowerCase().includes(focused))
+              .filter((f) =>
+                resourceDisplayName(f.name).toLowerCase().includes(focused),
+              )
               .slice(0, 25)
-              .map((f) => ({ name: resourceDisplayName(f.name), value: f.name }));
+              .map((f) => ({
+                name: resourceDisplayName(f.name),
+                value: f.name,
+              }));
             await interaction.respond(choices);
           } catch (e) {
             await interaction.respond([]);
@@ -1596,7 +1638,9 @@ async function main() {
           interaction.commandName,
           `Code length: ${code.length} characters`,
         );
-        console.log(`User ${interaction.user.username} (${interaction.user.id}) invoked ${interaction.commandName} with code length: ${code.length} characters`);
+        console.log(
+          `User ${interaction.user.username} (${interaction.user.id}) invoked ${interaction.commandName} with code length: ${code.length} characters`,
+        );
 
         if (interaction.commandName === "bytecode") {
           await interaction.deferReply({ ephemeral: false });
@@ -1609,8 +1653,11 @@ async function main() {
         } else if (interaction.commandName === "analyze") {
           await interaction.deferReply({ ephemeral: false });
           const options = getAnalysisOptions(code);
-          
-          const analysis = await analyzeLuau(code.replace("--!annotate", ""), options);
+
+          const analysis = await analyzeLuau(
+            code.replace("--!annotate", ""),
+            options,
+          );
           await reply(interaction, analysis.output, false, "lua");
         } else if (interaction.commandName === "ast") {
           await interaction.deferReply({ ephemeral: false });
@@ -1880,7 +1927,9 @@ async function main() {
             const files = await getResources();
             const file = files.find((f) => f.name === resourceName);
             if (!file) {
-              await interaction.editReply({ content: `Resource \`${resourceName}\` not found.` });
+              await interaction.editReply({
+                content: `Resource \`${resourceName}\` not found.`,
+              });
               return;
             }
             const contentRes = await axios.get(file.download_url);
@@ -1889,7 +1938,11 @@ async function main() {
             const displayText = stripNoShowForDisplay(text);
             const embed = new EmbedBuilder()
               .setTitle(displayName)
-              .setDescription(displayText.length > 4096 ? displayText.substring(0, 4093) + "..." : displayText)
+              .setDescription(
+                displayText.length > 4096
+                  ? displayText.substring(0, 4093) + "..."
+                  : displayText,
+              )
               .setURL(file.html_url)
               .setColor(0x5865f2);
             const mention = target ? `<@${target.id}> ` : "";
@@ -1899,8 +1952,14 @@ async function main() {
             if (codeBlocks.length > 0) {
               const uuids = codeBlocks.map((block) => {
                 const uuid = generateUUID();
-                docCodeStore[uuid] = `log("Running: ${block.label}", "cyan", true)\n${block.code}`;
-                setTimeout(() => { delete docCodeStore[uuid]; }, 1000 * 60 * 10);
+                docCodeStore[uuid] =
+                  `log("Running: ${block.label}", "cyan", true)\n${block.code}`;
+                setTimeout(
+                  () => {
+                    delete docCodeStore[uuid];
+                  },
+                  1000 * 60 * 10,
+                );
                 return uuid;
               });
               for (let i = 0; i < Math.min(codeBlocks.length, 25); i += 5) {
@@ -1911,8 +1970,8 @@ async function main() {
                     new ButtonBuilder()
                       .setCustomId(`tag_run:${uuids[i + j]}`)
                       .setLabel(block.label)
-                      .setStyle(ButtonStyle.Primary)
-                  )
+                      .setStyle(ButtonStyle.Primary),
+                  ),
                 );
                 components.push(row);
               }
@@ -1925,13 +1984,18 @@ async function main() {
               allowedMentions: { users: target ? [target.id] : [] },
             });
           } catch (e) {
-            await interaction.editReply({ content: `Failed to fetch resource: ${e.message}` });
+            await interaction.editReply({
+              content: `Failed to fetch resource: ${e.message}`,
+            });
           }
         }
       }
     } catch (error) {
       console.error("Error handling interaction:", error);
-      logBot("Interaction Error", `Error handling interaction: ${error.message}`);
+      logBot(
+        "Interaction Error",
+        `Error handling interaction: ${error.message}`,
+      );
     }
   });
 
