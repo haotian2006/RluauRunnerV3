@@ -1585,19 +1585,19 @@ async function main() {
 
       if (interaction.isMessageContextMenuCommand()) {
         if (interaction.commandName === "input") {
+          await interaction.deferReply();
           const inputs = await getInputsFromContext(interaction);
           for (const input of inputs) {
             try {
               const eSize = encodeZstd(input).length;
 
               if (eSize > MAX_DATA_TO_SEND) {
-                interaction.reply({
+                await interaction.editReply({
                   content: `Input exceeds maximum size of ${Math.floor(
                     MAX_DATA_TO_SEND / 1024,
                   )} KB after compression (current size: ${Math.floor(
                     eSize / 1024,
                   )} KB).`,
-                  ephemeral: true,
                 });
 
                 return;
@@ -1623,7 +1623,7 @@ async function main() {
               logBot("Input Error", `Error processing input: ${err.message}`);
             }
           }
-          interaction.reply({
+          await interaction.editReply({
             content: "Sent " + inputs.length + " Input(s)",
           });
 
