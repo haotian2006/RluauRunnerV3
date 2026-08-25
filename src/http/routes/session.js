@@ -1,4 +1,5 @@
 const { getActorBlock } = require("../../abuse");
+const { client } = require("../../discord/client");
 const {
   encodeZstd,
   getChunk,
@@ -62,6 +63,17 @@ function heartbeatServer(serverId, now = Date.now()) {
 function registerSessionRoutes(app) {
   app.get("/", (req, res) => {
     res.send("Bot is running!");
+  });
+
+  app.get("/stats", (req, res) => {
+    if (!client.isReady()) {
+      return res.status(503).json({ error: "Bot not ready" });
+    }
+    const guilds = client.guilds.cache;
+    res.json({
+      guilds: guilds.size,
+      memberReach: guilds.reduce((sum, g) => sum + g.memberCount, 0),
+    });
   });
 
   app.post("/start", requireSecret, async (req, res) => {
