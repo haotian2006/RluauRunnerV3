@@ -3,6 +3,13 @@ const os = require("os");
 const path = require("path");
 const { spawn } = require("child_process");
 
+function missingToolError(executablePath) {
+  const name = path.basename(executablePath);
+  return new Error(
+    `${name} is not installed. Run \`npm run fetch-tools\` to download the luau tools.`,
+  );
+}
+
 const {
   PATH_TO_ANALYZER,
   PATH_TO_AST,
@@ -28,7 +35,9 @@ async function execute(executablePath, code, args) {
     child.stdout.pipe(outputStream);
     child.stderr.pipe(outputStream);
 
-    child.on("error", reject);
+    child.on("error", (err) => {
+      reject(err.code === "ENOENT" ? missingToolError(executablePath) : err);
+    });
 
     child.on("close", (code) => {
       outputStream.end(() => {
@@ -73,7 +82,11 @@ async function formatLuau(code) {
     child.stderr.on("data", (chunk) => {
       stderr += chunk;
     });
-    child.on("error", reject);
+    child.on("error", (err) => {
+      reject(
+        err.code === "ENOENT" ? missingToolError(PATH_TO_FORMATTER) : err,
+      );
+    });
     child.on("close", (exitCode) => {
       try {
         const output =

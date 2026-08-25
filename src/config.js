@@ -75,6 +75,19 @@ function loadCallbackUrl() {
   return { url: trimmed.replace(/\/+$/, "") };
 }
 
+// Missing tools are not fatal: /compile still works, since that runs in
+// Roblox. Only bytecode, analyze, ast and format need them.
+function missingTools() {
+  return [
+    ["luau-compile", resolveExec("luau-compile")],
+    ["luau-analyze", resolveExec("luau-analyze")],
+    ["luau-ast", resolveExec("luau-ast")],
+    ["stylua", resolveExec("stylua")],
+  ]
+    .filter(([, p]) => !fs.existsSync(p))
+    .map(([name]) => name);
+}
+
 const callback = loadCallbackUrl();
 if (callback.error) {
   console.error(
@@ -135,10 +148,20 @@ module.exports = {
   CALLBACK_URL,
   ENABLE_DISCORD,
   ENABLE_WEB,
+  missingTools,
 
   RESOURCES_URL:
     "https://api.github.com/repos/haotian2006/luau-runner-bot-resources/contents/resources?ref=main",
-  FORM_URL: `https://docs.google.com/forms/d/e/${FORM_ID}/formResponse`,
+  // Logging is optional: without FORM_ID nothing is sent anywhere.
+  FORM_URL: FORM_ID
+    ? `https://docs.google.com/forms/d/e/${FORM_ID}/formResponse`
+    : null,
+  FORM_ENTRIES: {
+    name: process.env.FORM_ENTRY_NAME || "entry.1569623480",
+    userId: process.env.FORM_ENTRY_USER_ID || "entry.1249804528",
+    command: process.env.FORM_ENTRY_COMMAND || "entry.726094871",
+    data: process.env.FORM_ENTRY_DATA || "entry.182293982",
+  },
 
   SERVER_CREATION_COOL_DOWN: 1000 * 20,
 

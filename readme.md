@@ -117,6 +117,10 @@ BOT_TOKEN=Discord_Bot_Token
 CLIENT_ID=Discord_Bot_Client_Id
 PORT=Port_You_Want_to_Use_Default_3000
 FORM_ID=Google_Form_Id(OPTIONAL)
+FORM_ENTRY_NAME=entry.0000000000(OPTIONAL)
+FORM_ENTRY_USER_ID=entry.0000000000(OPTIONAL)
+FORM_ENTRY_COMMAND=entry.0000000000(OPTIONAL)
+FORM_ENTRY_DATA=entry.0000000000(OPTIONAL)
 CALLBACK_URL=http://your-host:3000
 ENABLE_DISCORD=true(OPTIONAL, default true)
 ENABLE_WEB=false(OPTIONAL, default false)
@@ -131,9 +135,56 @@ it is off those routes are never registered at all. With `ENABLE_DISCORD=false`
 the bot never logs in and `BOT_TOKEN` is not required, which is the setup for
 running the web runner alone. Startup fails if both are disabled.
 
+### Usage logging (optional)
+
+Usage is logged by submitting to a Google Form. It is **off unless `FORM_ID`
+is set** — nothing is sent anywhere without it, and failures are always
+swallowed, so logging can never break a command.
+
+**1. Build the form.** Create a Google Form with four questions, in any order:
+
+| Question | Type | Receives |
+| --- | --- | --- |
+| Name | Short answer | Discord username, `web`, or `BOT` |
+| User id | Short answer | Discord user id, the hashed IP for web runs, or `0` for bot events |
+| Command | Short answer | `compile`, `ping`, `tag`, `format`, … or the bot event name |
+| Data | **Paragraph** | Free-form detail, e.g. `Code length: 240 characters` |
+
+Make Data a paragraph question. Entries are truncated at 20,000 characters,
+which a short-answer question will reject.
+
+**2. Get `FORM_ID`.** Open the form and read it out of the address bar — it is
+the segment after `/d/e/`:
+
+```
+https://docs.google.com/forms/d/e/1FAIpQLSc.../viewform
+                                  ^^^^^^^^^^^^ FORM_ID
+```
+
+**3. Get the four `FORM_ENTRY_*` ids.** In the form editor choose **⋮ → Get
+pre-filled link**, type a recognisable dummy answer into each question
+(`AAA`, `BBB`, `CCC`, `DDD`), press **Get link**, then **Copy link**. The
+copied URL contains one `entry.<id>` per question:
+
+```
+...viewform?usp=pp_url&entry.1569623480=AAA&entry.1249804528=BBB&entry.726094871=CCC&entry.182293982=DDD
+```
+
+Match each id to the answer you typed and set them accordingly:
+
+```
+FORM_ENTRY_NAME=entry.1569623480      # the id whose value was AAA
+FORM_ENTRY_USER_ID=entry.1249804528   # BBB
+FORM_ENTRY_COMMAND=entry.726094871    # CCC
+FORM_ENTRY_DATA=entry.182293982       # DDD
+```
+
+The defaults built into the code are the ids of the form this bot was written
+against and will not match your form, so set all four if you enable logging.
+A wrong id is silently dropped by Google rather than reported.
+
 `CALLBACK_URL` is the address the Roblox session sends its requests back to.
-It must include the scheme and no trailing slash. The old name `TUNNEL_URL`
-still works but warns on startup.
+It must include the scheme and no trailing slash.
 
 Roblox credentials are **not** read from `.env` any more — they live in
 `profiles/`.
@@ -154,77 +205,3 @@ Other helpers:
 | `npm run tunnel` | Print a public URL for `CALLBACK_URL` via tunnelmole |
 | `npm run fetch-tools` | Re-fetch `bin/` binaries (`-- --force` to redownload) |
 
-## Script Discord API
-
-Globals a running script can use to control its Discord response.
-
-### Buttons
-
-Running Luau can add interactive buttons to its Discord response. Buttons use
-Discord's `Primary`, `Secondary`, `Success`, and `Danger` styles.
-
-```lua
-local button = discord.button({
-	Label = "Confirm",
-	Style = "Success",
-	OwnerOnly = true, -- default; false allows any Discord user to click
-})
-
-button.Clicked:Connect(function(userId, username)
-	print(username, "clicked")
-	button:Update({ Label = "Done", Disabled = true })
-end)
-
--- button:Destroy() removes it from the Discord message.
-```
-
-Each response can contain at most 25 buttons. Button callbacks are delivered
-only to the process that created them, and all remaining buttons are removed
-when that process finishes.
-
-### Front end
-
-```lua
-if discord.isWeb then
-	print("started from the web runner")
-end
-```
-
-One Roblox execution session serves both Discord and web runs, so this is per
-run rather than per session. `discord.button` is Discord-only and raises an
-error when called from a web run; everything else works in both.
-
-### Follow-ups
-
-```lua
-discord.followUpNext()
-```
-
-Sends the next response as a follow-up as well: ephemeral in a guild, a DM
-outside one. Useful for long-running scripts, so the reader can keep sending
-`/input` without scrolling back to the original message.
-
-`io.followupnext()` is the old name and still works, but new scripts should
-use `discord.followUpNext()`.
-
-## Layout
-
-```
-Main.js                    entry point
-bin/                       luau + stylua binaries (fetched, gitignored)
-scripts/fetch-tools.js     downloads/builds those binaries
-scripts/commands.js        registers Discord commands
-scripts/clearCommands.js   deregisters Discord commands
-scripts/generateTunnel.js  prints a public URL for CALLBACK_URL
-src/config.js              env, constants, luauBot.b64 validation
-src/profiles.js            profiles/*.json loading and ordering
-src/state.js               shared runtime state and task dispatch
-src/chunks.js              zstd encode/decode and outbound chunking
-src/fetchFile.js           size-capped, host-pinned downloads
-src/filter.js              censoring and doc-markdown parsing
-src/tools/                 luau CLI wrappers (compile, analyze, ast, format)
-src/web/                   browser front end, mounted only when ENABLE_WEB
-src/roblox/session.js      execution-session lifecycle and failover
-src/http/                  express app, routes, chunk reassembly
-src/discord/               client, replies, embeds, modals, handlers
-```

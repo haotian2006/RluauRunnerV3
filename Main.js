@@ -1,4 +1,9 @@
-const { CALLBACK_URL, ENABLE_DISCORD, ENABLE_WEB } = require("./src/config");
+const {
+  CALLBACK_URL,
+  ENABLE_DISCORD,
+  ENABLE_WEB,
+  missingTools,
+} = require("./src/config");
 const { logBot } = require("./src/log");
 const { migrationHint, reportProfiles } = require("./src/profiles");
 const { state } = require("./src/state");
@@ -26,6 +31,16 @@ function main() {
   ].filter(Boolean);
   console.log(`Front ends: ${frontEnds.join(", ")}`);
   logBot("Main", `Front ends: ${frontEnds.join(", ")}`);
+
+  const missing = missingTools();
+  if (missing.length) {
+    console.warn(
+      `Warning: missing tool binaries: ${missing.join(", ")}.
+` +
+        "Run `npm run fetch-tools`. /compile still works; bytecode, analyze, " +
+        "ast and format will fail until they are installed.",
+    );
+  }
 
   state.CallbackUrl = CALLBACK_URL;
 

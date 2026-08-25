@@ -1,5 +1,5 @@
 const axios = require("axios");
-const { FORM_URL } = require("./config");
+const { FORM_ENTRIES, FORM_URL } = require("./config");
 
 const MAX_LOG_LENGTH = 20000 - 10;
 
@@ -16,14 +16,15 @@ function log(userid, name, commandName, data) {
       data = data.substring(0, MAX_LOG_LENGTH) + "... [truncated]";
     }
   }
+  if (!FORM_URL) return;
   axios
     .post(
       FORM_URL,
       new URLSearchParams({
-        "entry.1569623480": name, //Make sure these entry ids are correct
-        "entry.1249804528": userid,
-        "entry.726094871": commandName,
-        "entry.182293982": data ? data : "",
+        [FORM_ENTRIES.name]: name,
+        [FORM_ENTRIES.userId]: userid,
+        [FORM_ENTRIES.command]: commandName,
+        [FORM_ENTRIES.data]: data ? data : "",
       }),
       {
         headers: {

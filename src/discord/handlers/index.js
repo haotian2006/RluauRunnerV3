@@ -12,6 +12,25 @@ const { handleContextMenu } = require("./contextMenu");
 const { handleModalSubmit } = require("./modalSubmit");
 const { handleSlashCommand } = require("./slashCommand");
 
+async function reportInteractionError(interaction, error) {
+  try {
+    if (typeof interaction.isAutocomplete === "function" && interaction.isAutocomplete()) {
+      return;
+    }
+    const content = `Something went wrong: ${error.message}`;
+    if (interaction.deferred || interaction.replied) {
+      await interaction.editReply({ content, embeds: [], components: [] });
+    } else {
+      await interaction.reply({ content, ephemeral: true });
+    }
+  } catch (replyError) {
+    logBot(
+      "Interaction Error",
+      `Could not report the failure to the user: ${replyError.message}`,
+    );
+  }
+}
+
 function registerInteractionHandler() {
   client.on("interactionCreate", async (interaction) => {
     try {
@@ -46,6 +65,9 @@ function registerInteractionHandler() {
         "Interaction Error",
         `Error handling interaction: ${error.message}`,
       );
+      // Without this a handler that throws after deferReply leaves the user on
+      // "thinking..." forever, with the reason only in the server log.
+      await reportInteractionError(interaction, error);
     }
   });
 }
