@@ -93,10 +93,10 @@ needed. It picks the right artefact for the machine automatically:
 | --- | --- | --- |
 | x86_64, glibc 2.34+ | prebuilt | prebuilt (gnu) |
 | x86_64, older glibc | built from source | prebuilt (musl, static) |
-| **aarch64 (Oracle Ampere)** | **built from source** | prebuilt (arm64) |
+| aarch64 (Oracle Ampere) | built from source | prebuilt (arm64) |
 | aarch64, older glibc / Alpine | built from source | prebuilt (musl, static) |
 
-upstream luau ships an x86_64 build only, and its prebuilt binaries import
+Upstream luau ships an x86_64 build only, and its prebuilt binaries import
 `GLIBC_2.34`, so on aarch64 or an older distro the script compiles luau from
 the release source instead. That needs a toolchain:
 
@@ -116,97 +116,65 @@ Also make sure `bin/` is not on a filesystem mounted `noexec`.
 BOT_TOKEN=Discord_Bot_Token
 CLIENT_ID=Discord_Bot_Client_Id
 PORT=Port_You_Want_to_Use_Default_3000
-FORM_ID=Google_Form_Id(OPTIONAL)
-FORM_ENTRY_NAME=entry.0000000000(OPTIONAL)
-FORM_ENTRY_USER_ID=entry.0000000000(OPTIONAL)
-FORM_ENTRY_COMMAND=entry.0000000000(OPTIONAL)
-FORM_ENTRY_DATA=entry.0000000000(OPTIONAL)
 CALLBACK_URL=http://your-host:3000
 ENABLE_DISCORD=true(OPTIONAL, default true)
 ENABLE_WEB=false(OPTIONAL, default false)
 ENABLE_LOCAL_EXEC=false(OPTIONAL, default false)
 MAX_ROBLOX_WORKERS=4(OPTIONAL, default 4)
+FORM_ID=Google_Form_Id(OPTIONAL)
+FORM_ENTRY_NAME=entry.0000000000(OPTIONAL)
+FORM_ENTRY_USER_ID=entry.0000000000(OPTIONAL)
+FORM_ENTRY_COMMAND=entry.0000000000(OPTIONAL)
+FORM_ENTRY_DATA=entry.0000000000(OPTIONAL)
 ```
 
-`ENABLE_DISCORD` and `ENABLE_WEB` choose which front ends run. Both share one
-Roblox worker pool. The pool scales up when tasks are queued, is capped at four
-workers by default, and gives responsive workers one new task per poll. This
-allows another task to run while existing code is yielding. A non-yielding
-script can temporarily pause tasks sharing its worker, but queued work moves to
-a responsive or replacement worker. `MAX_ROBLOX_WORKERS` can lower the cap;
-values above four are clamped to four.
+`CALLBACK_URL` is the address the Roblox session sends its requests back to.
+It must include the scheme and no trailing slash.
 
-If every configured Roblox profile fails to start and no Roblox worker is
-connected or pending, queued tasks fall back to Lune when
-`ENABLE_LOCAL_EXEC=true`. The handoff removes each task from the Roblox queue
-before starting it locally and applies the actor's separate Lune limits and
-cooldowns. Code requiring real Roblox services may still error in the reduced
-Lune sandbox; tasks already reserved by a Roblox worker are never moved.
+Roblox credentials are **not** read from `.env` any more. They live in
+`profiles/`. The `FORM_*` variables are covered in
+[Usage logging](#usage-logging-optional).
+
+### 5. Run
+
+```
+npm install                 # also fetches the tool binaries
+npm run register-commands   # register slash + context-menu commands (once)
+npm start                   # start the bot
+```
+
+Other helpers:
+
+| Command | What it does |
+| --- | --- |
+| `npm run clear-commands` | Deregister every command from Discord |
+| `npm run tunnel` | Print a public URL for `CALLBACK_URL` via tunnelmole |
+| `npm run fetch-tools` | Re-fetch `bin/` binaries (`-- --force` to redownload) |
+
+## Front ends
+
+`ENABLE_DISCORD` and `ENABLE_WEB` choose which front ends run. Startup fails if
+both are disabled.
 
 `ENABLE_WEB` defaults to **false** deliberately: the web routes execute
 arbitrary Luau for anyone who can reach the port, with no authentication. When
 it is off those routes are never registered at all. With `ENABLE_DISCORD=false`
 the bot never logs in and `BOT_TOKEN` is not required, which is the setup for
-running the web runner alone. Startup fails if both are disabled.
+running the web runner alone.
 
-`ENABLE_LOCAL_EXEC=true` enables the local Lune sandbox. Each submission is
-checked with `luau-analyze`: scripts that only use sandbox-supported globals run
-locally, while scripts using Roblox, bot, or unknown globals keep using the
-Roblox session. Analyzer failures and syntax errors also fall back to Roblox.
-A leading `--!lune` explicitly forces the sandbox. Local execution is off by
-default. Lune executions without a heartbeat are stopped after 11 seconds by
-default, configurable with `LOCAL_HEARTBEAT_TIMEOUT_MS`. Each heartbeat renews
-that watchdog; responsive scripts may continue until the 30-second hard limit,
-configurable with `LOCAL_TIMEOUT_MS`. While a run is active, new output is
-delivered about once per second. Windows cannot enforce the configured memory
-limit.
+## Execution
 
-### Temporary crash protection
+Both front ends share one Roblox worker pool. The pool scales up when tasks are
+queued, is capped by `MAX_ROBLOX_WORKERS` (default and maximum 4), and gives
+responsive workers one new task per poll, so another task can run while
+existing code is yielding. A non-yielding script can temporarily pause tasks
+sharing its worker, but queued work moves to a responsive or replacement
+worker.
 
-The bot keeps an in-memory rolling record of executor crashes. If a Roblox
-server loses its heartbeat, every actor with code assigned to that server that
-has not sent a final response receives one strike for that outage, regardless
-of how many unfinished tasks they had. Unexpected Lune process exits are
-attributed directly to their submitting actor. A process killed by the bot's
-configured Lune time limit is flagged as timed out but does not receive a
-strike.
-
-A worker that misses its heartbeat remains registered but unhealthy for 40
-seconds. Queued work does not wait for that worker: another worker may start
-within the four-worker cap. Its next `/getNext` poll still restores it when its
-original session age is under three minutes. If no heartbeat arrives during
-the grace period, or the session is already three minutes old, the bot removes
-it.
-
-Discord `/stopall` and the web `/stop/:token` route also cancel a matching Lune
-child process immediately. User cancellation is reported separately from a
-timeout or abnormal exit and never receives a crash strike.
-
-Three distinct crashes within two minutes temporarily block that Discord user or
-hashed web IP from the affected runtime for 45 seconds. Roblox and Lune use
-separate strike keys (`discord:<user>:roblox`, `discord:<user>:lune`,
-`web:<ip-hash>:roblox`, and `web:<ip-hash>:lune`), so a Roblox outage cannot
-block Lune and an abnormal Lune exit cannot block Roblox. Records decay
-automatically and reset when the bot restarts. Ordinary submission rate limits
-remain shared. Lune also accepts at most ten active-or-queued runs per actor; the
-lower global `LOCAL_MAX_CONCURRENT` limit still takes precedence.
-
-If two Lune processes for the same actor have both gone three seconds without a
-heartbeat, new Lune submissions for that actor are paused for 11 seconds. Runs
-that are only waiting for a global execution slot do not count, and a heartbeat
-immediately marks a started run as responsive again. This admission pause does
-not add crash strikes or affect Roblox submissions.
-
-Queued work rechecks its runtime-specific block immediately before execution.
-A Lune job that becomes blocked while waiting for a local slot is rejected
-before its child process starts. A Roblox job that becomes blocked while queued
-is removed before a worker reserves it; the worker continues to the next
-allowed task.
-
-### Usage logging (optional)
+## Usage logging (optional)
 
 Usage is logged by submitting to a Google Form. It is **off unless `FORM_ID`
-is set** — nothing is sent anywhere without it, and failures are always
+is set**. Nothing is sent anywhere without it, and failures are always
 swallowed, so logging can never break a command.
 
 **1. Build the form.** Create a Google Form with four questions, in any order:
@@ -221,7 +189,7 @@ swallowed, so logging can never break a command.
 Make Data a paragraph question. Entries are truncated at 20,000 characters,
 which a short-answer question will reject.
 
-**2. Get `FORM_ID`.** Open the form and read it out of the address bar — it is
+**2. Get `FORM_ID`.** Open the form and read it out of the address bar. It is
 the segment after `/d/e/`:
 
 ```
@@ -250,25 +218,3 @@ FORM_ENTRY_DATA=entry.182293982       # DDD
 The defaults built into the code are the ids of the form this bot was written
 against and will not match your form, so set all four if you enable logging.
 A wrong id is silently dropped by Google rather than reported.
-
-`CALLBACK_URL` is the address the Roblox session sends its requests back to.
-It must include the scheme and no trailing slash.
-
-Roblox credentials are **not** read from `.env` any more — they live in
-`profiles/`.
-
-### 5. Run
-
-```
-npm install              # also fetches the tool binaries
-npm run register-commands   # register slash + context-menu commands (once)
-npm start                # start the bot
-```
-
-Other helpers:
-
-| Command | What it does |
-| --- | --- |
-| `npm run clear-commands` | Deregister every command from Discord |
-| `npm run tunnel` | Print a public URL for `CALLBACK_URL` via tunnelmole |
-| `npm run fetch-tools` | Re-fetch `bin/` binaries (`-- --force` to redownload) |
