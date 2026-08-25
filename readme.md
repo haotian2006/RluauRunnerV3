@@ -63,10 +63,6 @@ Each Roblox place the bot can run code in is one file in `profiles/`. Copy
 | `priority` | Lower appears earlier in the rotation |
 | `enabled` | Set `false` to keep a profile on disk without using it |
 
-Add as many profiles as you like. The bot cycles through them in priority
-order, so three profiles run as `A → B → C → A`. If the selected profile
-fails to start a session, the bot tries the remaining profiles in that cycle.
-
 `profiles/*.json` is gitignored, because the API key is stored inline.
 
 For `apiKey` you need to create an API key in the Roblox developer hub with the
@@ -84,32 +80,7 @@ npm run fetch-tools -- --force # re-download, e.g. to pick up a new Luau release
 ```
 
 This runs automatically on `npm install`. Windows, Linux and macOS (x64 and
-arm64) are all handled; `bin/` is gitignored, so the binaries are never
-committed. Pin versions with `--luau-version 0.735 --stylua-version v2.5.2`.
-
-**Linux notes.** The script sets the executable bit itself, so no `chmod` is
-needed. It picks the right artefact for the machine automatically:
-
-| Machine | luau | stylua |
-| --- | --- | --- |
-| x86_64, glibc 2.34+ | prebuilt | prebuilt (gnu) |
-| x86_64, older glibc | built from source | prebuilt (musl, static) |
-| aarch64 (Oracle Ampere) | built from source | prebuilt (arm64) |
-| aarch64, older glibc / Alpine | built from source | prebuilt (musl, static) |
-
-Upstream luau ships an x86_64 build only, and its prebuilt binaries import
-`GLIBC_2.34`, so on aarch64 or an older distro the script compiles luau from
-the release source instead. That needs a toolchain:
-
-```
-sudo apt install cmake build-essential   # Debian/Ubuntu
-sudo dnf install cmake gcc-c++ make      # Oracle Linux/RHEL
-```
-
-It takes a few minutes. Force a source build anywhere with
-`npm run fetch-tools -- --build`.
-
-Also make sure `bin/` is not on a filesystem mounted `noexec`.
+arm64) are all handled;
 
 ### 4. `.env`
 
