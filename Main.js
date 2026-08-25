@@ -1,4 +1,4 @@
-const { CALLBACK_URL } = require("./src/config");
+const { CALLBACK_URL, ENABLE_DISCORD, ENABLE_WEB } = require("./src/config");
 const { logBot } = require("./src/log");
 const { migrationHint, reportProfiles } = require("./src/profiles");
 const { state } = require("./src/state");
@@ -20,6 +20,13 @@ function main() {
     process.exit(1);
   }
 
+  const frontEnds = [
+    ENABLE_DISCORD && "discord",
+    ENABLE_WEB && "web",
+  ].filter(Boolean);
+  console.log(`Front ends: ${frontEnds.join(", ")}`);
+  logBot("Main", `Front ends: ${frontEnds.join(", ")}`);
+
   state.CallbackUrl = CALLBACK_URL;
 
   startHttpServer();
@@ -27,11 +34,14 @@ function main() {
   logBot("Check Roblox Server", "Checking if Roblox server is online...");
   checkRobloxServer();
 
-  console.log("Bot is starting...");
   logBot("Main", "Starting main bot process...");
-  logBot("Discord", "Registering interaction handler...");
-  registerInteractionHandler();
-  login();
+
+  if (ENABLE_DISCORD) {
+    console.log("Bot is starting...");
+    logBot("Discord", "Registering interaction handler...");
+    registerInteractionHandler();
+    login();
+  }
 }
 
 main();

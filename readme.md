@@ -118,7 +118,18 @@ CLIENT_ID=Discord_Bot_Client_Id
 PORT=Port_You_Want_to_Use_Default_3000
 FORM_ID=Google_Form_Id(OPTIONAL)
 CALLBACK_URL=http://your-host:3000
+ENABLE_DISCORD=true(OPTIONAL, default true)
+ENABLE_WEB=false(OPTIONAL, default false)
 ```
+
+`ENABLE_DISCORD` and `ENABLE_WEB` choose which front ends run. Both share one
+Roblox session pool, so a single execution session can serve both.
+
+`ENABLE_WEB` defaults to **false** deliberately: the web routes execute
+arbitrary Luau for anyone who can reach the port, with no authentication. When
+it is off those routes are never registered at all. With `ENABLE_DISCORD=false`
+the bot never logs in and `BOT_TOKEN` is not required, which is the setup for
+running the web runner alone. Startup fails if both are disabled.
 
 `CALLBACK_URL` is the address the Roblox session sends its requests back to.
 It must include the scheme and no trailing slash. The old name `TUNNEL_URL`
@@ -200,6 +211,7 @@ src/chunks.js              zstd encode/decode and outbound chunking
 src/fetchFile.js           size-capped, host-pinned downloads
 src/filter.js              censoring and doc-markdown parsing
 src/tools/                 luau CLI wrappers (compile, analyze, ast, format)
+src/web/                   browser front end, mounted only when ENABLE_WEB
 src/roblox/session.js      execution-session lifecycle and failover
 src/http/                  express app, routes, chunk reassembly
 src/discord/               client, replies, embeds, modals, handlers

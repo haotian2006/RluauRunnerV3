@@ -88,6 +88,39 @@ if (callback.error) {
 
 const CALLBACK_URL = callback.url;
 
+function envFlag(name, fallback) {
+  const raw = process.env[name];
+  if (raw === undefined || raw.trim() === "") return fallback;
+  const value = raw.trim().toLowerCase();
+  if (["1", "true", "yes", "on"].includes(value)) return true;
+  if (["0", "false", "no", "off"].includes(value)) return false;
+  console.warn(
+    `Warning: ${name}="${raw}" is not a boolean, using ${fallback}.`,
+  );
+  return fallback;
+}
+
+const ENABLE_DISCORD = envFlag("ENABLE_DISCORD", true);
+const ENABLE_WEB = envFlag("ENABLE_WEB", false);
+
+if (!ENABLE_DISCORD && !ENABLE_WEB) {
+  console.error(
+    "Fatal: both ENABLE_DISCORD and ENABLE_WEB are false, so there is nothing to serve.\n" +
+      "Enable at least one front end in .env.",
+  );
+  process.exit(1);
+}
+
+// BOT_TOKEN only matters when the bot itself runs; a web-only deployment
+// should not need Discord credentials at all.
+if (ENABLE_DISCORD && !process.env.BOT_TOKEN) {
+  console.error(
+    "Fatal: BOT_TOKEN is not set.\n" +
+      "Set it in .env, or set ENABLE_DISCORD=false to run the web front end alone.",
+  );
+  process.exit(1);
+}
+
 module.exports = {
   ROOT_DIR,
 
@@ -100,6 +133,8 @@ module.exports = {
   DISCORD_APP_ID: process.env.CLIENT_ID,
   PORT: process.env.PORT || 3000,
   CALLBACK_URL,
+  ENABLE_DISCORD,
+  ENABLE_WEB,
 
   RESOURCES_URL:
     "https://api.github.com/repos/haotian2006/luau-runner-bot-resources/contents/resources?ref=main",
