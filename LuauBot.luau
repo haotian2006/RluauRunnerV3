@@ -512,6 +512,7 @@ local function runCode(compCode, data)
 	thread.followUp = false
 	thread.files = {} -- ordered array of {data, fileType}
 	thread.filesByKey = {} -- map fileType -> index for dedup
+	thread.buttonCallbacks = {} -- map Discord button id -> BindableEvent
 	local parsedInputs = {}
 	env.io = {
 		read = function()
@@ -534,6 +535,7 @@ local function runCode(compCode, data)
 			local noTimeStamp = (env :: any).TIMESTAMP == false
 			table.insert(output, noTimeStamp and text or string.format(`[%.3f] %s\n`, time, text))
 		end,
+		-- Deprecated: delivery is a Discord concern, use discord.followUpNext().
 		followupnext = function()
 			thread.followUp = true
 		end,
@@ -649,6 +651,117 @@ local function runCode(compCode, data)
 	end
 	local id = "RluauRunnerV3|PROCESS|" .. processID .. "|"
 
+	local function requestButton(action, buttonId, changes)
+		local body = {
+			token = data.token,
+			action = action,
+			buttonId = buttonId,
+			processId = processID,
+		}
+		for key, value in changes or {} do
+			body[key] = value
+		end
+
+		local success, response = attemptRequest(0.25, 3, Https.RequestAsync, Https, {
+			Url = IP .. "/button",
+			Method = "PATCH",
+			Headers = makeHeaders(),
+			Body = Https:JSONEncode(body),
+		})
+		if not success then
+			error(`Failed to reach the Discord button endpoint: {response}`, 3)
+		end
+		if not response.Success then
+			local message = `HTTP {response.StatusCode}`
+			local decoded, result = pcall(Https.JSONDecode, Https, response.Body)
+			if decoded and type(result) == "table" and type(result.message) == "string" then
+				message = result.message
+			end
+			error(`Failed to update Discord button: {message}`, 3)
+		end
+	end
+
+	local function option(options, upper, lower)
+		local value = options[upper]
+		if value == nil then
+			value = options[lower]
+		end
+		return value
+	end
+
+	local discord = {}
+	discord.button = function(options)
+		if type(options) == "string" then
+			options = { Label = options }
+		elseif type(options) ~= "table" then
+			error("discord.button expects a label or options table", 2)
+		end
+
+		local buttonId = Https:GenerateGUID(false)
+		local event = Instance.new("BindableEvent")
+		event.Name = "DiscordButton_" .. buttonId
+		local payload = {
+			label = option(options, "Label", "label"),
+			style = option(options, "Style", "style") or "Primary",
+		}
+		local disabled = option(options, "Disabled", "disabled")
+		local ownerOnly = option(options, "OwnerOnly", "ownerOnly")
+		if disabled ~= nil then
+			payload.disabled = disabled
+		end
+		if ownerOnly ~= nil then
+			payload.ownerOnly = ownerOnly
+		end
+
+		thread.buttonCallbacks[buttonId] = event
+		local created, createError = pcall(requestButton, "create", buttonId, payload)
+		if not created then
+			thread.buttonCallbacks[buttonId] = nil
+			event:Destroy()
+			error(createError, 2)
+		end
+
+		local destroyed = false
+		local handle = {
+			Clicked = event.Event,
+			Event = event.Event,
+		}
+		function handle:Update(changes)
+			if destroyed then
+				error("Cannot update a destroyed Discord button", 2)
+			end
+			if type(changes) ~= "table" then
+				error("DiscordButton:Update expects an options table", 2)
+			end
+			local update = {}
+			for _, name in { "Label", "Style", "Disabled", "OwnerOnly" } do
+				local value = option(changes, name, name:sub(1, 1):lower() .. name:sub(2))
+				if value ~= nil then
+					update[name:sub(1, 1):lower() .. name:sub(2)] = value
+				end
+			end
+			requestButton("update", buttonId, update)
+			return self
+		end
+		function handle:Destroy()
+			if destroyed then
+				return
+			end
+			requestButton("delete", buttonId)
+			destroyed = true
+			thread.buttonCallbacks[buttonId] = nil
+			event:Destroy()
+		end
+		return handle
+	end
+	-- Send the next response as a follow-up: ephemeral in a guild, a DM outside
+	-- one, so inputs can be sent without scrolling back to the original message.
+	discord.followUpNext = function()
+		thread.followUp = true
+	end
+
+	env.discord = table.freeze(discord)
+
 	env._execute = function(code)
 		local fx, err = loadstring(code, id)
 		if not fx then
@@ -731,10 +844,10 @@ local function runCode(compCode, data)
 	table.insert(runningThreads, thread.running)
 	task.wait(0.5)
 	local numOfResponses = 0
+	local lastSentFiles = {} -- {[fileType] = lastSentData}
 	thread.timeOutThread = task.spawn(function()
 		local waitTime = 0
 		local TIMEOUT = env.TIMEOUT
-		local lastSentFiles = {} -- {[fileType] = lastSentData}
 		while
 			(
 				(
@@ -765,16 +878,16 @@ local function runCode(compCode, data)
 				local sentAny = false
 				for _, file in thread.files do
 					if lastSentFiles[file.fileType] ~= file.data then
-						lastSentFiles[file.fileType] = file.data
 						respondToInteraction(
 							data.token,
 							truncated,
 							file.data,
-							nil,
+							true,
 							file.fileType,
 							nil,
 							not sentAny and followUp or false
 						)
+						lastSentFiles[file.fileType] = file.data
 						sentAny = true
 					end
 				end
@@ -858,9 +971,16 @@ local function runCode(compCode, data)
 		pcall(task.cancel, thread.timeOutThread)
 		stopAll()
 		task.wait(0.5)
+		for _, event in thread.buttonCallbacks do
+			pcall(event.Destroy, event)
+		end
+		table.clear(thread.buttonCallbacks)
 
 		for _, file in thread.files do
-			respondToInteraction(data.token, truncated, file.data, true, file.fileType, nil, false)
+			if lastSentFiles[file.fileType] ~= file.data then
+				respondToInteraction(data.token, truncated, file.data, true, file.fileType, nil, false)
+				lastSentFiles[file.fileType] = file.data
+			end
 		end
 
 		respondToInteraction(data.token, truncated, log or "", nil, log and "log.ansi", time, thread.followUp)
@@ -937,7 +1057,13 @@ local function handleInputs()
 				input = "[ERROR WHILE DECODING INPUT]: " .. input .. " " .. tableToString(content)
 			end
 			local isStop = input == "STOP_ALL_SESSIONS_PLS"
-			if not isStop then
+			if data.buttonId and data.targetProcessId then
+				local process = Processes[data.targetProcessId]
+				local callback = process and process.buttonCallbacks[data.buttonId]
+				if callback then
+					callback:Fire(data.clickUserId, data.clickUsername)
+				end
+			elseif not isStop then
 				for _, process in ProcessesByUser[id] or {} do
 					table.insert(process.inputs, input)
 				end
