@@ -182,6 +182,18 @@ Each response can contain at most 25 buttons. Button callbacks are delivered
 only to the process that created them, and all remaining buttons are removed
 when that process finishes.
 
+### Front end
+
+```lua
+if discord.isWeb then
+	print("started from the web runner")
+end
+```
+
+One Roblox execution session serves both Discord and web runs, so this is per
+run rather than per session. `discord.button` is Discord-only and raises an
+error when called from a web run; everything else works in both.
+
 ### Follow-ups
 
 ```lua

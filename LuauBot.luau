@@ -2,7 +2,8 @@ local IP = ""
 local SecretToken = ""
 local POLL_RATE = 1000 --ms
 local DEFAULT_TIMEOUT = 25 -- seconds
-local MAX_STR_HEIGHT = 25
+local MAX_STR_HEIGHT = 25 -- Discord embeds are small
+local MAX_STR_HEIGHT_WEB = 100 -- a browser can show far more
 local MAX_RESPONSES_BEFORE_TIMEOUT = 50
 local FILE_CHUNK_SIZE = 1024 * 90 -- 90 KB
 local MAX_FILE_SIZE = 10 * 1024 * 1024 -- 10 MB
@@ -11,10 +12,15 @@ local MAX_WRITE_FILES = 8 -- max files queued via io.writefile
 --[[
 	Takes in the number of responses sent so far and returns how often should the next update be sent.
 ]]
-local function UPDATE_INTERVAL_SCALE(count)
+local function UPDATE_INTERVAL_SCALE(count, isweb)
 	if count <= 10 then
 		return 0.1
-	elseif count <= 25 then
+	end
+	-- Discord rate limits edits; the web stream has no such cost.
+	if isweb then
+		return 0.25
+	end
+	if count <= 25 then
 		return 0.25
 	elseif count <= 35 then
 		return 0.5
@@ -79,9 +85,10 @@ local function createText(text, color)
 	return `[0;37m{text}[0m`
 end
 
-local function truncateArray(inputArray)
-	if #inputArray > MAX_STR_HEIGHT then
-		local startLine = #inputArray - MAX_STR_HEIGHT + 1
+local function truncateArray(inputArray, maxHeight)
+	maxHeight = maxHeight or MAX_STR_HEIGHT
+	if #inputArray > maxHeight then
+		local startLine = #inputArray - maxHeight + 1
 		local truncatedLines = {}
 		for i = startLine, #inputArray do
 			table.insert(truncatedLines, inputArray[i])
@@ -93,14 +100,15 @@ local function truncateArray(inputArray)
 	end
 end
 
-local function truncateString(inputString)
+local function truncateString(inputString, maxHeight)
+	maxHeight = maxHeight or MAX_STR_HEIGHT
 	local lines = {}
 	for line in inputString:gsub("\r", "\n"):gmatch("([^\n]*)\n?") do
 		table.insert(lines, line)
 	end
 
-	if #lines > MAX_STR_HEIGHT then
-		local startLine = #lines - MAX_STR_HEIGHT + 1
+	if #lines > maxHeight then
+		local startLine = #lines - maxHeight + 1
 		local truncatedLines = {}
 		for i = startLine, #lines do
 			table.insert(truncatedLines, lines[i])
@@ -185,6 +193,7 @@ end
 
 local SendingChunks = {}
 local FinishedInteractions = {}
+local WebTokens = {} -- runs with no Discord message cap
 local function sendFileInChunks(token, data)
 	local numChunks = math.ceil(#data / FILE_CHUNK_SIZE)
 	SendingChunks[token] = true
@@ -226,7 +235,8 @@ local function respondToInteraction(interactionToken, responseContent, logs, awa
 	local url = IP .. "/respond"
 	local headers = makeHeaders()
 
-	if #responseContent > 1900 then
+	-- Discord messages cap out; the web stream renders whatever it is sent.
+	if not WebTokens[interactionToken] and #responseContent > 1900 then
 		responseContent = responseContent:sub(1, 1900 - 10) .. "... [truncated]"
 	end
 	local fileId = FileIds
@@ -436,6 +446,14 @@ local function runCode(compCode, data)
 	thread.blocked = false
 	local userid = data.userId
 	local isCommand = data.isCommand
+	-- Per task, not per session: one session serves both front ends. A local,
+	-- not a `thread` field: env.thread is given to user code and is not frozen.
+	local isweb = data.isWeb == true
+	if isweb then
+		WebTokens[data.token] = true
+	end
+	thread.isweb = isweb -- informational for LoadEnv; nothing below trusts it
+	local maxHeight = isweb and MAX_STR_HEIGHT_WEB or MAX_STR_HEIGHT
 	local runningThreads = {}
 
 	local function wrapThread(fx)
@@ -592,6 +610,8 @@ local function runCode(compCode, data)
 		return f, e
 	end
 
+	-- Discord clears colour at each newline but not mid-line, so a fragment
+	-- concatenated into a longer line bleeds without this reset.
 	env.colorstring = function(text, color)
 		color = color or ""
 		return (colorsLower[color:lower()] or "") .. tostring(text) .. "\27[0m"
@@ -690,7 +710,13 @@ local function runCode(compCode, data)
 	end
 
 	local discord = {}
+	-- True when this run came from the web front end rather than Discord.
+	discord.isWeb = isweb
+
 	discord.button = function(options)
+		if isweb then
+			error("discord.button is only available for runs started from Discord", 2)
+		end
 		if type(options) == "string" then
 			options = { Label = options }
 		elseif type(options) ~= "table" then
@@ -858,7 +884,7 @@ local function runCode(compCode, data)
 			) and not thread.stopped
 		do
 			TIMEOUT = env.TIMEOUT
-			local outStr = table.concat(truncateArray(thread.output))
+			local outStr = table.concat(truncateArray(thread.output, maxHeight))
 			if outStr == "" then
 				outStr = "  "
 			end
@@ -870,7 +896,7 @@ local function runCode(compCode, data)
 				end
 			end
 			if lastOutput ~= outStr or hasNewFiles then
-				local truncated = truncateString(outStr)
+				local truncated = truncateString(outStr, maxHeight)
 				lastOutput = outStr
 				numOfResponses += 1
 				local followUp = thread.followUp
@@ -895,7 +921,7 @@ local function runCode(compCode, data)
 					respondToInteraction(data.token, truncated, "", nil, nil, nil, followUp)
 				end
 			end
-			waitTime += task.wait(UPDATE_INTERVAL_SCALE(numOfResponses))
+			waitTime += task.wait(UPDATE_INTERVAL_SCALE(numOfResponses, isweb))
 		end
 
 		local fileData = table.concat(thread.output)
@@ -924,7 +950,7 @@ local function runCode(compCode, data)
 			table.insert(thread.output, createText(`You can increase it by setting the "TIMEOUT" global`, 2))
 		end
 
-		local truncated = truncateString(table.concat(truncateArray(thread.output)))
+		local truncated = truncateString(table.concat(truncateArray(thread.output, maxHeight)), maxHeight)
 		local log
 		if shouldLog == true then
 			local id, name = data.userId, data.username
@@ -987,6 +1013,7 @@ local function runCode(compCode, data)
 
 		Processes[processID] = nil
 		ProcessesByUser[userid][processID] = nil
+		WebTokens[data.token] = nil
 		--// ![AFAIK] theres no way to fully cleanup a thread (this included sub-threads). If this was in a live environment I could execute it from a script and destroy it later but
 		--// for now we just have to keep the sub-threads running. Either way, this session only runs for a max of 5 mins.
 		--// 10/30/25, wrapped tasks and coroutine creations to be tracked and closed on script end.

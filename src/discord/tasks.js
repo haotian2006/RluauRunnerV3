@@ -1,4 +1,6 @@
 const { encodeZstd } = require("../chunks");
+const { closeSession, openSession } = require("../core/sessions");
+const { createDiscordResponder } = require("./responder");
 const { CompilingTasks, ExecuteTasks } = require("../state");
 const { generateUUID } = require("../util");
 const { cleanupScriptButtons } = require("./scriptButtons");
@@ -28,6 +30,9 @@ async function sendCompileRequestToRoblox(
   };
   const timeoutId = setTimeout(() => {
     interaction.editReply({ components: [] }).catch(() => {});
+    // closeSession runs the responder's cleanup, which clears the button map
+    // and drops the CompilingTasks entry.
+    closeSession(interaction.token);
     cleanupScriptButtons(CompilingTasks[interaction.token]?.[7]);
     delete CompilingTasks[interaction.token];
     delete ExecuteTasks[uuid];
@@ -42,6 +47,7 @@ async function sendCompileRequestToRoblox(
     new Map(),
     new Map(),
   ];
+  openSession(interaction.token, createDiscordResponder(interaction.token));
 }
 
 module.exports = { sendCompileRequestToRoblox };

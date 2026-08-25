@@ -1,0 +1,8 @@
+{
+  "name": "primary",
+  "universeId": "0000000000",
+  "placeId": "0000000000",
+  "apiKey": "REPLACE_WITH_OPEN_CLOUD_API_KEY",
+  "priority": 1,
+  "enabled": true
+}

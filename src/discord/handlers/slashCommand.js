@@ -19,6 +19,7 @@ const {
   docCodeStore,
 } = require("../../state");
 const { generateUUID, wait } = require("../../util");
+const { closeSession } = require("../../core/sessions");
 const { getResources, resourceDisplayName } = require("../resources");
 const { sendCompileRequestToRoblox } = require("../tasks");
 const { cleanupScriptButtons } = require("../scriptButtons");
@@ -54,6 +55,7 @@ function stopUserSessions(interaction) {
       clearTimeout(entry[5]);
       entry[0].editReply({ components: [] }).catch(() => {});
       cleanupScriptButtons(entry[7]);
+      closeSession(token);
       delete CompilingTasks[token];
       removed++;
       for (const taskId in ExecuteTasks) {

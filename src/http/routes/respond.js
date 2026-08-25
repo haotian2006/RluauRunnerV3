@@ -1,19 +1,8 @@
-const { EmbedBuilder } = require("discord.js");
-
 const { MAX_RESPONSE_FILES, SupportedFileTypes } = require("../../config");
 const { decodeBuffer } = require("../../chunks");
 const { logBot } = require("../../log");
-const { CompilingTasks, settleTasksForToken } = require("../../state");
-const {
-  createResponseEmbed,
-  handleFollowUpResponse,
-  liveAttachmentOptions,
-} = require("../../discord/embeds");
-const { cleanupScriptButtons } = require("../../discord/scriptButtons");
-const {
-  getLinkFromData,
-  retryDiscordOperation,
-} = require("../../discord/reply");
+const { settleTasksForToken } = require("../../state");
+const { closeSession, getSession } = require("../../core/sessions");
 const {
   ChunkRejected,
   MAX_SECTIONS,
@@ -45,10 +34,10 @@ function parseFileType(raw) {
   return { fileName: sanitizeFileName(fileName), fileType };
 }
 
-async function retrieveChunkedLogs(respondID, numSections, interaction, link) {
+async function retrieveChunkedLogs(respondID, numSections, token) {
   logBot(
     "Respond Endpoint",
-    `Retrieving chunked logs sections: ${numSections} from: ${interaction.user.id} link: ${link}`,
+    `Retrieving chunked logs sections: ${numSections} for token: ${token}`,
   );
 
   const result = await waitForUpload(respondID, numSections);
@@ -81,6 +70,18 @@ async function retrieveChunkedLogs(respondID, numSections, interaction, link) {
   };
 }
 
+// Evicts the oldest once the response carries as many as Discord will take.
+function recordFile(session, fileName, fileType, logs) {
+  if (!session.fileMap) {
+    session.fileMap = new Map();
+  }
+  const key = `${fileName}.${fileType}`;
+  if (!session.fileMap.has(key) && session.fileMap.size >= MAX_RESPONSE_FILES) {
+    session.fileMap.delete(session.fileMap.keys().next().value);
+  }
+  session.fileMap.set(key, [logs, fileType, fileName]);
+}
+
 function registerRespondRoutes(app) {
   app.patch("/uploadChunk", requireSecret, async (req, res) => {
     try {
@@ -95,11 +96,11 @@ function registerRespondRoutes(app) {
     }
   });
 
+  // Owns the wire protocol - decode, reassemble, de-duplicate, file map - then
+  // hands the result to the session's responder.
   app.patch("/respond", requireSecret, async (req, res) => {
     const token = req.body.token;
-    const serverNum = req.body.serverNum;
-    let _interaction;
-    let _link;
+    let session;
 
     try {
       if (typeof req.body.data !== "string") {
@@ -108,57 +109,41 @@ function registerRespondRoutes(app) {
           .json({ message: "data must be a JSON-encoded string" });
       }
 
-      const responseContent = decodeBuffer(JSON.parse(req.body.data)).toString(
-        "utf-8",
-      );
-      const isLast = req.body.finished;
-      const followUp = req.body.followUp;
-      const runtime = req.body.runtime || 0;
-      const numSections = req.body.sections;
-      const respondID = req.body.fileId;
-
-      let { fileName, fileType } = parseFileType(req.body.fileType);
-
-      if (!CompilingTasks[token]) {
+      session = getSession(token);
+      if (!session) {
         return res.status(500).json({
-          message: "Failed to send response to Discord",
+          message: "Failed to deliver response",
           error: "Invalid or expired token",
         });
       }
 
       settleTasksForToken(token);
 
-      const [
-        interaction,
-        originalInteraction,
-        fileMap,
-        prevResponseId = 0,
-        dmMessage = null,
-        timeoutId,
-        attachmentMap = new Map(),
-        buttonMap = new Map(),
-      ] = CompilingTasks[token];
+      const responseContent = decodeBuffer(JSON.parse(req.body.data)).toString(
+        "utf-8",
+      );
+      const isLast = req.body.finished;
+      const followUp = req.body.followUp;
+      const runtime = req.body.runtime || 0;
+      const serverNum = req.body.serverNum;
+      const numSections = req.body.sections;
+      const respondID = req.body.fileId;
 
-      _interaction = interaction;
-      const link = getLinkFromData(originalInteraction || interaction);
-      _link = link;
+      let { fileName, fileType } = parseFileType(req.body.fileType);
 
       let logs = req.body.log;
 
       if (logs) {
         if (numSections) {
           if (!Number.isInteger(numSections) || numSections > MAX_SECTIONS) {
-            return res
-              .status(400)
-              .json({
-                message: `sections must be an integer <= ${MAX_SECTIONS}`,
-              });
+            return res.status(400).json({
+              message: `sections must be an integer <= ${MAX_SECTIONS}`,
+            });
           }
           const result = await retrieveChunkedLogs(
             respondID,
             numSections,
-            interaction,
-            link,
+            token,
           );
           logs = result.data;
           if (!result.success) {
@@ -170,93 +155,46 @@ function registerRespondRoutes(app) {
         }
       }
 
-      const isNewResponse = respondID > prevResponseId;
-      if (isNewResponse && CompilingTasks[token]) {
-        CompilingTasks[token][3] = respondID;
+      if (!getSession(token)) {
+        return res.status(500).json({
+          message: "Failed to deliver response",
+          error: "Session ended before the response could be delivered",
+        });
       }
 
-      if (logs && CompilingTasks[token] && isNewResponse) {
-        if (!CompilingTasks[token][2]) {
-          CompilingTasks[token][2] = new Map();
-        }
-        const map = CompilingTasks[token][2];
-        const key = `${fileName}.${fileType}`;
-        if (!map.has(key) && map.size >= MAX_RESPONSE_FILES) {
-          map.delete(map.keys().next().value);
-        }
-        map.set(key, [logs, fileType, fileName]);
+      const isNewResponse = respondID > session.prevResponseId;
+      if (isNewResponse) {
+        session.prevResponseId = respondID;
       }
 
-      const currentFileMap = CompilingTasks[token]?.[2] ?? fileMap;
+      if (logs && isNewResponse) {
+        recordFile(session, fileName, fileType, logs);
+      }
+
       const changedFileName =
         logs && isNewResponse ? `${fileName}.${fileType}` : null;
 
-      if (isLast) {
-        clearTimeout(timeoutId);
-        cleanupScriptButtons(buttonMap);
-        delete CompilingTasks[token];
+      if (isNewResponse) {
+        await session.responder.deliver({
+          responseContent,
+          logs,
+          fileName,
+          fileType,
+          changedFileName,
+          fileMap: session.fileMap,
+          isLast,
+          runtime,
+          serverNum,
+          followUp,
+        });
       }
 
-      const embed = createResponseEmbed(
-        serverNum,
-        interaction.user.id,
-        responseContent,
-        isLast,
-        runtime,
-        link,
-      );
-
-      if (isNewResponse) {
-        const replyOptions = {
-          embeds: [embed],
-          ...(isLast && { components: [] }),
-        };
-
-        if (changedFileName) {
-          Object.assign(
-            replyOptions,
-            liveAttachmentOptions(attachmentMap.values(), currentFileMap, {
-              name: changedFileName,
-              attachment: logs,
-            }),
-          );
-        }
-
-        const sent = await retryDiscordOperation(
-          () => interaction.editReply(replyOptions),
-          3,
-          "Edit reply",
-        );
-
-        if (changedFileName && CompilingTasks[token]) {
-          CompilingTasks[token][6] = new Map(
-            [...sent.attachments.values()].map((attachment) => [
-              attachment.name,
-              attachment,
-            ]),
-          );
-        }
-
-        if (followUp || dmMessage) {
-          const newDmMessage = await handleFollowUpResponse(
-            interaction,
-            embed,
-            sent.url,
-            currentFileMap,
-            dmMessage,
-            changedFileName
-              ? { name: changedFileName, attachment: logs }
-              : undefined,
-          );
-
-          if (newDmMessage && CompilingTasks[token]) {
-            CompilingTasks[token][4] = newDmMessage;
-          }
-        }
+      if (isLast) {
+        closeSession(token);
       }
 
       res.json({
-        message: "Successfully sent response to Discord",
+        message: "Successfully delivered response",
         data: "pass",
       });
     } catch (error) {
@@ -265,41 +203,13 @@ function registerRespondRoutes(app) {
         `${error.message} stack: ${error.stack}`,
       );
 
-      if (_interaction) {
-        try {
-          const errorEmbed = new EmbedBuilder()
-            .setTitle("Discord Error")
-            .setDescription(
-              `Requested by: <@${_interaction.user.id}>\nERROR: ${error.message}`,
-            )
-            .setColor(0xff0000);
-
-          if (_link) {
-            errorEmbed.setURL(_link);
-          }
-
-          await retryDiscordOperation(
-            () =>
-              _interaction.editReply({
-                embeds: [errorEmbed],
-                components: [],
-              }),
-            2,
-            "Error reply",
-          );
-        } catch (editError) {
-          logBot(
-            "Error Reply Failed",
-            `Failed to edit reply with error: ${editError.message}`,
-          );
-        }
+      if (session) {
+        await session.responder.fail(error, session.responder.link?.());
       }
+      closeSession(token);
 
-      clearTimeout(CompilingTasks[token]?.[5]);
-      cleanupScriptButtons(CompilingTasks[token]?.[7]);
-      delete CompilingTasks[token];
       res.status(500).json({
-        message: "Failed to send response to Discord",
+        message: "Failed to deliver response",
         error: error.message,
       });
     }

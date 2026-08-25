@@ -15,12 +15,9 @@ const {
   state,
 } = require("../state");
 const { wait } = require("../util");
+const { closeSession } = require("../core/sessions");
 const { cleanupScriptButtons } = require("../discord/scriptButtons");
 
-/**
- * The luau the execution session runs: deserialize the bot module from the
- * base64 payload and hand it the callback URL and secret.
- */
 function bootstrapScript() {
   return `local EncodingService = game:GetService("EncodingService")
 
@@ -34,12 +31,6 @@ function bootstrapScript() {
 `;
 }
 
-/**
- * Ask Roblox Open Cloud to spin up a luau execution session for `profile`
- * that calls back into this server.
- * @param {import('../profiles').Profile} profile
- * @returns {Promise<boolean>} whether the session was accepted
- */
 async function startRoblox(profile) {
   state.LastServerCreation = Date.now();
 
@@ -159,6 +150,7 @@ function failPendingTasks() {
       delete ExecuteTasks[key];
       clearTimeout(CompilingTasks[task.token]?.[5]);
       cleanupScriptButtons(CompilingTasks[task.token]?.[7]);
+      closeSession(task.token);
       delete CompilingTasks[task.token];
     }
   });
