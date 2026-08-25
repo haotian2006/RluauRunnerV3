@@ -1,22 +1,32 @@
 const {
+  MAX_ROBLOX_WORKERS,
   SERVER_CHECK_INTERVAL,
   SERVER_CREATION_COOL_DOWN,
   SERVER_PING_TIMEOUT,
+  SERVER_RECOVERY_GRACE_MS,
   SERVER_RUN_TIME_MAX,
   SERVER_TIME_OUT,
+  ENABLE_LOCAL_EXEC,
   botSrcEncoded,
 } = require("../config");
+const { decodeZstd } = require("../chunks");
+const { recordCrash } = require("../abuse");
 const { log, logBot } = require("../log");
 const { getProfiles } = require("../profiles");
 const {
   CompilingTasks,
   ExecuteTasks,
+  RobloxServers,
   SECRET_TOKEN,
+  getUnfinishedTasksForServer,
   state,
+  takeUnfinishedTasksForServer,
+  unregisterRobloxServer,
 } = require("../state");
 const { wait } = require("../util");
-const { closeSession } = require("../core/sessions");
+const { closeSession, getSession } = require("../core/sessions");
 const { cleanupScriptButtons } = require("../discord/scriptButtons");
+const { tryRunLocally } = require("../local/dispatch");
 
 function bootstrapScript() {
   return `local EncodingService = game:GetService("EncodingService")
@@ -33,6 +43,13 @@ function bootstrapScript() {
 
 async function startRoblox(profile) {
   state.LastServerCreation = Date.now();
+  const reservation = { profileName: profile.name, createdAt: Date.now() };
+  state.PendingRobloxStarts.push(reservation);
+
+  const cancelReservation = () => {
+    const index = state.PendingRobloxStarts.indexOf(reservation);
+    if (index !== -1) state.PendingRobloxStarts.splice(index, 1);
+  };
 
   let res;
   try {
@@ -58,6 +75,7 @@ async function startRoblox(profile) {
       "Failed to start Roblox",
       `${profile.name}: ${err.message}`,
     );
+    cancelReservation();
     return false;
   }
 
@@ -72,6 +90,7 @@ async function startRoblox(profile) {
       "Failed to start Roblox",
       `${profile.name}: ${res.statusText}`,
     );
+    cancelReservation();
     return false;
   }
 
@@ -156,25 +175,171 @@ function failPendingTasks() {
   });
 }
 
+function luneActorKey(actorKey) {
+  return typeof actorKey === "string"
+    ? actorKey.replace(/:roblox$/, ":lune")
+    : actorKey;
+}
+
+async function fallbackPendingTasksToLune() {
+  const pending = Object.entries(ExecuteTasks);
+  const runs = [];
+
+  for (const [taskId, task] of pending) {
+    if (ExecuteTasks[taskId] !== task) continue;
+    delete ExecuteTasks[taskId];
+
+    let source;
+    try {
+      source = decodeZstd(task.content).toString("utf8");
+    } catch (error) {
+      const session = getSession(task.token);
+      if (session) {
+        try {
+          await session.responder.fail(error, session.responder.link?.());
+        } catch {}
+      }
+      closeSession(task.token);
+      continue;
+    }
+
+    const actorKey = luneActorKey(task.actorKey);
+    runs.push(
+      tryRunLocally(source, task.token, {
+        actorKey,
+        allowCodegen: !task.isWeb,
+        selection: { runtime: "lune", classification: null },
+      }),
+    );
+  }
+
+  if (runs.length) {
+    logBot(
+      "Roblox Fallback",
+      `All profiles failed; moved ${runs.length} queued task(s) to Lune.`,
+    );
+  }
+  return Promise.allSettled(runs);
+}
+
+function recordServerOutage(serverId, lastPing) {
+  const unfinished = getUnfinishedTasksForServer(serverId);
+  const actors = new Map();
+
+  for (const task of unfinished) {
+    if (!task?.actorKey) continue;
+    let hashes = actors.get(task.actorKey);
+    if (!hashes) {
+      hashes = new Set();
+      actors.set(task.actorKey, hashes);
+    }
+    if (task.codeHash) hashes.add(task.codeHash);
+  }
+
+  const incidentId = `roblox:${serverId}:${lastPing}`;
+  for (const [actorKey, hashes] of actors) {
+    const result = recordCrash(actorKey, incidentId, [...hashes]);
+    logBot(
+      "Roblox Crash Attribution",
+      `${actorKey}: ${result.count} crash(es) in window` +
+        (result.newlyBlocked ? ", blocked for 45s" : ""),
+    );
+  }
+
+  return { actors: actors.size, unfinished: unfinished.length };
+}
+
+function needsAdditionalWorker(workers, queuedTasks, pendingWorkers) {
+  const responsiveWorkers = workers.filter(
+    (server) => server.healthy && !server.retiring,
+  ).length;
+  return queuedTasks > responsiveWorkers + pendingWorkers;
+}
+
 async function checkRobloxServer() {
   while (true) {
-    const hasTask = Object.keys(ExecuteTasks).length > 0;
-    const serverTimeout =
-      Date.now() - state.RunningServerTime > SERVER_RUN_TIME_MAX;
-    const pingTimeout = Date.now() - state.LastServerPing > SERVER_PING_TIMEOUT;
-    const lastCreationDebounce =
-      Date.now() - state.LastServerCreation > creationDebounce();
+    const now = Date.now();
 
-    if (hasTask && (serverTimeout || pingTimeout) && lastCreationDebounce) {
+    state.PendingRobloxStarts = state.PendingRobloxStarts.filter(
+      (entry) => now - entry.createdAt <= 90_000,
+    );
+
+    for (const server of Object.values(RobloxServers)) {
+      if (
+        !server.retiring &&
+        server.activeTaskIds.size === 0 &&
+        now - server.startedAt > SERVER_RUN_TIME_MAX
+      ) {
+        server.retiring = true;
+      }
+
+      if (now - server.lastPing <= SERVER_PING_TIMEOUT) continue;
+
+      if (server.retiring) {
+        takeUnfinishedTasksForServer(server.serverId);
+        unregisterRobloxServer(server.serverId);
+        continue;
+      }
+
+      if (server.healthy && !server.outageRecorded) {
+        server.healthy = false;
+        server.unhealthySince = now;
+        server.outageRecorded = true;
+        const attributed = recordServerOutage(server.serverId, server.lastPing);
+        logBot(
+          "Roblox Server Outage",
+          `${server.serverId}: ${attributed.unfinished} unfinished task(s), ` +
+            `${attributed.actors} actor(s) attributed`,
+        );
+      }
+
+      if (
+        now - (server.unhealthySince || server.lastPing) >=
+        SERVER_RECOVERY_GRACE_MS
+      ) {
+        takeUnfinishedTasksForServer(server.serverId);
+        unregisterRobloxServer(server.serverId);
+      }
+    }
+
+    const workers = Object.values(RobloxServers);
+    const queuedTasks = Object.keys(ExecuteTasks).length;
+    const pendingWorkers = state.PendingRobloxStarts.length;
+    const lastCreationDebounce =
+      now - state.LastServerCreation > creationDebounce();
+    const belowWorkerCap = workers.length + pendingWorkers < MAX_ROBLOX_WORKERS;
+    const needsWorker = needsAdditionalWorker(
+      workers,
+      queuedTasks,
+      pendingWorkers,
+    );
+
+    if (needsWorker && belowWorkerCap && lastCreationDebounce) {
       console.log("Starting new Roblox server...");
-      logBot("Roblox Server", "Starting new Roblox server...");
+      logBot(
+        "Roblox Server",
+        `Starting worker ${workers.length + pendingWorkers + 1}/${MAX_ROBLOX_WORKERS}...`,
+      );
 
       if (!(await startAnyProfile())) {
-        failPendingTasks();
+        if (workers.length === 0 && state.PendingRobloxStarts.length === 0) {
+          if (ENABLE_LOCAL_EXEC) {
+            void fallbackPendingTasksToLune();
+          } else {
+            failPendingTasks();
+          }
+        }
       }
     }
     await wait(SERVER_CHECK_INTERVAL);
   }
 }
 
-module.exports = { checkRobloxServer, profileAttemptOrder };
+module.exports = {
+  checkRobloxServer,
+  fallbackPendingTasksToLune,
+  luneActorKey,
+  needsAdditionalWorker,
+  profileAttemptOrder,
+  recordServerOutage,
+};

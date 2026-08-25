@@ -78,14 +78,17 @@ function loadCallbackUrl() {
 // Missing tools are not fatal: /compile still works, since that runs in
 // Roblox. Only bytecode, analyze, ast and format need them.
 function missingTools() {
-  return [
+  const tools = [
     ["luau-compile", resolveExec("luau-compile")],
     ["luau-analyze", resolveExec("luau-analyze")],
     ["luau-ast", resolveExec("luau-ast")],
     ["stylua", resolveExec("stylua")],
-  ]
-    .filter(([, p]) => !fs.existsSync(p))
-    .map(([name]) => name);
+  ];
+
+  if (envFlag("ENABLE_LOCAL_EXEC", false)) {
+    tools.push(["lune", resolveExec("lune")]);
+  }
+  return tools.filter(([, p]) => !fs.existsSync(p)).map(([name]) => name);
 }
 
 const callback = loadCallbackUrl();
@@ -113,8 +116,30 @@ function envFlag(name, fallback) {
   return fallback;
 }
 
+function envNumber(name, fallback) {
+  const raw = process.env[name];
+  if (raw === undefined || raw.trim() === "") return fallback;
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value <= 0) {
+    console.warn(
+      `Warning: ${name}="${raw}" is not a positive number, using ${fallback}.`,
+    );
+    return fallback;
+  }
+  return value;
+}
+
 const ENABLE_DISCORD = envFlag("ENABLE_DISCORD", true);
 const ENABLE_WEB = envFlag("ENABLE_WEB", false);
+
+const ENABLE_LOCAL_EXEC = envFlag("ENABLE_LOCAL_EXEC", false);
+if (ENABLE_LOCAL_EXEC && process.platform === "win32") {
+  console.warn(
+    "Warning: ENABLE_LOCAL_EXEC is on, but memory limits for sandboxed scripts " +
+      "are not enforceable on Windows (no ulimit). A script can allocate until " +
+      "the host runs out. Use the timeout and concurrency caps as the only bound.",
+  );
+}
 
 if (!ENABLE_DISCORD && !ENABLE_WEB) {
   console.error(
@@ -141,6 +166,7 @@ module.exports = {
   PATH_TO_ANALYZER: resolveExec("luau-analyze"),
   PATH_TO_AST: resolveExec("luau-ast"),
   PATH_TO_FORMATTER: resolveExec("stylua"),
+  PATH_TO_LUNE: resolveExec("lune"),
 
   DISCORD_TOKEN: process.env.BOT_TOKEN,
   DISCORD_APP_ID: process.env.CLIENT_ID,
@@ -149,6 +175,17 @@ module.exports = {
   ENABLE_DISCORD,
   ENABLE_WEB,
   missingTools,
+
+  ENABLE_LOCAL_EXEC,
+
+  LOCAL_TIMEOUT_MS: envNumber("LOCAL_TIMEOUT_MS", 30000),
+  LOCAL_HEARTBEAT_TIMEOUT_MS: envNumber("LOCAL_HEARTBEAT_TIMEOUT_MS", 11000),
+  // Enforced by ulimit on Linux only; ignored on Windows.
+  LOCAL_MEMORY_LIMIT_MB: envNumber("LOCAL_MEMORY_LIMIT_MB", 256),
+
+  LOCAL_MAX_CONCURRENT: envNumber("LOCAL_MAX_CONCURRENT", 2),
+  LOCAL_MAX_LINES: envNumber("LOCAL_MAX_LINES", 2000),
+  LOCAL_MAX_LINE_BYTES: envNumber("LOCAL_MAX_LINE_BYTES", 4000),
 
   RESOURCES_URL:
     "https://api.github.com/repos/haotian2006/luau-runner-bot-resources/contents/resources?ref=main",
@@ -165,9 +202,16 @@ module.exports = {
 
   SERVER_CREATION_COOL_DOWN: 1000 * 20,
 
-  SERVER_RUN_TIME_MAX: 1000 * 60 * 1.5,
+  // Global safety cap for concurrently connected Roblox execution sessions.
+  MAX_ROBLOX_WORKERS: Math.min(
+    4,
+    Math.max(1, Math.floor(envNumber("MAX_ROBLOX_WORKERS", 4))),
+  ),
+
+  SERVER_RUN_TIME_MAX: 1000 * 60 * 3,
   SERVER_CHECK_INTERVAL: 1000,
   SERVER_PING_TIMEOUT: 1000 * 5,
+  SERVER_RECOVERY_GRACE_MS: 1000 * 40,
 
   SERVER_TIME_OUT: "300s",
 

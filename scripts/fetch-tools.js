@@ -1,12 +1,13 @@
 #!/usr/bin/env node
 /**
- * Download the luau CLI tools and StyLua from their upstream GitHub releases
- * into bin/, where src/config.js expects to find them.
+ * Download the luau CLI tools, StyLua and Lune from their upstream GitHub
+ * releases into bin/, where src/config.js expects to find them.
  *
  * Usage:
  *   node scripts/fetch-tools.js            # fetch anything missing
  *   node scripts/fetch-tools.js --force    # re-download even if present
  *   node scripts/fetch-tools.js --build    # compile luau from source (aarch64)
+ *   node scripts/fetch-tools.js --no-lune    # skip the local-sandbox runtime
  *   node scripts/fetch-tools.js --luau-version 0.735 --stylua-version v2.5.2
  *
  * Archives are unpacked in-process: GNU tar (Linux) cannot read zip files, so
@@ -34,6 +35,8 @@ function flag(name, fallback) {
 
 const LUAU_VERSION = flag("--luau-version", "latest");
 const STYLUA_VERSION = flag("--stylua-version", "latest");
+const LUNE_VERSION = flag("--lune-version", "latest");
+const SKIP_LUNE = args.includes("--no-lune");
 
 /** The prebuilt StyLua gnu binaries import GLIBC_2.34. */
 const MIN_GLIBC = [2, 34];
@@ -98,6 +101,20 @@ function styluaAsset() {
     default:
       return null;
   }
+}
+
+// Lune ships prebuilt for every platform this bot targets, aarch64 Linux
+// included, so unlike luau there is never a source build to fall back to.
+// The asset name embeds the version, so the tag has to be resolved first.
+function luneAsset(version) {
+  const arch = process.arch === "arm64" ? "aarch64" : "x86_64";
+  const osName = {
+    win32: "windows",
+    linux: "linux",
+    darwin: "macos",
+  }[process.platform];
+  if (!osName) return null;
+  return `lune-${version.replace(/^v/, "")}-${osName}-${arch}.zip`;
 }
 
 function releaseUrl(repo, version, asset) {
@@ -332,6 +349,7 @@ async function main() {
     `luau-ast${EXE}`,
   ];
   const styluaBins = [`stylua${EXE}`];
+  const luneBins = [`lune${EXE}`];
 
   const missing = (names) =>
     names.filter((n) => !fs.existsSync(path.join(BIN_DIR, n)));
@@ -360,6 +378,29 @@ async function main() {
     } else {
       console.log("stylua already present, skipping (use --force to refetch)");
     }
+
+    // Only needed for the local Lune sandbox (ENABLE_LOCAL_EXEC). Skippable so
+    // a Roblox-only deployment does not pull a binary it never runs.
+    if (!SKIP_LUNE && (FORCE || missing(luneBins).length)) {
+      const luneVersion =
+        LUNE_VERSION === "latest"
+          ? await latestTag("lune-org/lune")
+          : LUNE_VERSION;
+      const luneZip = luneAsset(luneVersion);
+      if (!luneZip) {
+        console.warn(
+          `Skipping lune: no prebuilt for ${process.platform}/${process.arch}.`,
+        );
+      } else {
+        await install(
+          "lune",
+          releaseUrl("lune-org/lune", luneVersion, luneZip),
+          luneBins,
+        );
+      }
+    } else if (!SKIP_LUNE) {
+      console.log("lune already present, skipping (use --force to refetch)");
+    }
   } catch (err) {
     console.error(`\nFailed: ${err.message}`);
     // Running as an npm postinstall hook: a download failure must not fail the
@@ -379,6 +420,7 @@ async function main() {
     verify(`luau-analyze${EXE}`, "--version"),
     verify(`luau-ast${EXE}`, "--help"),
     verify(`stylua${EXE}`, "--version"),
+    ...(SKIP_LUNE ? [] : [verify(`lune${EXE}`, "--version")]),
   ]) {
     console.log("  " + line);
   }

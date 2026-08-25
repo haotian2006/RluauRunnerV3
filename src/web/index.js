@@ -1,7 +1,13 @@
-
+const { codeHash, getActorBlock } = require("../abuse");
 const { MAX_DATA_TO_SEND } = require("../config");
 const { encodeZstd } = require("../chunks");
 const { closeSession, getSession, openSession } = require("../core/sessions");
+const {
+  cancelLocalRun,
+  selectRuntime,
+  tryRunLocally,
+} = require("../local/dispatch");
+const { safeMessage } = require("../sanitize");
 const { log } = require("../log");
 const { ExecuteTasks, Inputs } = require("../state");
 const { formatLuau } = require("../tools/luau");
@@ -49,7 +55,6 @@ function queueInput(token, value) {
   setTimeout(() => delete Inputs[uid], INPUT_TTL_MS);
 }
 
-
 function releaseWebRun(token, timeoutId) {
   clearTimeout(timeoutId);
   const taskId = WebTasks.get(token);
@@ -74,9 +79,7 @@ const tooLarge = () => ({
   error: `File too large (max ${MAX_DATA_TO_SEND / 1024 / 1024}MB)`,
 });
 
-
 function registerWebRoutes(app) {
-
   app.set("trust proxy", 1);
 
   app.post("/run", async (req, res) => {
@@ -85,17 +88,27 @@ function registerWebRoutes(app) {
       return res.status(400).json({ error: "Missing code" });
     }
 
+    const anonIp = hashIp(req.ip);
     if (!checkRunRate(req.ip)) {
       return res
         .status(429)
         .json({ error: `Rate limit: max ${RUN_RATE_LIMIT} runs/min` });
     }
 
+    const selection = await selectRuntime(code);
+    const actorKey = `web:${anonIp}:${selection.runtime}`;
+    const block = getActorBlock(actorKey);
+    if (block) {
+      return res.status(429).json({
+        error: `Failed to start. Try again in ${Math.ceil(block.remainingMs / 1000)} seconds.`,
+      });
+    }
+
     let encoded;
     try {
       encoded = encodeZstd(code);
     } catch (err) {
-      return res.status(500).json({ error: err.message });
+      return res.status(500).json({ error: safeMessage(err) });
     }
     if (encoded.length > MAX_DATA_TO_SEND) {
       return res
@@ -105,11 +118,10 @@ function registerWebRoutes(app) {
 
     const token = generateUUID() + generateUUID();
     const taskId = generateUUID();
-    const anonIp = hashIp(req.ip);
 
     log(anonIp, "web", "compile", describeSubmission(code));
 
-    ExecuteTasks[taskId] = {
+    const task = {
       content: encoded,
       channelId: "web",
       targetId: null,
@@ -117,10 +129,11 @@ function registerWebRoutes(app) {
       token: token,
       userId: token,
       username: anonIp,
+      actorKey,
+      codeHash: codeHash(code),
       isCommand: false,
       isWeb: true,
     };
-    WebTasks.set(token, taskId);
 
     let timeoutId;
     const responder = createSseResponder(() => releaseWebRun(token, timeoutId));
@@ -130,6 +143,14 @@ function registerWebRoutes(app) {
     }, SESSION_TIMEOUT_MS);
 
     res.json({ token });
+
+    void tryRunLocally(code, token, { actorKey, selection }).then(
+      (ranLocally) => {
+        if (ranLocally || !getSession(token)) return;
+        ExecuteTasks[taskId] = task;
+        WebTasks.set(token, taskId);
+      },
+    );
   });
 
   app.post("/format", async (req, res) => {
@@ -157,7 +178,7 @@ function registerWebRoutes(app) {
       }
       res.json({ formatted: result.output });
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      res.status(500).json({ error: safeMessage(err) });
     }
   });
 
@@ -181,12 +202,12 @@ function registerWebRoutes(app) {
 
     log(hashIp(req.ip), "web", "stop", "User stopped execution");
 
+    cancelLocalRun(token);
     queueInput(token, "STOP_ALL_SESSIONS_PLS");
     endWebSession(token, "Stopped by user");
 
     res.json({ message: "Stopped" });
   });
-
 
   app.post("/input/:token", (req, res) => {
     const { input, isFile, isFileChunk, uploadId, index, total } = req.body;

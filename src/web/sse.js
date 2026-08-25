@@ -1,4 +1,8 @@
+const { safeMessage } = require("../sanitize");
+
 const PING_INTERVAL_MS = 20000;
+
+const ATTACH_DEADLINE_MS = 10000;
 
 function sendSSE(res, event, data) {
   if (!res || res.writableEnded) return;
@@ -9,10 +13,27 @@ function createSseResponder(onClose) {
   let stream = null;
   let ping = null;
   let closed = false;
+  let markReady;
+  let readySettled = false;
+  let attachTimer = null;
+  const ready = new Promise((resolve) => {
+    markReady = resolve;
+  });
+
+  function settleReady(attached) {
+    if (readySettled) return;
+    readySettled = true;
+    if (attachTimer) {
+      clearTimeout(attachTimer);
+      attachTimer = null;
+    }
+    markReady(attached);
+  }
 
   return {
     attach(res) {
       stream = res;
+      settleReady(true);
       ping = setInterval(() => {
         if (res.writableEnded) {
           clearInterval(ping);
@@ -25,6 +46,14 @@ function createSseResponder(onClose) {
 
     hasStream() {
       return !!stream && !stream.writableEnded;
+    },
+
+    waitUntilReady() {
+      if (!readySettled && !attachTimer) {
+        attachTimer = setTimeout(() => settleReady(false), ATTACH_DEADLINE_MS);
+        attachTimer.unref?.();
+      }
+      return ready;
     },
 
     async deliver({ responseContent, fileMap, isLast, runtime, serverNum }) {
@@ -55,13 +84,14 @@ function createSseResponder(onClose) {
 
     async fail(error) {
       if (!stream) return;
-      sendSSE(stream, "error", { message: error.message });
+      sendSSE(stream, "error", { message: safeMessage(error) });
       stream.end();
     },
 
     close(reason) {
       if (closed) return;
       closed = true;
+      settleReady(false);
       if (ping) clearInterval(ping);
       if (stream && !stream.writableEnded) {
         if (reason) sendSSE(stream, "error", { message: reason });

@@ -33,8 +33,18 @@ function createResponseEmbed(
   runtime,
   msgLink,
 ) {
+  const runtimeLabel =
+    serverNum == null
+      ? null
+      : serverNum === "Lune"
+        ? "Lune"
+        : `Server #${serverNum}`;
   const embed = new EmbedBuilder()
-    .setTitle("Luau Compiler Results | Server #" + serverNum)
+    .setTitle(
+      runtimeLabel
+        ? `Luau Compiler Results | ${runtimeLabel}`
+        : "Luau Compiler Results",
+    )
     .setDescription(
       `Requested by: <@${userId}>` +
         `\`\`\`ansi\n${censorText(responseContent) || " "}\n\`\`\``,
@@ -50,6 +60,19 @@ function createResponseEmbed(
     embed.setURL(msgLink);
   }
 
+  return embed;
+}
+
+function createPendingResponseEmbed(runtime, userId) {
+  const embed = createResponseEmbed(
+    runtime === "lune" ? "Lune" : null,
+    userId,
+    "",
+    false,
+    0,
+    null,
+  );
+  if (runtime === "roblox") embed.setTitle("Starting Server...");
   return embed;
 }
 
@@ -139,6 +162,7 @@ async function handleFollowUpResponse(
 module.exports = {
   filesFromMap,
   liveAttachmentOptions,
+  createPendingResponseEmbed,
   createResponseEmbed,
   handleFollowUpResponse,
 };

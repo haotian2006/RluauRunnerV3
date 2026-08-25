@@ -8,6 +8,7 @@
   "license": "ISC",
   "scripts": {
     "start": "node Main.js",
+    "test": "node --test",
     "register-commands": "node scripts/commands.js",
     "clear-commands": "node scripts/clearCommands.js",
     "tunnel": "node scripts/generateTunnel.js",

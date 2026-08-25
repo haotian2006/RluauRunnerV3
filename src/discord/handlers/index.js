@@ -1,3 +1,4 @@
+const { safeMessage } = require("../../sanitize");
 const { logBot } = require("../../log");
 const { client } = require("../client");
 const { wrapEphemeral } = require("../permissions");
@@ -17,7 +18,7 @@ async function reportInteractionError(interaction, error) {
     if (typeof interaction.isAutocomplete === "function" && interaction.isAutocomplete()) {
       return;
     }
-    const content = `Something went wrong: ${error.message}`;
+    const content = `Something went wrong: ${safeMessage(error)}`;
     if (interaction.deferred || interaction.replied) {
       await interaction.editReply({ content, embeds: [], components: [] });
     } else {

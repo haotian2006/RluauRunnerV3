@@ -2,6 +2,7 @@ local IP = ""
 local SecretToken = ""
 local POLL_RATE = 1000 --ms
 local DEFAULT_TIMEOUT = 25 -- seconds
+local EXECUTION_SETTLE_DELAY = 1 -- seconds, excluded from displayed runtime
 local MAX_STR_HEIGHT = 25 -- Discord embeds are small
 local MAX_STR_HEIGHT_WEB = 100 -- a browser can show far more
 local MAX_RESPONSES_BEFORE_TIMEOUT = 50
@@ -322,7 +323,7 @@ local function executeCode(id, code, env, thread, delay)
 		`local _ = coroutine.running();task.spawn(function()local _c = {"{}"}local _=_ while coroutine.status(_) ~= 'dead' do {checks} task.wait();end;end);`
 	local header = #fs == 0 and "" or (table.concat(fs, "\n") .. "\n")
 	local src =
-		`{header}return function(imports){imports}{updates}return function() local _=(function (...) --[[START OF CODE]] {code}\n--[[END OF CODE]]\nend)()\n\n\t\t\ntask.wait({delay or 1})\n\tend\nend`
+		`{header}return function(imports){imports}{updates}return function() local _=(function (...) --[[START OF CODE]] {code}\n--[[END OF CODE]]\nend)()\n\n\t\t\ntask.wait({delay or EXECUTION_SETTLE_DELAY})\n\tend\nend`
 
 	local pass, fx = pcall(function()
 		m.Source = src
@@ -933,12 +934,13 @@ local function runCode(compCode, data)
 		local shouldLog = (env :: any).OUTPUT_LOGS
 		if not sus then
 			local str = ((env :: any).TIMESTAMP ~= false) and string.format("[%.3f] ", os.clock() - start) or ""
-			if msg:find("Script timeout: exhausted allowed execution time") then
+			local errorMessage = if type(msg) == "table" then tableToString(msg) else tostring(msg)
+			if errorMessage:find("Script timeout: exhausted allowed execution time") then
 				table.insert(thread.output, createText(str .. "Script timeout: exhausted allowed execution time", 3))
 			else
-				local msg = msg:match("RluauRunnerV3|PROCESS|[%w%-]+|:(.+)") or msg
-				msg = msg:gsub("RluauRunnerV3|PROCESS|[%w%-]+|", "script")
-				table.insert(thread.output, createText(str .. msg, 3))
+				errorMessage = errorMessage:match("RluauRunnerV3|PROCESS|[%w%-]+|:(.+)") or errorMessage
+				errorMessage = errorMessage:gsub("RluauRunnerV3|PROCESS|[%w%-]+|", "script")
+				table.insert(thread.output, createText(str .. errorMessage, 3))
 			end
 		elseif (env :: any).TIMESTAMP ~= false then
 			table.insert(
@@ -993,7 +995,10 @@ local function runCode(compCode, data)
 		if truncated == "" then
 			truncated = "No Output"
 		end
-		local time = os.clock() - thread.start
+		-- The generated wrapper deliberately stays alive for one second after the
+		-- user's code returns. Keep that behavior, but do not report it as user
+		-- execution time in the Discord/web completion footer.
+		local time = math.max(0, os.clock() - thread.start - EXECUTION_SETTLE_DELAY)
 		pcall(task.cancel, thread.timeOutThread)
 		stopAll()
 		task.wait(0.5)
@@ -1023,20 +1028,7 @@ local function runCode(compCode, data)
 	return true
 end
 
-local function handleRequest(uuid)
-	local sus, data = pcall(function()
-		local res = Https:RequestAsync({
-			Url = IP .. "/get",
-			Method = "POST",
-			Headers = makeHeaders(),
-			Body = encoder({ TaskId = uuid }),
-		})
-		return res.Body
-	end)
-	if not sus then
-		return
-	end
-	local decodedData = Https:JSONDecode(data)
+local function handleRequest(decodedData)
 	local content = decodedData.content
 	if type(content) == "table" then
 		local pass, content_ = getContentFromChunks(content)
@@ -1105,7 +1097,7 @@ end
 
 local function poll()
 	local res = Https:RequestAsync({
-		Url = IP .. "/getAll",
+		Url = IP .. "/getNext",
 		Method = "POST",
 		Headers = makeHeaders(),
 		Body = encoder({ ServerId = ServerId }),
@@ -1114,13 +1106,12 @@ local function poll()
 		Closed = true
 		return
 	end
+	if res.StatusCode == 204 then
+		return
+	end
 
 	local data = Https:JSONDecode(res.Body)
-
-	for i, id in data do
-		task.spawn(handleRequest, id)
-		task.wait(0.1)
-	end
+	task.spawn(handleRequest, data)
 end
 
 ScriptContext.Error:Connect(function(err, stackTrace)

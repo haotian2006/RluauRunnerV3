@@ -19,6 +19,7 @@ const {
   docCodeStore,
 } = require("../../state");
 const { generateUUID, wait } = require("../../util");
+const { cancelLocalRun } = require("../../local/dispatch");
 const { closeSession } = require("../../core/sessions");
 const { getResources, resourceDisplayName } = require("../resources");
 const { sendCompileRequestToRoblox } = require("../tasks");
@@ -52,6 +53,7 @@ function stopUserSessions(interaction) {
     const entry = CompilingTasks[token];
     if (!entry || !entry[0] || !entry[0].user) continue;
     if (entry[0].user.id === userId) {
+      cancelLocalRun(token);
       clearTimeout(entry[5]);
       entry[0].editReply({ components: [] }).catch(() => {});
       cleanupScriptButtons(entry[7]);

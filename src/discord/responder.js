@@ -1,5 +1,6 @@
 const { EmbedBuilder } = require("discord.js");
 
+const { safeMessage } = require("../sanitize");
 const { logBot } = require("../log");
 const { CompilingTasks } = require("../state");
 const {
@@ -16,6 +17,9 @@ function createDiscordResponder(token) {
   }
 
   return {
+    // Matches the Roblox executor's visible line count. SSE has no limit.
+    outputLineLimit: 24,
+
     link() {
       const current = entry();
       if (!current) return null;
@@ -58,6 +62,7 @@ function createDiscordResponder(token) {
       );
 
       const replyOptions = {
+        content: null,
         embeds: [embed],
         ...(isLast && { components: [] }),
       };
@@ -114,7 +119,7 @@ function createDiscordResponder(token) {
         const errorEmbed = new EmbedBuilder()
           .setTitle("Discord Error")
           .setDescription(
-            `Requested by: <@${interaction.user.id}>\nERROR: ${error.message}`,
+            `Requested by: <@${interaction.user.id}>\nERROR: ${safeMessage(error)}`,
           )
           .setColor(0xff0000);
 
@@ -123,7 +128,12 @@ function createDiscordResponder(token) {
         }
 
         await retryDiscordOperation(
-          () => interaction.editReply({ embeds: [errorEmbed], components: [] }),
+          () =>
+            interaction.editReply({
+              content: null,
+              embeds: [errorEmbed],
+              components: [],
+            }),
           2,
           "Error reply",
         );

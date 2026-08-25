@@ -17,6 +17,28 @@ const {
   PATH_TO_FORMATTER,
 } = require("../config");
 
+const DISPLAY_NAME = "script.luau";
+
+function stripTempPaths(output, tmpDir, inputPath) {
+  if (!output) return output;
+
+  // luau emits forward slashes; stylua uses the OS form.
+  const variants = (value) => [
+    value,
+    value.replace(/\\/g, "/"),
+    value.replace(/\//g, "\\"),
+  ];
+
+  let result = output;
+  for (const variant of variants(inputPath)) {
+    result = result.split(variant).join(DISPLAY_NAME);
+  }
+  for (const variant of variants(tmpDir)) {
+    result = result.split(variant).join(".");
+  }
+  return result;
+}
+
 async function execute(executablePath, code, args) {
   return new Promise((resolve, reject) => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "luau-"));
@@ -49,7 +71,7 @@ async function execute(executablePath, code, args) {
           fs.rmdirSync(tmpDir);
         } catch {}
 
-        resolve({ code, output });
+        resolve({ code, output: stripTempPaths(output, tmpDir, inputPath) });
       });
     });
   });
@@ -70,6 +92,16 @@ async function analyzeLuau(code, options) {
 async function generateAST(code) {
   return await execute(PATH_TO_AST, code, []);
 }
+async function findUnknownGlobals(code) {
+  const result = await execute(PATH_TO_ANALYZER, code, []);
+  const names = new Set();
+  const pattern = /Unknown global '([^']+)'/g;
+  let match;
+  while ((match = pattern.exec(result.output)) !== null) {
+    names.add(match[1]);
+  }
+  return { names, output: result.output };
+}
 
 async function formatLuau(code) {
   return new Promise((resolve, reject) => {
@@ -83,14 +115,14 @@ async function formatLuau(code) {
       stderr += chunk;
     });
     child.on("error", (err) => {
-      reject(
-        err.code === "ENOENT" ? missingToolError(PATH_TO_FORMATTER) : err,
-      );
+      reject(err.code === "ENOENT" ? missingToolError(PATH_TO_FORMATTER) : err);
     });
     child.on("close", (exitCode) => {
       try {
         const output =
-          exitCode !== 0 ? stderr : fs.readFileSync(inputPath, "utf8");
+          exitCode !== 0
+            ? stripTempPaths(stderr, tmpDir, inputPath)
+            : fs.readFileSync(inputPath, "utf8");
         try {
           fs.unlinkSync(inputPath);
           fs.rmdirSync(tmpDir);
@@ -140,4 +172,5 @@ module.exports = {
   generateAST,
   formatLuau,
   compileLuau,
+  findUnknownGlobals,
 };

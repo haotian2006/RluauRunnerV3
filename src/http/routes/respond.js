@@ -111,18 +111,18 @@ function registerRespondRoutes(app) {
 
       session = getSession(token);
       if (!session) {
+        if (req.body.finished) settleTasksForToken(token, true);
         return res.status(500).json({
           message: "Failed to deliver response",
           error: "Invalid or expired token",
         });
       }
 
-      settleTasksForToken(token);
-
       const responseContent = decodeBuffer(JSON.parse(req.body.data)).toString(
         "utf-8",
       );
       const isLast = req.body.finished;
+      settleTasksForToken(token, Boolean(isLast));
       const followUp = req.body.followUp;
       const runtime = req.body.runtime || 0;
       const serverNum = req.body.serverNum;

@@ -1,13 +1,63 @@
+const { getActorBlock } = require("../../abuse");
 const {
   encodeZstd,
   getChunk,
   hasChunk,
   toWirePayload,
 } = require("../../chunks");
-const { ExecuteTasks, Inputs, dispatchTask, state } = require("../../state");
+const { MAX_ROBLOX_WORKERS, SERVER_RUN_TIME_MAX } = require("../../config");
+const { closeSession, getSession } = require("../../core/sessions");
+const {
+  ExecuteTasks,
+  Inputs,
+  RobloxServers,
+  getDispatchedTask,
+  registerRobloxServer,
+  reserveNextTask,
+  state,
+  touchRobloxServer,
+} = require("../../state");
 const { requireSecret } = require("../middleware");
 
 const SERVER_NUMBER_MODULO = 256;
+
+async function reserveNextAllowedTask(serverId) {
+  while (true) {
+    const taskId = Object.keys(ExecuteTasks)[0];
+    if (!taskId) return null;
+
+    const task = ExecuteTasks[taskId];
+    const block = getActorBlock(task?.actorKey);
+    if (!block) return reserveNextTask(serverId);
+
+    delete ExecuteTasks[taskId];
+    const session = getSession(task.token);
+    if (session) {
+      try {
+        await session.responder.fail(
+          new Error(
+            `Failed to start. Try again in ${Math.ceil(block.remainingMs / 1000)} seconds.`,
+          ),
+          session.responder.link?.(),
+        );
+      } catch {}
+    }
+    closeSession(task.token);
+  }
+}
+
+function heartbeatServer(serverId, now = Date.now()) {
+  const server = RobloxServers[serverId];
+  if (
+    server &&
+    !server.healthy &&
+    now - server.startedAt >= SERVER_RUN_TIME_MAX
+  ) {
+    server.retiring = true;
+    return server;
+  }
+  return touchRobloxServer(serverId, now);
+}
 
 function registerSessionRoutes(app) {
   app.get("/", (req, res) => {
@@ -15,8 +65,19 @@ function registerSessionRoutes(app) {
   });
 
   app.post("/start", requireSecret, async (req, res) => {
-    state.RunningServer = req.body.ServerId;
-    state.RunningServerTime = Date.now();
+    const serverId = req.body.ServerId;
+    if (typeof serverId !== "string" || !serverId) {
+      return res.status(400).json({ message: "ServerId is required" });
+    }
+    const existing = RobloxServers[serverId];
+    if (!existing && Object.keys(RobloxServers).length >= MAX_ROBLOX_WORKERS) {
+      return res.status(429).json({ message: "Worker pool is full" });
+    }
+
+    registerRobloxServer(serverId);
+    if (!existing && state.PendingRobloxStarts.length) {
+      state.PendingRobloxStarts.shift();
+    }
     state.SERVER_NUMBERS += 1;
     res.json({
       message: "Server started",
@@ -25,9 +86,7 @@ function registerSessionRoutes(app) {
   });
 
   app.post("/ping", requireSecret, (req, res) => {
-    if (req.body.ServerId === state.RunningServer) {
-      state.LastServerPing = Date.now();
-    }
+    heartbeatServer(req.body.ServerId);
     res.json({ message: "Ping received" });
   });
 
@@ -53,26 +112,36 @@ function registerSessionRoutes(app) {
   });
 
   app.post("/getAll", requireSecret, async (req, res) => {
-    const ServerId = req.body.ServerId;
+    const serverId = req.body.ServerId;
+    const server = heartbeatServer(serverId);
 
-    if (ServerId === state.RunningServer) {
-      state.LastServerPing = Date.now();
-      const Ids = [];
-      for (const id in ExecuteTasks) {
-        Ids.push(id);
-      }
-      res.json(Ids);
-    } else {
-      res.status(201).json({ message: "New Session" });
+    if (!server || server.retiring) {
+      return res.status(201).json({ message: "New Session" });
     }
+
+    const taskId = await reserveNextAllowedTask(serverId);
+    res.json(taskId ? [taskId] : []);
+  });
+
+  // New workers reserve and receive one task atomically
+  app.post("/getNext", requireSecret, async (req, res) => {
+    const serverId = req.body.ServerId;
+    const server = heartbeatServer(serverId);
+
+    if (!server || server.retiring) {
+      return res.status(201).json({ message: "New Session" });
+    }
+
+    const taskId = await reserveNextAllowedTask(serverId);
+    if (!taskId) return res.status(204).end();
+    res.json(toWirePayload(getDispatchedTask(taskId)));
   });
 
   app.post("/get", requireSecret, async (req, res) => {
     const TaskId = req.body.TaskId;
-    if (TaskId in ExecuteTasks) {
-      const payload = toWirePayload(ExecuteTasks[TaskId]);
-
-      dispatchTask(TaskId);
+    const task = getDispatchedTask(TaskId);
+    if (task) {
+      const payload = toWirePayload(task);
       res.json(payload);
       return;
     }
@@ -86,11 +155,6 @@ function registerSessionRoutes(app) {
     } else {
       res.status(404).json({ message: "Chunk not found" });
     }
-  });
-
-  app.post("/test", async (req, res) => {
-    console.log("Test endpoint hit", req.body[0]);
-    res.json({ message: "Test endpoint response" });
   });
 }
 

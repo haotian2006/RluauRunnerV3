@@ -24,6 +24,13 @@ function encodeZstd(input) {
   return compressed.toString("base64");
 }
 
+function decodeZstd(input) {
+  if (typeof input !== "string") {
+    throw new TypeError("Compressed input must be a base64 string");
+  }
+  return decodeBuffer({ zbase64: input });
+}
+
 function decodeBuffer(data) {
   if (!data || typeof data !== "object") {
     throw new TypeError("Expected a { zbase64 } or { base64 } envelope");
@@ -120,6 +127,7 @@ function hasChunk(id) {
 
 module.exports = {
   encodeZstd,
+  decodeZstd,
   decodeBuffer,
   toWirePayload,
   getChunk,

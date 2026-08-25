@@ -1,3 +1,4 @@
+const { safeMessage } = require("../sanitize");
 const {
   MAX_DOWNLOAD_BYTES,
   fetchBinaryFile,
@@ -55,7 +56,7 @@ async function getInputsFromContext(interaction) {
     try {
       inputs.push(await fetchBinaryFile(attachment.url));
     } catch (err) {
-      failures.push(`\`${attachment.name}\`: ${err.message}`);
+      failures.push(`\`${attachment.name}\`: ${safeMessage(err)}`);
     }
   }
   return { inputs, failures };

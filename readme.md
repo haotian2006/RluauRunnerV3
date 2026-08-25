@@ -74,8 +74,8 @@ permission `luau-execution-sessions` and Experience Operations of
 
 ### 3. Tool binaries
 
-`luau-compile`, `luau-analyze`, `luau-ast` and `stylua` live in `bin/` and are
-downloaded from the upstream GitHub releases:
+`luau-compile`, `luau-analyze`, `luau-ast`, `stylua` and `lune` live in `bin/`
+and are downloaded from the upstream GitHub releases:
 
 ```
 npm run fetch-tools            # fetch whatever is missing
@@ -124,16 +124,84 @@ FORM_ENTRY_DATA=entry.0000000000(OPTIONAL)
 CALLBACK_URL=http://your-host:3000
 ENABLE_DISCORD=true(OPTIONAL, default true)
 ENABLE_WEB=false(OPTIONAL, default false)
+ENABLE_LOCAL_EXEC=false(OPTIONAL, default false)
+MAX_ROBLOX_WORKERS=4(OPTIONAL, default 4)
 ```
 
 `ENABLE_DISCORD` and `ENABLE_WEB` choose which front ends run. Both share one
-Roblox session pool, so a single execution session can serve both.
+Roblox worker pool. The pool scales up when tasks are queued, is capped at four
+workers by default, and gives responsive workers one new task per poll. This
+allows another task to run while existing code is yielding. A non-yielding
+script can temporarily pause tasks sharing its worker, but queued work moves to
+a responsive or replacement worker. `MAX_ROBLOX_WORKERS` can lower the cap;
+values above four are clamped to four.
+
+If every configured Roblox profile fails to start and no Roblox worker is
+connected or pending, queued tasks fall back to Lune when
+`ENABLE_LOCAL_EXEC=true`. The handoff removes each task from the Roblox queue
+before starting it locally and applies the actor's separate Lune limits and
+cooldowns. Code requiring real Roblox services may still error in the reduced
+Lune sandbox; tasks already reserved by a Roblox worker are never moved.
 
 `ENABLE_WEB` defaults to **false** deliberately: the web routes execute
 arbitrary Luau for anyone who can reach the port, with no authentication. When
 it is off those routes are never registered at all. With `ENABLE_DISCORD=false`
 the bot never logs in and `BOT_TOKEN` is not required, which is the setup for
 running the web runner alone. Startup fails if both are disabled.
+
+`ENABLE_LOCAL_EXEC=true` enables the local Lune sandbox. Each submission is
+checked with `luau-analyze`: scripts that only use sandbox-supported globals run
+locally, while scripts using Roblox, bot, or unknown globals keep using the
+Roblox session. Analyzer failures and syntax errors also fall back to Roblox.
+A leading `--!lune` explicitly forces the sandbox. Local execution is off by
+default. Lune executions without a heartbeat are stopped after 11 seconds by
+default, configurable with `LOCAL_HEARTBEAT_TIMEOUT_MS`. Each heartbeat renews
+that watchdog; responsive scripts may continue until the 30-second hard limit,
+configurable with `LOCAL_TIMEOUT_MS`. While a run is active, new output is
+delivered about once per second. Windows cannot enforce the configured memory
+limit.
+
+### Temporary crash protection
+
+The bot keeps an in-memory rolling record of executor crashes. If a Roblox
+server loses its heartbeat, every actor with code assigned to that server that
+has not sent a final response receives one strike for that outage, regardless
+of how many unfinished tasks they had. Unexpected Lune process exits are
+attributed directly to their submitting actor. A process killed by the bot's
+configured Lune time limit is flagged as timed out but does not receive a
+strike.
+
+A worker that misses its heartbeat remains registered but unhealthy for 40
+seconds. Queued work does not wait for that worker: another worker may start
+within the four-worker cap. Its next `/getNext` poll still restores it when its
+original session age is under three minutes. If no heartbeat arrives during
+the grace period, or the session is already three minutes old, the bot removes
+it.
+
+Discord `/stopall` and the web `/stop/:token` route also cancel a matching Lune
+child process immediately. User cancellation is reported separately from a
+timeout or abnormal exit and never receives a crash strike.
+
+Three distinct crashes within two minutes temporarily block that Discord user or
+hashed web IP from the affected runtime for 45 seconds. Roblox and Lune use
+separate strike keys (`discord:<user>:roblox`, `discord:<user>:lune`,
+`web:<ip-hash>:roblox`, and `web:<ip-hash>:lune`), so a Roblox outage cannot
+block Lune and an abnormal Lune exit cannot block Roblox. Records decay
+automatically and reset when the bot restarts. Ordinary submission rate limits
+remain shared. Lune also accepts at most ten active-or-queued runs per actor; the
+lower global `LOCAL_MAX_CONCURRENT` limit still takes precedence.
+
+If two Lune processes for the same actor have both gone three seconds without a
+heartbeat, new Lune submissions for that actor are paused for 11 seconds. Runs
+that are only waiting for a global execution slot do not count, and a heartbeat
+immediately marks a started run as responsive again. This admission pause does
+not add crash strikes or affect Roblox submissions.
+
+Queued work rechecks its runtime-specific block immediately before execution.
+A Lune job that becomes blocked while waiting for a local slot is rejected
+before its child process starts. A Roblox job that becomes blocked while queued
+is removed before a worker reserves it; the worker continues to the next
+allowed task.
 
 ### Usage logging (optional)
 
@@ -204,4 +272,3 @@ Other helpers:
 | `npm run clear-commands` | Deregister every command from Discord |
 | `npm run tunnel` | Print a public URL for `CALLBACK_URL` via tunnelmole |
 | `npm run fetch-tools` | Re-fetch `bin/` binaries (`-- --force` to redownload) |
-

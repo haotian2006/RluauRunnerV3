@@ -1,6 +1,6 @@
 const crypto = require("crypto");
 
-const RUN_RATE_LIMIT = 30;
+const RUN_RATE_LIMIT = 10;
 const RUN_RATE_WINDOW_MS = 60_000;
 const FORMAT_DEBOUNCE_MS = 500;
 const SWEEP_INTERVAL_MS = 60_000;
