@@ -18,6 +18,7 @@ Copy `LuauBot.luau` into `workspace` as a module script:
 ```
 workspace
     - LuauBot
+      - LoadEnv
 ```
 
 Then run this in Studio and save the output into `luauBot.b64`:
