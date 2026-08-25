@@ -67,7 +67,11 @@ function recordCrash(actorKey, incidentId, hashes = [], now = Date.now()) {
     };
   }
 
-  entry.incidents.push({ id: incidentId, at: now, hashes: [...new Set(hashes)] });
+  entry.incidents.push({
+    id: incidentId,
+    at: now,
+    hashes: [...new Set(hashes)],
+  });
   let newlyBlocked = false;
   if (entry.incidents.length >= CRASHES_BEFORE_BLOCK) {
     const nextBlock = now + BLOCK_DURATION_MS;

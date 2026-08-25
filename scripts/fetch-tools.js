@@ -148,7 +148,8 @@ function readZip(buf) {
       break;
     }
   }
-  if (eocd === -1) throw new Error("Not a zip file (no end-of-central-directory)");
+  if (eocd === -1)
+    throw new Error("Not a zip file (no end-of-central-directory)");
 
   const entryCount = buf.readUInt16LE(eocd + 10);
   let ptr = buf.readUInt32LE(eocd + 16);
@@ -202,7 +203,9 @@ async function install(label, url, wanted) {
     const dest = path.join(BIN_DIR, name);
     fs.writeFileSync(dest, zip.get(key));
     if (!IS_WINDOWS) fs.chmodSync(dest, 0o755);
-    console.log(`  wrote ${name} (${(zip.get(key).length / 1024 / 1024).toFixed(1)} MB)`);
+    console.log(
+      `  wrote ${name} (${(zip.get(key).length / 1024 / 1024).toFixed(1)} MB)`,
+    );
   }
 }
 
@@ -239,7 +242,8 @@ async function buildLuauFromSource(version) {
     }
   }
 
-  const tag = version === "latest" ? await latestTag("luau-lang/luau") : version;
+  const tag =
+    version === "latest" ? await latestTag("luau-lang/luau") : version;
   const workDir = fs.mkdtempSync(path.join(os.tmpdir(), "luau-build-"));
   const tarball = path.join(workDir, "luau.tar.gz");
 
@@ -304,7 +308,9 @@ async function buildLuauFromSource(version) {
 }
 
 async function latestTag(repo) {
-  const res = await fetch(`https://api.github.com/repos/${repo}/releases/latest`);
+  const res = await fetch(
+    `https://api.github.com/repos/${repo}/releases/latest`,
+  );
   if (!res.ok) throw new Error(`Cannot resolve latest tag for ${repo}`);
   return (await res.json()).tag_name;
 }
@@ -332,8 +338,7 @@ async function main() {
   // all, and the x86_64 asset needs glibc 2.34+, so on an older distro the
   // download would install something that cannot run.
   const buildLuau =
-    BUILD ||
-    (process.platform === "linux" && (!luauZip || needsStaticBuild()));
+    BUILD || (process.platform === "linux" && (!luauZip || needsStaticBuild()));
 
   if (!styluaZip || (!luauZip && !buildLuau)) {
     console.error(`Unsupported platform: ${process.platform}/${process.arch}.`);
@@ -366,7 +371,9 @@ async function main() {
         );
       }
     } else {
-      console.log("luau tools already present, skipping (use --force to refetch)");
+      console.log(
+        "luau tools already present, skipping (use --force to refetch)",
+      );
     }
 
     if (FORCE || missing(styluaBins).length) {

@@ -285,4 +285,3 @@ end
 if not ok then
 	emit("error", if type(err) == "table" then tableToString(err) else tostring(err))
 end
-

@@ -36,9 +36,7 @@ test("only unfinished tasks from the crashed server are returned", () => {
   ]);
 
   const unfinished = takeUnfinishedTasksForServer(serverId);
-  assert.deepEqual(unfinished, [
-    { token: "active", actorKey: "discord:a" },
-  ]);
+  assert.deepEqual(unfinished, [{ token: "active", actorKey: "discord:a" }]);
   assert.deepEqual(takeUnfinishedTasksForServer(serverId), []);
 });
 

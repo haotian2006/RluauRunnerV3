@@ -38,10 +38,7 @@ test("Discord rejects Roblox execution while its Roblox key is blocked", async (
   );
 
   assert.equal(replies[0].content, null);
-  assert.equal(
-    replies[0].embeds[0].data.title,
-    "Starting Server...",
-  );
+  assert.equal(replies[0].embeds[0].data.title, "Starting Server...");
   assert.match(
     replies.at(-1).content,
     /^Failed to start\. Try again <t:\d+:R>\.$/,

@@ -41,12 +41,7 @@ test("one server outage counts once per actor and old strikes decay", () => {
   const startedAt = 2_000_000;
 
   recordCrash(actor, "same-server", ["one"], startedAt);
-  const duplicate = recordCrash(
-    actor,
-    "same-server",
-    ["two"],
-    startedAt + 1,
-  );
+  const duplicate = recordCrash(actor, "same-server", ["two"], startedAt + 1);
   assert.equal(duplicate.duplicate, true);
   assert.equal(duplicate.count, 1);
 
@@ -106,10 +101,7 @@ test("two unresponsive Lune runs block new admission for 11 seconds", () => {
     null,
   );
 
-  const block = getLocalAdmissionBlock(
-    actor,
-    startedAt + LOCAL_STALE_AFTER_MS,
-  );
+  const block = getLocalAdmissionBlock(actor, startedAt + LOCAL_STALE_AFTER_MS);
   assert.equal(block.remainingMs, LOCAL_STALE_BLOCK_MS);
 
   finishLocalExecutionHealth(actor, "first");

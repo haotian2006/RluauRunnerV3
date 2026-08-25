@@ -12,10 +12,7 @@ const {
 const { ExecuteTasks } = require("../src/state");
 
 test("Roblox actor keys switch to their separate Lune scope", () => {
-  assert.equal(
-    luneActorKey("discord:user:roblox"),
-    "discord:user:lune",
-  );
+  assert.equal(luneActorKey("discord:user:roblox"), "discord:user:lune");
   assert.equal(luneActorKey("web:hash:roblox"), "web:hash:lune");
 });
 
