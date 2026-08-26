@@ -187,6 +187,14 @@ local environment: { [string]: any } = {
 	coroutine = copyFrozen(coroutine),
 	utf8 = copyFrozen(utf8),
 	bit32 = copyFrozen(bit32),
+	debug = copyFrozen(debug),
+
+	-- setfenv can't reach outside the function/thread it's given (verified:
+	-- setfenv(2, ...) errors "cannot change environment of given object"),
+	-- so it can't climb back out to this trusted script's own environment.
+	setfenv = setfenv,
+	newproxy = newproxy,
+	collectgarbage = collectgarbage,
 
 	task = sandboxTask,
 
@@ -254,20 +262,49 @@ local dataModel = roblox.Instance.new("DataModel")
 environment.game = dataModel
 environment.workspace = dataModel:GetService("Workspace")
 
-local compiled = luau.compile(job.source, {
+-- Kept nil regardless of source classification, since --!lune forces a
+-- script straight to Lune and skips the classifier's global check entirely.
+-- require/loadstring hand back the real ambient environment to anything
+-- they load (verified); getfenv(0) hands back _G, which still has a live
+-- require in it even after this shadowing (verified) - so it has to go too.
+local DENIED_GLOBALS = {
+	"require",
+	"loadstring",
+	"getfenv",
+}
+
+local importNames = {}
+for name in environment do
+	assert(string.match(name, "^[%a_][%w_]*$"), `unsafe environment key: {name}`)
+	table.insert(importNames, name)
+end
+table.sort(importNames)
+
+local importAssignments = {}
+for _, name in importNames do
+	table.insert(importAssignments, `imports.{name}`)
+end
+
+local prelude = `return function(imports) local {table.concat(importNames, ", ")} = {table.concat(
+	importAssignments,
+	", "
+)}; local {table.concat(DENIED_GLOBALS, ", ")}; return function() `
+
+local compiled = luau.compile(prelude .. job.source .. "\nend\nend", {
 	optimizationLevel = job.optimizationLevel or 1,
 	debugLevel = 1,
 })
 
-local chunk = luau.load(compiled, {
+local topLevel = luau.load(compiled, {
 	debugName = "script",
-	environment = environment,
-	injectGlobals = false,
 	codegenEnabled = job.codegenEnabled or false,
 })
 
+local wrapper = topLevel()
+local chunk = wrapper(environment)
+
 local mainFinished = false
-local heartbeatThread = task.spawn(function()
+local heartbeatThread = task.delay(0, function()
 	while true do
 		if mainFinished and not hasTrackedThreads() then
 			return

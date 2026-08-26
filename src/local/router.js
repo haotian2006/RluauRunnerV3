@@ -2,9 +2,39 @@
 // string does not match. Every failure falls back to Roblox, which only costs
 // latency; the reverse fails confusingly.
 
-const { classifyGlobal } = require("./keywords");
+const { classifyGlobal, LUNE_DENIED_GLOBALS } = require("./keywords");
 const { parseHotComments } = require("./hotComments");
-const { findUnknownGlobals } = require("../tools/luau");
+const { findUnknownGlobals, generateAST } = require("../tools/luau");
+
+// require/getfenv/loadstring are real Luau builtins, so they're invisible to
+// findUnknownGlobals' report (verified: luau-analyze never flags them).
+// Walk the AST directly for AstExprGlobal references to them instead, so a
+// mention inside a string or comment doesn't false-positive like a regex
+// scan would.
+function findDeniedGlobalRefs(node, found) {
+  if (!node || typeof node !== "object") return;
+  if (node.type === "AstExprGlobal" && LUNE_DENIED_GLOBALS.has(node.global)) {
+    found.add(node.global);
+  }
+  for (const key in node) {
+    const value = node[key];
+    if (Array.isArray(value)) value.forEach((child) => findDeniedGlobalRefs(child, found));
+    else if (value && typeof value === "object") findDeniedGlobalRefs(value, found);
+  }
+}
+
+async function findDeniedGlobals(source) {
+  let ast;
+  try {
+    const { output } = await generateAST(source);
+    ast = JSON.parse(output);
+  } catch {
+    return new Set();
+  }
+  const found = new Set();
+  findDeniedGlobalRefs(ast.root, found);
+  return found;
+}
 
 async function classify(source) {
   // Skips analysis if the user explicitly opts in to local execution.
@@ -45,6 +75,11 @@ async function classify(source) {
     const kind = classifyGlobal(name);
     if (kind === null) continue;
     globals[name] = kind;
+    blocked = true;
+  }
+
+  for (const name of await findDeniedGlobals(source)) {
+    globals[name] = "roblox";
     blocked = true;
   }
 

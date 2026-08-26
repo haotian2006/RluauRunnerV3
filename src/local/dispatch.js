@@ -13,6 +13,7 @@ const {
 } = require("../abuse");
 const { closeSession, getSession } = require("../core/sessions");
 const { logBot } = require("../log");
+const { desugarConstForLune } = require("./constDesugar");
 const { runLocal } = require("./run");
 const { classify, describeClassification } = require("./router");
 
@@ -106,6 +107,8 @@ async function tryRunLocally(
 ) {
   const selected = selection || (await selectRuntime(source));
   if (selected.runtime !== "lune") return false;
+
+  source = await desugarConstForLune(source);
 
   let session = getSession(token);
   if (!session) return true;

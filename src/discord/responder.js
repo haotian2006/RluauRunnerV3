@@ -116,11 +116,20 @@ function createDiscordResponder(token) {
       const [interaction] = current;
 
       try {
-        const errorEmbed = new EmbedBuilder()
-          .setTitle("Discord Error")
-          .setDescription(
-            `Requested by: <@${interaction.user.id}>\nERROR: ${safeMessage(error)}`,
-          )
+        let errorEmbed;
+        try {
+          const existing = (await interaction.fetchReply())?.embeds?.[0];
+          errorEmbed = existing ? new EmbedBuilder(existing.data) : null;
+        } catch {}
+
+        if (!errorEmbed) {
+          errorEmbed = new EmbedBuilder().setDescription(
+            `Requested by: <@${interaction.user.id}>`,
+          );
+        }
+
+        errorEmbed
+          .setFooter({ text: `ERROR: ${safeMessage(error)}` })
           .setColor(0xff0000);
 
         if (link) {
