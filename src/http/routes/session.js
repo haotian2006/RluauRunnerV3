@@ -6,8 +6,9 @@ const {
   hasChunk,
   toWirePayload,
 } = require("../../chunks");
-const { MAX_ROBLOX_WORKERS, SERVER_RUN_TIME_MAX } = require("../../config");
+const { SERVER_RUN_TIME_MAX } = require("../../config");
 const { closeSession, getSession } = require("../../core/sessions");
+const { getMaxWorkers } = require("../../profiles");
 const {
   ExecuteTasks,
   Inputs,
@@ -82,7 +83,7 @@ function registerSessionRoutes(app) {
       return res.status(400).json({ message: "ServerId is required" });
     }
     const existing = RobloxServers[serverId];
-    if (!existing && Object.keys(RobloxServers).length >= MAX_ROBLOX_WORKERS) {
+    if (!existing && Object.keys(RobloxServers).length >= getMaxWorkers()) {
       return res.status(429).json({ message: "Worker pool is full" });
     }
 

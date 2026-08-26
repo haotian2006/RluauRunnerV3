@@ -1,7 +1,7 @@
 const fs = require("fs");
 const path = require("path");
 
-const { ROOT_DIR } = require("./config");
+const { MAX_ROBLOX_WORKERS, ROOT_DIR } = require("./config");
 const { logBot } = require("./log");
 
 const PROFILES_DIR = path.join(ROOT_DIR, "profiles");
@@ -173,4 +173,8 @@ function getProfiles() {
   return cached;
 }
 
-module.exports = { getProfiles, migrationHint, reportProfiles };
+function getMaxWorkers() {
+  return Math.max(1, getProfiles().length) * MAX_ROBLOX_WORKERS;
+}
+
+module.exports = { getProfiles, getMaxWorkers, migrationHint, reportProfiles };

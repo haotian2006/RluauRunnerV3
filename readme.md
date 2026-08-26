@@ -92,7 +92,7 @@ CALLBACK_URL=http://your-host:3000
 ENABLE_DISCORD=true(OPTIONAL, default true)
 ENABLE_WEB=false(OPTIONAL, default false)
 ENABLE_LOCAL_EXEC=false(OPTIONAL, default false)
-MAX_ROBLOX_WORKERS=4(OPTIONAL, default 4)
+MAX_ROBLOX_WORKERS=4(OPTIONAL, default 4, per enabled profile)
 FORM_ID=Google_Form_Id(OPTIONAL)
 FORM_ENTRY_NAME=entry.0000000000(OPTIONAL)
 FORM_ENTRY_USER_ID=entry.0000000000(OPTIONAL)
@@ -137,11 +137,11 @@ running the web runner alone.
 ## Execution
 
 Both front ends share one Roblox worker pool. The pool scales up when tasks are
-queued, is capped by `MAX_ROBLOX_WORKERS` (default and maximum 4), and gives
-responsive workers one new task per poll, so another task can run while
-existing code is yielding. A non-yielding script can temporarily pause tasks
-sharing its worker, but queued work moves to a responsive or replacement
-worker.
+queued, is capped by `MAX_ROBLOX_WORKERS` per enabled profile (default 4 each,
+so two enabled profiles allow up to 8 workers total), and gives responsive
+workers one new task per poll, so another task can run while existing code is
+yielding. A non-yielding script can temporarily pause tasks sharing its
+worker, but queued work moves to a responsive or replacement worker.
 
 ## Usage logging (optional)
 

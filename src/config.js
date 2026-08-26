@@ -202,10 +202,9 @@ module.exports = {
 
   SERVER_CREATION_COOL_DOWN: 1000 * 20,
 
-  // Global safety cap for concurrently connected Roblox execution sessions.
-  MAX_ROBLOX_WORKERS: Math.min(
-    4,
-    Math.max(1, Math.floor(envNumber("MAX_ROBLOX_WORKERS", 4))),
+  MAX_ROBLOX_WORKERS: Math.max(
+    1,
+    Math.floor(envNumber("MAX_ROBLOX_WORKERS", 4)),
   ),
 
   SERVER_RUN_TIME_MAX: 1000 * 60 * 3,

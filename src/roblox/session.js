@@ -1,5 +1,4 @@
 const {
-  MAX_ROBLOX_WORKERS,
   SERVER_CHECK_INTERVAL,
   SERVER_CREATION_COOL_DOWN,
   SERVER_PING_TIMEOUT,
@@ -12,7 +11,7 @@ const {
 const { decodeZstd } = require("../chunks");
 const { recordCrash } = require("../abuse");
 const { log, logBot } = require("../log");
-const { getProfiles } = require("../profiles");
+const { getMaxWorkers, getProfiles } = require("../profiles");
 const {
   ExecuteTasks,
   RobloxServers,
@@ -320,7 +319,8 @@ async function checkRobloxServer() {
     const pendingWorkers = state.PendingRobloxStarts.length;
     const lastCreationDebounce =
       now - state.LastServerCreation > creationDebounce();
-    const belowWorkerCap = workers.length + pendingWorkers < MAX_ROBLOX_WORKERS;
+    const maxWorkers = getMaxWorkers();
+    const belowWorkerCap = workers.length + pendingWorkers < maxWorkers;
     const needsWorker = needsAdditionalWorker(
       workers,
       queuedTasks,
@@ -331,7 +331,7 @@ async function checkRobloxServer() {
       console.log("Starting new Roblox server...");
       logBot(
         "Roblox Server",
-        `Starting worker ${workers.length + pendingWorkers + 1}/${MAX_ROBLOX_WORKERS}...`,
+        `Starting worker ${workers.length + pendingWorkers + 1}/${maxWorkers}...`,
       );
 
       if (!(await startAnyProfile())) {
