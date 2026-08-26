@@ -8,6 +8,7 @@ const {
   LOCAL_MAX_LINES,
   LOCAL_MAX_LINE_BYTES,
   LOCAL_MEMORY_LIMIT_MB,
+  LOCAL_CPU_QUOTA_PERCENT,
   LOCAL_HEARTBEAT_TIMEOUT_MS,
   LOCAL_TIMEOUT_MS,
   PATH_TO_LUNE,
@@ -66,23 +67,40 @@ function queueDepth() {
 function buildCommand(jobPath) {
   const args = ["run", SANDBOX_PATH, jobPath];
 
-  if (process.platform === "win32" || !LOCAL_MEMORY_LIMIT_MB) {
-    return { command: PATH_TO_LUNE, args, shell: false };
+  let command = PATH_TO_LUNE;
+  let finalArgs = args;
+
+  if (process.platform !== "win32" && LOCAL_MEMORY_LIMIT_MB) {
+    const quoted = [PATH_TO_LUNE, ...args]
+      .map((part) => `'${String(part).replace(/'/g, "'\\''")}'`)
+      .join(" ");
+    command = "/bin/bash";
+    finalArgs = ["-c", `ulimit -v ${LOCAL_MEMORY_LIMIT_MB * 1024}; exec ${quoted}`];
   }
 
-  const quoted = [PATH_TO_LUNE, ...args]
-    .map((part) => `'${String(part).replace(/'/g, "'\\''")}'`)
-    .join(" ");
+  if (process.platform !== "win32" && LOCAL_CPU_QUOTA_PERCENT) {
+    finalArgs = [
+      "--scope",
+      "--quiet",
+      "--collect",
+      "-p",
+      `CPUQuota=${LOCAL_CPU_QUOTA_PERCENT}%`,
+      "--",
+      command,
+      ...finalArgs,
+    ];
+    command = "systemd-run";
+  }
 
-  return {
-    command: "/bin/bash",
-    args: ["-c", `ulimit -v ${LOCAL_MEMORY_LIMIT_MB * 1024}; exec ${quoted}`],
-    shell: false,
-  };
+  return { command, args: finalArgs, shell: false };
 }
 
 function isMemoryLimitAvailable() {
   return process.platform !== "win32" && Boolean(LOCAL_MEMORY_LIMIT_MB);
+}
+
+function isCpuQuotaAvailable() {
+  return process.platform !== "win32" && Boolean(LOCAL_CPU_QUOTA_PERCENT);
 }
 
 /**
@@ -334,5 +352,6 @@ module.exports = {
   runLocal,
   queueDepth,
   isMemoryLimitAvailable,
+  isCpuQuotaAvailable,
   SANDBOX_PATH,
 };

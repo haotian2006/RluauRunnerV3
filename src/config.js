@@ -152,6 +152,17 @@ if (ENABLE_LOCAL_EXEC && process.platform === "win32") {
   );
 }
 
+const LOCAL_CPU_QUOTA_PERCENT = Math.max(
+  0,
+  Math.floor(envNumber("LOCAL_CPU_QUOTA_PERCENT", 0)),
+);
+if (ENABLE_LOCAL_EXEC && LOCAL_CPU_QUOTA_PERCENT && process.platform === "win32") {
+  console.warn(
+    "Warning: LOCAL_CPU_QUOTA_PERCENT is set, but CPU quotas need systemd-run " +
+      "and are not enforceable on Windows. Sandboxed scripts can use full CPU.",
+  );
+}
+
 if (!ENABLE_DISCORD && !ENABLE_WEB) {
   console.error(
     "Fatal: both ENABLE_DISCORD and ENABLE_WEB are false, so there is nothing to serve.\n" +
@@ -194,6 +205,9 @@ module.exports = {
   LOCAL_HEARTBEAT_TIMEOUT_MS: envNumber("LOCAL_HEARTBEAT_TIMEOUT_MS", 11000),
   // Enforced by ulimit on Linux only; ignored on Windows.
   LOCAL_MEMORY_LIMIT_MB: envNumber("LOCAL_MEMORY_LIMIT_MB", 256),
+  // Percent of one core, enforced via systemd-run --scope on Linux only.
+  // 0 disables the quota. 100 = 1 full core.
+  LOCAL_CPU_QUOTA_PERCENT,
 
   LOCAL_MAX_CONCURRENT: envNumber("LOCAL_MAX_CONCURRENT", 2),
   LOCAL_MAX_LINES: envNumber("LOCAL_MAX_LINES", 2000),

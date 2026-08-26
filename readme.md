@@ -92,6 +92,9 @@ CALLBACK_URL=http://your-host:3000
 ENABLE_DISCORD=true(OPTIONAL, default true)
 ENABLE_WEB=false(OPTIONAL, default false)
 ENABLE_LOCAL_EXEC=false(OPTIONAL, default false)
+LOCAL_MAX_CONCURRENT=2(OPTIONAL, default 2, global cap on concurrent Lune runs)
+LOCAL_MEMORY_LIMIT_MB=256(OPTIONAL, default 256, Linux only)
+LOCAL_CPU_QUOTA_PERCENT=0(OPTIONAL, default 0/disabled, Linux only, needs systemd)
 MAX_ROBLOX_WORKERS=4(OPTIONAL, default 4, per enabled profile)
 TRUST_PROXY=false(OPTIONAL, default false)
 FORM_ID=Google_Form_Id(OPTIONAL)
@@ -142,6 +145,14 @@ limiting and abuse tracking outright. Only set this (to a trusted hop count or
 proxy IP/CIDR - see [Express's `trust proxy` docs](https://expressjs.com/en/guide/behind-proxies.html))
 if you're actually running behind a reverse proxy that overwrites that header
 itself.
+
+`LOCAL_MAX_CONCURRENT` is a global cap shared by every user, not per-user (a
+separate per-actor cap of 10 also exists, hardcoded, and only matters if the
+global cap is raised above it). `LOCAL_CPU_QUOTA_PERCENT` throttles each Lune
+job to that percent of one core via `systemd-run --scope` (Linux only, needs
+systemd; no-op elsewhere). Size these together: on a small box, a high
+`LOCAL_MAX_CONCURRENT` with no CPU quota lets sandboxed scripts starve the
+bot's own event loop under load.
 
 ## Execution
 
