@@ -158,8 +158,13 @@ function settleTasksForToken(token, finished = true) {
 function unfinishedTasksForServer(serverId, removeActive) {
   const tasks = [];
 
-  for (const entry of Object.values(DispatchedTasks)) {
-    if (entry?.serverId === serverId) tasks.push(entry.task);
+  for (const [uuid, entry] of Object.entries(DispatchedTasks)) {
+    if (entry?.serverId !== serverId) continue;
+    tasks.push(entry.task);
+    if (removeActive) {
+      clearTimeout(entry.timer);
+      delete DispatchedTasks[uuid];
+    }
   }
 
   for (const [uuid, entry] of Object.entries(ActiveRobloxTasks)) {

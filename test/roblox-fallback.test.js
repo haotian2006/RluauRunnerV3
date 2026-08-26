@@ -9,8 +9,16 @@ const {
   failPendingTasks,
   fallbackPendingTasksToLune,
   luneActorKey,
+  reapRobloxServer,
 } = require("../src/roblox/session");
-const { ExecuteTasks } = require("../src/state");
+const {
+  ActiveRobloxTasks,
+  ExecuteTasks,
+  RobloxServers,
+  registerRobloxServer,
+  reserveNextTask,
+  settleTasksForToken,
+} = require("../src/state");
 
 test("Roblox actor keys switch to their separate Lune scope", () => {
   assert.equal(luneActorKey("discord:user:roblox"), "discord:user:lune");
@@ -37,6 +45,72 @@ test("failed Roblox startup rejects queued web sessions", async () => {
 
   assert.deepEqual(failures, ["Failed to start."]);
   assert.equal(ExecuteTasks[taskId], undefined);
+  assert.equal(hasSession(token), false);
+  assert.equal(closed, true);
+});
+
+test("a task stranded on a reaped server is failed, not dropped", async () => {
+  const token = `reaped-${Date.now()}`;
+  const taskId = `reaped-task-${Date.now()}`;
+  const serverId = `reaped-server-${Date.now()}`;
+  const failures = [];
+  let closed = false;
+  let finishFailure;
+  const slowFailure = new Promise((resolve) => {
+    finishFailure = resolve;
+  });
+
+  openSession(token, {
+    async fail(error) {
+      failures.push(error.message);
+      await slowFailure;
+    },
+    close() {
+      closed = true;
+    },
+  });
+
+  registerRobloxServer(serverId);
+  ExecuteTasks[taskId] = { token, isWeb: true };
+  reserveNextTask(serverId);
+
+  const notifications = reapRobloxServer(serverId);
+
+  assert.equal(RobloxServers[serverId], undefined);
+  assert.deepEqual(failures, ["Roblox server stopped responding."]);
+  finishFailure();
+  await notifications;
+  assert.equal(hasSession(token), false);
+  assert.equal(closed, true);
+});
+
+test("an active task on a reaped server is failed and removed", async () => {
+  const token = `reaped-active-${Date.now()}`;
+  const taskId = `reaped-active-task-${Date.now()}`;
+  const serverId = `reaped-active-server-${Date.now()}`;
+  const failures = [];
+  let closed = false;
+
+  openSession(token, {
+    async fail(error) {
+      failures.push(error.message);
+    },
+    close() {
+      closed = true;
+    },
+  });
+
+  registerRobloxServer(serverId);
+  ExecuteTasks[taskId] = { token, isWeb: true };
+  reserveNextTask(serverId);
+  settleTasksForToken(token, false);
+  assert.equal(ActiveRobloxTasks[taskId]?.task.token, token);
+
+  await reapRobloxServer(serverId);
+
+  assert.equal(ActiveRobloxTasks[taskId], undefined);
+  assert.equal(RobloxServers[serverId], undefined);
+  assert.deepEqual(failures, ["Roblox server stopped responding."]);
   assert.equal(hasSession(token), false);
   assert.equal(closed, true);
 });

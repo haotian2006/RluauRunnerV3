@@ -151,6 +151,22 @@ async function startAnyProfile() {
   return false;
 }
 
+async function failTask(task, message) {
+  const session = getSession(task.token);
+  if (!session) return;
+
+  let link = null;
+  try {
+    link = session.responder.link?.();
+  } catch {}
+
+  try {
+    await session.responder.fail(new Error(message), link);
+  } finally {
+    closeSession(task.token);
+  }
+}
+
 async function failPendingTasks() {
   const pending = Object.entries(ExecuteTasks);
   const failures = [];
@@ -158,27 +174,19 @@ async function failPendingTasks() {
   for (const [taskId, task] of pending) {
     if (ExecuteTasks[taskId] !== task) continue;
     delete ExecuteTasks[taskId];
-
-    failures.push(
-      (async () => {
-        const session = getSession(task.token);
-        if (!session) return;
-
-        let link = null;
-        try {
-          link = session.responder.link?.();
-        } catch {}
-
-        try {
-          await session.responder.fail(new Error("Failed to start."), link);
-        } finally {
-          closeSession(task.token);
-        }
-      })(),
-    );
+    failures.push(failTask(task, "Failed to start."));
   }
 
   await Promise.allSettled(failures);
+}
+
+function reapRobloxServer(serverId) {
+  const tasks = takeUnfinishedTasksForServer(serverId);
+  unregisterRobloxServer(serverId);
+
+  return Promise.allSettled(
+    tasks.map((task) => failTask(task, "Roblox server stopped responding.")),
+  );
 }
 
 function luneActorKey(actorKey) {
@@ -282,8 +290,7 @@ async function checkRobloxServer() {
       if (now - server.lastPing <= SERVER_PING_TIMEOUT) continue;
 
       if (server.retiring) {
-        takeUnfinishedTasksForServer(server.serverId);
-        unregisterRobloxServer(server.serverId);
+        void reapRobloxServer(server.serverId);
         continue;
       }
 
@@ -303,8 +310,7 @@ async function checkRobloxServer() {
         now - (server.unhealthySince || server.lastPing) >=
         SERVER_RECOVERY_GRACE_MS
       ) {
-        takeUnfinishedTasksForServer(server.serverId);
-        unregisterRobloxServer(server.serverId);
+        void reapRobloxServer(server.serverId);
       }
     }
 
@@ -348,5 +354,6 @@ module.exports = {
   luneActorKey,
   needsAdditionalWorker,
   profileAttemptOrder,
+  reapRobloxServer,
   recordServerOutage,
 };
