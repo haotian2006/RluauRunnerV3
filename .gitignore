@@ -146,3 +146,6 @@ profiles/*.json
 
 # Tool binaries, fetched by scripts/fetch-tools.js
 bin/
+
+# Local deployment notes (box IP, domain, per-deploy specifics)
+DEPLOYMENT.md

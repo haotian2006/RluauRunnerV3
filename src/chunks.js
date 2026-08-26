@@ -1,9 +1,6 @@
-const zlib = require("zlib");
 const zstd = require("zstd-napi");
 const { FILE_CHUNK_SIZE, MAX_DATA_TO_SEND } = require("./config");
 const { logBot } = require("./log");
-
-const MAX_DECODED_BYTES = 64 * 1024 * 1024;
 
 const CHUNK_TO_DATA = {};
 let CHUNK_ID = 0;
@@ -40,9 +37,7 @@ function decodeBuffer(data) {
       throw new TypeError("zbase64 must be a string");
     }
     try {
-      return zlib.zstdDecompressSync(Buffer.from(data.zbase64, "base64"), {
-        maxOutputLength: MAX_DECODED_BYTES,
-      });
+      return zstd.decompress(Buffer.from(data.zbase64, "base64"));
     } catch (err) {
       throw new Error(`Failed to decompress payload: ${err.message}`);
     }
