@@ -195,9 +195,9 @@ end
 local SendingChunks = {}
 local FinishedInteractions = {}
 local WebTokens = {} -- runs with no Discord message cap
-local function sendFileInChunks(token, data)
+local function sendFileInChunks(interactionToken, fileId, data)
 	local numChunks = math.ceil(#data / FILE_CHUNK_SIZE)
-	SendingChunks[token] = true
+	SendingChunks[interactionToken] = true
 	task.spawn(function()
 		for i = 1, numChunks do
 			local chunk = data:sub((i - 1) * FILE_CHUNK_SIZE + 1, i * FILE_CHUNK_SIZE)
@@ -206,7 +206,8 @@ local function sendFileInChunks(token, data)
 				Method = "PATCH",
 				Headers = makeHeaders(),
 				Body = Https:JSONEncode({
-					token = token,
+					token = interactionToken,
+					fileId = fileId,
 					chunk = chunk,
 					index = i - 1,
 				}),
@@ -214,7 +215,7 @@ local function sendFileInChunks(token, data)
 			attemptRequest(0.5, 5, Https.RequestAsync, Https, requestData)
 			task.wait(0.1)
 		end
-		SendingChunks[token] = nil
+		SendingChunks[interactionToken] = nil
 	end)
 	return numChunks
 end
@@ -245,7 +246,7 @@ local function respondToInteraction(interactionToken, responseContent, logs, awa
 	if logs and logs ~= "" then
 		logs = encode(logs)
 		if #logs > 10000 and #logs < MAX_FILE_SIZE then
-			sections = sendFileInChunks(fileId, logs)
+			sections = sendFileInChunks(interactionToken, fileId, logs)
 			logs = encode("[Log too large to send]")
 		elseif #logs >= MAX_FILE_SIZE then
 			logs = encode("[Log exceeded maximum size]")

@@ -30,6 +30,19 @@ function createSseResponder(onClose) {
     markReady(attached);
   }
 
+  function close(reason) {
+    if (closed) return;
+    closed = true;
+    settleReady(false);
+    if (ping) clearInterval(ping);
+    if (stream && !stream.writableEnded) {
+      if (reason) sendSSE(stream, "error", { message: reason });
+      stream.end();
+    }
+    stream = null;
+    onClose?.(reason);
+  }
+
   return {
     attach(res) {
       stream = res;
@@ -41,11 +54,11 @@ function createSseResponder(onClose) {
         }
         res.write(": ping\n\n");
       }, PING_INTERVAL_MS);
-      res.on("close", () => clearInterval(ping));
+      res.on("close", () => close());
     },
 
     hasStream() {
-      return !!stream && !stream.writableEnded;
+      return !!stream && !stream.writableEnded && !stream.destroyed;
     },
 
     waitUntilReady() {
@@ -94,18 +107,7 @@ function createSseResponder(onClose) {
       stream.end();
     },
 
-    close(reason) {
-      if (closed) return;
-      closed = true;
-      settleReady(false);
-      if (ping) clearInterval(ping);
-      if (stream && !stream.writableEnded) {
-        if (reason) sendSSE(stream, "error", { message: reason });
-        stream.end();
-      }
-      stream = null;
-      onClose?.(reason);
-    },
+    close,
   };
 }
 

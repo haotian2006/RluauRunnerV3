@@ -78,12 +78,8 @@ async function execute(executablePath, code, args) {
 }
 
 async function analyzeLuau(code, options) {
-  const { annotate } = options;
-
   const args = [];
-  if (annotate || true) {
-    args.push("--annotate");
-  }
+  args.push("--annotate");
   args.push("--fflags=LuauSolverV2=true");
 
   return await execute(PATH_TO_ANALYZER, code, args);

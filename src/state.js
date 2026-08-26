@@ -1,4 +1,5 @@
 const crypto = require("crypto");
+const { closeSession, getSession } = require("./core/sessions");
 
 const state = {
   CallbackUrl: "",
@@ -98,9 +99,23 @@ function dispatchTask(uuid, serverId = state.RunningServer) {
     const entry = DispatchedTasks[uuid];
     delete DispatchedTasks[uuid];
     releaseServerTask(entry?.serverId, uuid);
-    if (retriedTasks.has(task)) return;
 
-    if (!CompilingTasks[task.token]) return;
+    if (retriedTasks.has(task)) {
+      const session = getSession(task.token);
+      if (session) {
+        let link = null;
+        try {
+          link = session.responder.link?.();
+        } catch {}
+        Promise.resolve(
+          session.responder.fail(new Error("Lost handoff to Roblox."), link),
+        )
+          .catch(() => {})
+          .finally(() => closeSession(task.token));
+      }
+      return;
+    }
+
     retriedTasks.add(task);
     ExecuteTasks[uuid] = task;
   }, DISPATCH_RETRY_MS);

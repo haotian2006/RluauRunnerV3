@@ -4,7 +4,7 @@ const {
   TextInputBuilder,
   TextInputStyle,
 } = require("discord.js");
-const { wait } = require("../util");
+const { generateUUID, wait } = require("../util");
 
 const byteCodeModalData = {};
 
@@ -12,6 +12,7 @@ const MODAL_TTL_MS = 5 * 60 * 1000;
 
 async function createByteModal(data, code) {
   const msgLink = `https://discord.com/channels/@me/${data.channelId}/${data.targetId}`;
+  const nonce = generateUUID();
 
   const architectureInput = new TextInputBuilder()
     .setCustomId("architecture")
@@ -20,7 +21,7 @@ async function createByteModal(data, code) {
     .setValue("")
     .setRequired(false);
   const modal = new ModalBuilder()
-    .setCustomId("bytecode_modal")
+    .setCustomId(`bytecode_modal:${nonce}`)
     .setTitle("Generate Bytecode");
 
   const optimizeInput = new TextInputBuilder()
@@ -59,7 +60,7 @@ async function createByteModal(data, code) {
     new ActionRowBuilder().addComponents(ephemeralInput),
   );
 
-  byteCodeModalData[data.user.id] = {
+  byteCodeModalData[nonce] = {
     data: data,
     content: code,
     msgLink: msgLink,
@@ -67,14 +68,15 @@ async function createByteModal(data, code) {
   await data.showModal(modal);
 
   await wait(MODAL_TTL_MS);
-  delete byteCodeModalData[data.user.id];
+  delete byteCodeModalData[nonce];
 }
 
 async function createCompileModal(data, code) {
   const msgLink = `https://discord.com/channels/@me/${data.channelId}/${data.targetId}`;
+  const nonce = generateUUID();
 
   const modal = new ModalBuilder()
-    .setCustomId("compile_modal")
+    .setCustomId(`compile_modal:${nonce}`)
     .setTitle("Generate Compile");
 
   const logInput = new TextInputBuilder()
@@ -122,14 +124,14 @@ async function createCompileModal(data, code) {
     new ActionRowBuilder().addComponents(ephemeralInput),
   );
 
-  byteCodeModalData[data.user.id] = {
+  byteCodeModalData[nonce] = {
     data: data,
     content: code,
     msgLink: msgLink,
   };
 
   setTimeout(() => {
-    delete byteCodeModalData[data.user.id];
+    delete byteCodeModalData[nonce];
   }, MODAL_TTL_MS);
   await data.showModal(modal);
 }

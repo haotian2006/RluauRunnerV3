@@ -61,6 +61,7 @@ async function startRoblox(profile) {
         script: bootstrapScript(),
         timeout: SERVER_TIME_OUT,
       }),
+      signal: AbortSignal.timeout(30_000),
     });
   } catch (err) {
     console.log(

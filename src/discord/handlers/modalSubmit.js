@@ -7,8 +7,8 @@ const { byteCodeModalData } = require("../modals");
 const { reply } = require("../reply");
 const { sendCompileRequestToRoblox } = require("../tasks");
 
-async function handleByteCodeModal(interaction) {
-  const info = byteCodeModalData[interaction.user.id];
+async function handleByteCodeModal(interaction, nonce) {
+  const info = byteCodeModalData[nonce];
   if (!info) return;
 
   const options = getByteCodeOptions();
@@ -40,11 +40,11 @@ async function handleByteCodeModal(interaction) {
     info.msgLink,
   );
 
-  delete byteCodeModalData[interaction.user.id];
+  delete byteCodeModalData[nonce];
 }
 
-async function handleCompileModal(interaction) {
-  const info = byteCodeModalData[interaction.user.id];
+async function handleCompileModal(interaction, nonce) {
+  const info = byteCodeModalData[nonce];
   if (!info) return;
 
   const logOutput = interaction.fields.getTextInputValue("log") === "1";
@@ -67,7 +67,7 @@ async function handleCompileModal(interaction) {
   }
   code = headers + "\n" + code;
 
-  delete byteCodeModalData[interaction.user.id];
+  delete byteCodeModalData[nonce];
   sendCompileRequestToRoblox(
     code,
     interaction.id,
@@ -80,10 +80,11 @@ async function handleCompileModal(interaction) {
 }
 
 async function handleModalSubmit(interaction) {
-  if (interaction.customId === "bytecode_modal") {
-    return handleByteCodeModal(interaction);
-  } else if (interaction.customId === "compile_modal") {
-    return handleCompileModal(interaction);
+  const [kind, nonce] = interaction.customId.split(":");
+  if (kind === "bytecode_modal") {
+    return handleByteCodeModal(interaction, nonce);
+  } else if (kind === "compile_modal") {
+    return handleCompileModal(interaction, nonce);
   }
 }
 

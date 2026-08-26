@@ -34,14 +34,14 @@ async function reserveNextAllowedTask(serverId) {
     delete ExecuteTasks[taskId];
     const session = getSession(task.token);
     if (session) {
-      try {
-        await session.responder.fail(
+      Promise.resolve(
+        session.responder.fail(
           new Error(
             `Failed to start. Try again in ${Math.ceil(block.remainingMs / 1000)} seconds.`,
           ),
           session.responder.link?.(),
-        );
-      } catch {}
+        ),
+      ).catch(() => {});
     }
     closeSession(task.token);
   }

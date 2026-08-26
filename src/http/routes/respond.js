@@ -34,13 +34,17 @@ function parseFileType(raw) {
   return { fileName: sanitizeFileName(fileName), fileType };
 }
 
+function uploadKey(token, fileId) {
+  return `${token}:${fileId}`;
+}
+
 async function retrieveChunkedLogs(respondID, numSections, token) {
   logBot(
     "Respond Endpoint",
     `Retrieving chunked logs sections: ${numSections} for token: ${token}`,
   );
 
-  const result = await waitForUpload(respondID, numSections);
+  const result = await waitForUpload(uploadKey(token, respondID), numSections);
 
   if (result.success) {
     try {
@@ -85,7 +89,11 @@ function recordFile(session, fileName, fileType, logs) {
 function registerRespondRoutes(app) {
   app.patch("/uploadChunk", requireSecret, async (req, res) => {
     try {
-      addChunk(req.body.token, req.body.index, req.body.chunk);
+      addChunk(
+        uploadKey(req.body.token, req.body.fileId),
+        req.body.index,
+        req.body.chunk,
+      );
       res.status(200).json({ message: "Chunk received" });
     } catch (error) {
       if (error instanceof ChunkRejected) {
@@ -118,6 +126,17 @@ function registerRespondRoutes(app) {
         });
       }
 
+      const numSections = req.body.sections;
+      if (
+        req.body.log &&
+        numSections &&
+        (!Number.isInteger(numSections) || numSections > MAX_SECTIONS)
+      ) {
+        return res.status(400).json({
+          message: `sections must be an integer <= ${MAX_SECTIONS}`,
+        });
+      }
+
       const responseContent = decodeBuffer(JSON.parse(req.body.data)).toString(
         "utf-8",
       );
@@ -126,7 +145,6 @@ function registerRespondRoutes(app) {
       const followUp = req.body.followUp;
       const runtime = req.body.runtime || 0;
       const serverNum = req.body.serverNum;
-      const numSections = req.body.sections;
       const respondID = req.body.fileId;
 
       let { fileName, fileType } = parseFileType(req.body.fileType);
@@ -135,11 +153,6 @@ function registerRespondRoutes(app) {
 
       if (logs) {
         if (numSections) {
-          if (!Number.isInteger(numSections) || numSections > MAX_SECTIONS) {
-            return res.status(400).json({
-              message: `sections must be an integer <= ${MAX_SECTIONS}`,
-            });
-          }
           const result = await retrieveChunkedLogs(
             respondID,
             numSections,

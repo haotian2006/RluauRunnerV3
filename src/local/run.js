@@ -132,23 +132,33 @@ async function runLocal(source, options = {}) {
     };
   }
 
-  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "luau-local-"));
-  const jobPath = path.join(tmpDir, "job.json");
+  let command, args;
+  try {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "luau-local-"));
+    const jobPath = path.join(tmpDir, "job.json");
 
-  fs.writeFileSync(
-    jobPath,
-    JSON.stringify({
-      source,
-      optimizationLevel: hot.optimizationLevel,
+    fs.writeFileSync(
+      jobPath,
+      JSON.stringify({
+        source,
+        optimizationLevel: hot.optimizationLevel,
 
-      codegenEnabled: allowCodegen && hot.native,
-      maxLines: LOCAL_MAX_LINES,
-      maxLineBytes: LOCAL_MAX_LINE_BYTES,
-    }),
-    "utf8",
-  );
+        codegenEnabled: allowCodegen && hot.native,
+        maxLines: LOCAL_MAX_LINES,
+        maxLineBytes: LOCAL_MAX_LINE_BYTES,
+      }),
+      "utf8",
+    );
 
-  const { command, args } = buildCommand(jobPath);
+    ({ command, args } = buildCommand(jobPath));
+  } catch (error) {
+    releaseSlot();
+    return {
+      ok: false,
+      timedOut: false,
+      error: error?.message || String(error),
+    };
+  }
 
   return new Promise((resolve) => {
     let child;
