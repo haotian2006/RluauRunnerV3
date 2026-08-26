@@ -1115,6 +1115,15 @@ local function poll()
 	task.spawn(handleRequest, data)
 end
 
+local function notifyClosing(reason)
+	pcall(Https.RequestAsync, Https, {
+		Url = IP .. "/retire",
+		Method = "POST",
+		Headers = makeHeaders(),
+		Body = encoder({ ServerId = ServerId, Reason = tostring(reason) }),
+	})
+end
+
 ScriptContext.Error:Connect(function(err, stackTrace)
 	local msg = err:match("RluauRunnerV3|PROCESS|[%w%-]+|:(.+)") or err
 	msg = msg:gsub("RluauRunnerV3|PROCESS|[%w%-]+|", "script")
@@ -1175,7 +1184,10 @@ end
 
 print(pcall(function()
 	game:BindToClose(function(reason: Enum.CloseReason)
-		sendMessageToAll("BindToClose Triggered! Session reached its 5 minute limit and will close soon!")
+		if reason ~= Enum.CloseReason.OutOfMemory then
+			notifyClosing(reason)
+		end
+		sendMessageToAll(`Server closed | reason: {tostring(reason)}`)
 		task.wait(1)
 		while next(Processes) do
 			task.wait()

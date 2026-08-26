@@ -16,6 +16,7 @@ const {
   getDispatchedTask,
   registerRobloxServer,
   reserveNextTask,
+  retireRobloxServer,
   state,
   touchRobloxServer,
 } = require("../../state");
@@ -101,6 +102,11 @@ function registerSessionRoutes(app) {
   app.post("/ping", requireSecret, (req, res) => {
     heartbeatServer(req.body.ServerId);
     res.json({ message: "Ping received" });
+  });
+
+  app.post("/retire", requireSecret, (req, res) => {
+    retireRobloxServer(req.body.ServerId);
+    res.json({ message: "Server retiring" });
   });
 
   app.post("/getInputs", requireSecret, async (req, res) => {

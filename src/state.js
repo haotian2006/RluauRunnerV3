@@ -76,6 +76,13 @@ function touchRobloxServer(serverId, now = Date.now()) {
   return server;
 }
 
+function retireRobloxServer(serverId) {
+  const server = RobloxServers[serverId];
+  if (!server) return null;
+  server.retiring = true;
+  return server;
+}
+
 function unregisterRobloxServer(serverId) {
   const server = RobloxServers[serverId];
   delete RobloxServers[serverId];
@@ -212,6 +219,7 @@ module.exports = {
   RobloxServers,
   registerRobloxServer,
   touchRobloxServer,
+  retireRobloxServer,
   unregisterRobloxServer,
   dispatchTask,
   reserveNextTask,

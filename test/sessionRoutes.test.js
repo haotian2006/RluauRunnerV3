@@ -176,3 +176,19 @@ test("an expired unhealthy worker is told to close instead of rejoining", async 
   delete ExecuteTasks.expiredTask;
   unregisterRobloxServer(serverId);
 });
+
+test("a worker that announces BindToClose is retired without outage handling", async () => {
+  const routes = routesForTest();
+  const serverId = `closing:${Date.now()}`;
+  registerRobloxServer(serverId);
+  touchRobloxServer(serverId);
+
+  await routes["/retire"]({ body: { ServerId: serverId } }, responseForTest());
+
+  assert.equal(RobloxServers[serverId].retiring, true);
+  const response = responseForTest();
+  await routes["/getNext"]({ body: { ServerId: serverId } }, response);
+  assert.equal(response.statusCode, 201);
+
+  unregisterRobloxServer(serverId);
+});
