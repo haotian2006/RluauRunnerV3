@@ -18,6 +18,8 @@ const {
 } = require("../config");
 
 const DISPLAY_NAME = "script.luau";
+const TOOL_TIMEOUT_MS = 10000;
+const KILL_GRACE_MS = 1000;
 
 function stripTempPaths(output, tmpDir, inputPath) {
   if (!output) return output;
@@ -57,13 +59,27 @@ async function execute(executablePath, code, args) {
     child.stdout.pipe(outputStream);
     child.stderr.pipe(outputStream);
 
+    let timedOut = false;
+    let killTimer = null;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill("SIGTERM");
+      killTimer = setTimeout(() => child.kill("SIGKILL"), KILL_GRACE_MS);
+    }, TOOL_TIMEOUT_MS);
+
     child.on("error", (err) => {
+      clearTimeout(timer);
+      if (killTimer) clearTimeout(killTimer);
       reject(err.code === "ENOENT" ? missingToolError(executablePath) : err);
     });
 
     child.on("close", (code) => {
+      clearTimeout(timer);
+      if (killTimer) clearTimeout(killTimer);
       outputStream.end(() => {
-        const output = fs.readFileSync(outputPath, "utf8");
+        const output = timedOut
+          ? "Timed out"
+          : fs.readFileSync(outputPath, "utf8");
 
         try {
           fs.unlinkSync(inputPath);
@@ -71,7 +87,10 @@ async function execute(executablePath, code, args) {
           fs.rmdirSync(tmpDir);
         } catch {}
 
-        resolve({ code, output: stripTempPaths(output, tmpDir, inputPath) });
+        resolve({
+          code: timedOut ? -1 : code,
+          output: stripTempPaths(output, tmpDir, inputPath),
+        });
       });
     });
   });
@@ -110,20 +129,34 @@ async function formatLuau(code) {
     child.stderr.on("data", (chunk) => {
       stderr += chunk;
     });
+
+    let timedOut = false;
+    let killTimer = null;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill("SIGTERM");
+      killTimer = setTimeout(() => child.kill("SIGKILL"), KILL_GRACE_MS);
+    }, TOOL_TIMEOUT_MS);
+
     child.on("error", (err) => {
+      clearTimeout(timer);
+      if (killTimer) clearTimeout(killTimer);
       reject(err.code === "ENOENT" ? missingToolError(PATH_TO_FORMATTER) : err);
     });
     child.on("close", (exitCode) => {
+      clearTimeout(timer);
+      if (killTimer) clearTimeout(killTimer);
       try {
-        const output =
-          exitCode !== 0
+        const output = timedOut
+          ? "Timed out"
+          : exitCode !== 0
             ? stripTempPaths(stderr, tmpDir, inputPath)
             : fs.readFileSync(inputPath, "utf8");
         try {
           fs.unlinkSync(inputPath);
           fs.rmdirSync(tmpDir);
         } catch {}
-        resolve({ code: exitCode, output });
+        resolve({ code: timedOut ? -1 : exitCode, output });
       } catch (err) {
         reject(err);
       }
