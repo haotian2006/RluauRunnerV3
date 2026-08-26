@@ -221,7 +221,7 @@ async function fallbackPendingTasksToLune() {
     runs.push(
       tryRunLocally(source, task.token, {
         actorKey,
-        allowCodegen: !task.isWeb,
+        allowCodegen: true,
         selection: { runtime: "lune", classification: null },
       }),
     );

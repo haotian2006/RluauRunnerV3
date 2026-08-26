@@ -162,6 +162,7 @@ function registerWebRoutes(app) {
       const ranLocally = await tryRunLocally(code, token, {
         actorKey,
         selection,
+        allowCodegen: true,
       });
       if (ranLocally || !getSession(token)) return;
       ExecuteTasks[taskId] = task;
