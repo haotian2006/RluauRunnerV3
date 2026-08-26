@@ -4,6 +4,8 @@ const PING_INTERVAL_MS = 20000;
 
 const ATTACH_DEADLINE_MS = 10000;
 
+const OUTPUT_CHAR_LIMIT = 100000;
+
 function sendSSE(res, event, data) {
   if (!res || res.writableEnded) return;
   res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
@@ -44,6 +46,8 @@ function createSseResponder(onClose) {
   }
 
   return {
+    outputCharLimit: OUTPUT_CHAR_LIMIT,
+
     attach(res) {
       stream = res;
       settleReady(true);

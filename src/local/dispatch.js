@@ -48,7 +48,12 @@ function formatEvent(event) {
   }
 }
 
-function finishOutput(lines, result, maxLines = null) {
+function finishOutput(
+  lines,
+  result,
+  maxLines = null,
+  maxLength = MAX_RESPONSE_LENGTH,
+) {
   if (result.error && !result.scriptErrored) {
     const color = result.timeoutKind === "yielding" ? ANSI_YELLOW : ANSI_RED;
     lines.push(`${color}${result.error}${ANSI_RESET}`);
@@ -62,12 +67,12 @@ function finishOutput(lines, result, maxLines = null) {
     }
   }
 
-  if (output.length <= MAX_RESPONSE_LENGTH) return output;
+  if (output.length <= maxLength) return output;
 
   const marker = "... [truncated]";
 
   const sliced = output
-    .slice(0, MAX_RESPONSE_LENGTH - marker.length)
+    .slice(0, maxLength - marker.length)
     .replace(/(?:\[[0-9;]*)?$/, "");
   return sliced + marker;
 }
@@ -122,6 +127,7 @@ async function tryRunLocally(
     return true;
   }
   const outputLineLimit = session.responder.outputLineLimit ?? null;
+  const outputCharLimit = session.responder.outputCharLimit ?? MAX_RESPONSE_LENGTH;
 
   const admissionError = localAdmissionError(actorKey);
   if (admissionError) {
@@ -152,7 +158,7 @@ async function tryRunLocally(
   let lastLiveOutput = "";
 
   function queueLiveUpdate() {
-    const output = finishOutput(lines, {}, outputLineLimit);
+    const output = finishOutput(lines, {}, outputLineLimit, outputCharLimit);
     if (!output || output === lastLiveOutput) return;
     lastLiveOutput = output;
 
@@ -218,7 +224,7 @@ async function tryRunLocally(
     if (!session) return true;
 
     await session.responder.deliver({
-      responseContent: finishOutput(lines, result, outputLineLimit),
+      responseContent: finishOutput(lines, result, outputLineLimit, outputCharLimit),
       fileMap: null,
       isLast: true,
       runtime: (Date.now() - startedAt) / 1000,

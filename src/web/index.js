@@ -1,5 +1,5 @@
 const { codeHash, getActorBlock } = require("../abuse");
-const { MAX_DATA_TO_SEND } = require("../config");
+const { MAX_DATA_TO_SEND, TRUST_PROXY } = require("../config");
 const { encodeZstd } = require("../chunks");
 const { closeSession, getSession, openSession } = require("../core/sessions");
 const {
@@ -57,6 +57,11 @@ function queueInput(token, value) {
 
 function releaseWebRun(token, timeoutId) {
   clearTimeout(timeoutId);
+  // Runs on every session teardown - explicit /stop and a bare browser
+  // disconnect alike - so a closed tab doesn't leave a Lune process or an
+  // already-dispatched Roblox task running for a client that's gone.
+  cancelLocalRun(token);
+  queueInput(token, "STOP_ALL_SESSIONS_PLS");
   const taskId = WebTasks.get(token);
   if (taskId) {
     delete ExecuteTasks[taskId];
@@ -80,7 +85,7 @@ const tooLarge = () => ({
 });
 
 function registerWebRoutes(app) {
-  app.set("trust proxy", 1);
+  app.set("trust proxy", TRUST_PROXY);
 
   app.post("/run", async (req, res) => {
     const { code } = req.body;
@@ -144,13 +149,24 @@ function registerWebRoutes(app) {
 
     res.json({ token });
 
-    void tryRunLocally(code, token, { actorKey, selection }).then(
-      (ranLocally) => {
-        if (ranLocally || !getSession(token)) return;
-        ExecuteTasks[taskId] = task;
-        WebTasks.set(token, taskId);
-      },
-    );
+    void (async () => {
+      const session = getSession(token);
+      if (!session) return;
+      await session.responder.waitUntilReady?.();
+      if (session.responder.hasStream?.() === false) {
+        closeSession(token);
+        return;
+      }
+      if (!getSession(token)) return;
+
+      const ranLocally = await tryRunLocally(code, token, {
+        actorKey,
+        selection,
+      });
+      if (ranLocally || !getSession(token)) return;
+      ExecuteTasks[taskId] = task;
+      WebTasks.set(token, taskId);
+    })();
   });
 
   app.post("/format", async (req, res) => {

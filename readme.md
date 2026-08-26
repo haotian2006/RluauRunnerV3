@@ -93,6 +93,7 @@ ENABLE_DISCORD=true(OPTIONAL, default true)
 ENABLE_WEB=false(OPTIONAL, default false)
 ENABLE_LOCAL_EXEC=false(OPTIONAL, default false)
 MAX_ROBLOX_WORKERS=4(OPTIONAL, default 4, per enabled profile)
+TRUST_PROXY=false(OPTIONAL, default false)
 FORM_ID=Google_Form_Id(OPTIONAL)
 FORM_ENTRY_NAME=entry.0000000000(OPTIONAL)
 FORM_ENTRY_USER_ID=entry.0000000000(OPTIONAL)
@@ -133,6 +134,14 @@ arbitrary Luau for anyone who can reach the port, with no authentication. When
 it is off those routes are never registered at all. With `ENABLE_DISCORD=false`
 the bot never logs in and `BOT_TOKEN` is not required, which is the setup for
 running the web runner alone.
+
+`TRUST_PROXY` defaults to **false**: without a real reverse proxy in front of
+the app, trusting `X-Forwarded-For` lets a direct client spoof it and rotate
+their apparent IP on every request, defeating the web runner's per-IP rate
+limiting and abuse tracking outright. Only set this (to a trusted hop count or
+proxy IP/CIDR - see [Express's `trust proxy` docs](https://expressjs.com/en/guide/behind-proxies.html))
+if you're actually running behind a reverse proxy that overwrites that header
+itself.
 
 ## Execution
 

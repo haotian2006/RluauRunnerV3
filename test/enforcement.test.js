@@ -52,6 +52,8 @@ test("web /run rejects Roblox execution while its Roblox key is blocked", async 
   const app = express();
   app.use(express.json());
   registerWebRoutes(app);
+
+  app.set("trust proxy", true);
   const server = await new Promise((resolve) => {
     const listening = app.listen(0, "127.0.0.1", () => resolve(listening));
   });

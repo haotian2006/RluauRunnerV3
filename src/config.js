@@ -129,6 +129,17 @@ function envNumber(name, fallback) {
   return value;
 }
 
+function loadTrustProxy() {
+  const raw = process.env.TRUST_PROXY;
+  if (raw === undefined || raw.trim() === "") return false;
+  const trimmed = raw.trim();
+  if (["0", "false", "no", "off"].includes(trimmed.toLowerCase())) return false;
+  const asNumber = Number(trimmed);
+  return Number.isFinite(asNumber) ? asNumber : trimmed;
+}
+
+const TRUST_PROXY = loadTrustProxy();
+
 const ENABLE_DISCORD = envFlag("ENABLE_DISCORD", true);
 const ENABLE_WEB = envFlag("ENABLE_WEB", false);
 
@@ -174,6 +185,7 @@ module.exports = {
   CALLBACK_URL,
   ENABLE_DISCORD,
   ENABLE_WEB,
+  TRUST_PROXY,
   missingTools,
 
   ENABLE_LOCAL_EXEC,
