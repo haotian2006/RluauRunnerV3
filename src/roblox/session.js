@@ -14,7 +14,6 @@ const { recordCrash } = require("../abuse");
 const { log, logBot } = require("../log");
 const { getProfiles } = require("../profiles");
 const {
-  CompilingTasks,
   ExecuteTasks,
   RobloxServers,
   SECRET_TOKEN,
@@ -25,7 +24,6 @@ const {
 } = require("../state");
 const { wait } = require("../util");
 const { closeSession, getSession } = require("../core/sessions");
-const { cleanupScriptButtons } = require("../discord/scriptButtons");
 const { tryRunLocally } = require("../local/dispatch");
 
 function bootstrapScript() {
@@ -153,26 +151,34 @@ async function startAnyProfile() {
   return false;
 }
 
-function failPendingTasks() {
-  Object.keys(ExecuteTasks).forEach((key) => {
-    const task = ExecuteTasks[key];
-    if (!task) return;
-    if (!CompilingTasks || !CompilingTasks[task.token]) return;
-    const [interaction] = CompilingTasks[task.token];
-    if (interaction) {
-      try {
-        interaction.editReply({
-          content: `Failed to start Roblox server.`,
-          ephemeral: true,
-        });
-      } catch (error) {}
-      delete ExecuteTasks[key];
-      clearTimeout(CompilingTasks[task.token]?.[5]);
-      cleanupScriptButtons(CompilingTasks[task.token]?.[7]);
-      closeSession(task.token);
-      delete CompilingTasks[task.token];
-    }
-  });
+async function failPendingTasks() {
+  const pending = Object.entries(ExecuteTasks);
+  const failures = [];
+
+  for (const [taskId, task] of pending) {
+    if (ExecuteTasks[taskId] !== task) continue;
+    delete ExecuteTasks[taskId];
+
+    failures.push(
+      (async () => {
+        const session = getSession(task.token);
+        if (!session) return;
+
+        let link = null;
+        try {
+          link = session.responder.link?.();
+        } catch {}
+
+        try {
+          await session.responder.fail(new Error("Failed to start."), link);
+        } finally {
+          closeSession(task.token);
+        }
+      })(),
+    );
+  }
+
+  await Promise.allSettled(failures);
 }
 
 function luneActorKey(actorKey) {
@@ -326,7 +332,7 @@ async function checkRobloxServer() {
           if (ENABLE_LOCAL_EXEC) {
             void fallbackPendingTasksToLune();
           } else {
-            failPendingTasks();
+            await failPendingTasks();
           }
         }
       }
@@ -337,6 +343,7 @@ async function checkRobloxServer() {
 
 module.exports = {
   checkRobloxServer,
+  failPendingTasks,
   fallbackPendingTasksToLune,
   luneActorKey,
   needsAdditionalWorker,

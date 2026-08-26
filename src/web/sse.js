@@ -56,7 +56,14 @@ function createSseResponder(onClose) {
       return ready;
     },
 
-    async deliver({ responseContent, fileMap, isLast, runtime, serverNum }) {
+    async deliver({
+      responseContent,
+      fileMap,
+      changedFileName,
+      isLast,
+      runtime,
+      serverNum,
+    }) {
       if (!stream) return;
 
       sendSSE(stream, "output", {
@@ -66,14 +73,13 @@ function createSseResponder(onClose) {
         serverNum,
       });
 
-      if (fileMap) {
-        for (const [, [data, fileType, fileName]] of fileMap) {
-          sendSSE(stream, "file", {
-            name: `${fileName}.${fileType}`,
-            type: fileType,
-            content: data.toString("base64"),
-          });
-        }
+      if (fileMap && changedFileName && fileMap.has(changedFileName)) {
+        const [data, fileType, fileName] = fileMap.get(changedFileName);
+        sendSSE(stream, "file", {
+          name: `${fileName}.${fileType}`,
+          type: fileType,
+          content: data.toString("base64"),
+        });
       }
 
       if (isLast) {

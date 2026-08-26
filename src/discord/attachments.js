@@ -75,12 +75,7 @@ async function getCodeFromContextMenu(interaction) {
   const regex = /```\w*\s*([\s\S]*?)\s*```/g;
   const codeBlocks = [...content.matchAll(regex)].map((m) => m[1].trim());
   if (attachment && attachment.url) {
-    let data = null;
-    try {
-      data = await checkAndGetAttachmentText(attachment);
-    } catch {
-      data = null;
-    }
+    const data = await checkAndGetAttachmentText(attachment);
 
     if (data) {
       content = data;
