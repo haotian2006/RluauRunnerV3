@@ -6,6 +6,15 @@
   "keywords": [],
   "author": "",
   "license": "ISC",
+  "scripts": {
+    "start": "node Main.js",
+    "test": "node --test",
+    "register-commands": "node scripts/commands.js",
+    "clear-commands": "node scripts/clearCommands.js",
+    "tunnel": "node scripts/generateTunnel.js",
+    "fetch-tools": "node scripts/fetch-tools.js",
+    "postinstall": "node scripts/fetch-tools.js"
+  },
   "dependencies": {
     "axios": "^1.11.0",
     "discord.js": "^14.21.0",

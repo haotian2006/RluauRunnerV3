@@ -1,4 +1,6 @@
-require("dotenv").config();
+require("dotenv").config({
+  path: require("path").join(__dirname, "..", ".env"),
+});
 const https = require("follow-redirects").https;
 
 const TOKEN = process.env.BOT_TOKEN;
@@ -112,12 +114,6 @@ const commands = [
     contexts: [0, 1, 2],
     type: 3,
   },
-  // { // re assemble using konstant BROKEN FOR NOW
-  //   name: "bytecodeK",
-  //   integration_types: [0,1],
-  //   contexts: [0, 1, 2],
-  //   type: 3,
-  // },
   {
     name: "bytecodeWOption",
     integration_types: [0, 1],
@@ -148,19 +144,15 @@ const commands = [
     contexts: [0, 1, 2],
     type: 3,
   },
-  // { // decompile using konstant BROKEN FOR NOW
-  //   name: "decompile",
-  //   integration_types: [0,1],
-  //   contexts: [0, 1, 2],
-  //   type: 3,
-  // },
 ];
 
 function httpsRequest(options, body) {
   return new Promise((resolve, reject) => {
     const req = https.request(options, (res) => {
       let data = "";
-      res.on("data", (chunk) => { data += chunk; });
+      res.on("data", (chunk) => {
+        data += chunk;
+      });
       res.on("end", () => resolve({ statusCode: res.statusCode, body: data }));
     });
     req.on("error", reject);
@@ -199,13 +191,13 @@ async function deregisterCommand(name) {
   if (delRes.statusCode === 204) {
     console.log(`Deregistered command: ${name}`);
   } else {
-    console.warn(`Failed to deregister "${name}": ${delRes.statusCode} ${delRes.body}`);
+    console.warn(
+      `Failed to deregister "${name}": ${delRes.statusCode} ${delRes.body}`,
+    );
   }
 }
 
 async function registerCommands() {
- 
-
   for (const command of commands) {
     const data = JSON.stringify(command);
 

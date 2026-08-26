@@ -139,3 +139,10 @@ dist
 yarn.lock
 pnpm-lock.yaml
 bun.lockb
+
+# Roblox execution profiles contain inline API keys
+profiles/*.json
+!profiles/*.json.template
+
+# Tool binaries, fetched by scripts/fetch-tools.js
+bin/

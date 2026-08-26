@@ -1,0 +1,150 @@
+const LOCAL_GLOBALS = new Set([
+  // base
+  "assert",
+  "error",
+  "getmetatable",
+  "ipairs",
+  "next",
+  "pairs",
+  "pcall",
+  "print",
+  "rawequal",
+  "rawget",
+  "rawlen",
+  "rawset",
+  "select",
+  "setmetatable",
+  "tonumber",
+  "tostring",
+  "type",
+  "typeof",
+  "unpack",
+  "warn",
+  "xpcall",
+  // libraries
+  "bit32",
+  "buffer",
+  "collectgarbage",
+  "coroutine",
+  "debug",
+  "math",
+  "newproxy",
+  "os",
+  "setfenv",
+  "string",
+  "table",
+  "task",
+  "utf8",
+  "vector",
+  "_G",
+  // Lune-only, so these cannot route to Roblox.
+  "serde",
+  "regex",
+  "datetime",
+]);
+
+// require/getfenv/loadstring are real Luau builtins, so luau-analyze never
+// reports them as "unknown globals" - the classifier's normal detection
+// can't see them at all. They're checked separately, via the AST, in
+// router.js. Sandbox execution keeps them nil regardless (see
+// sandbox.luau's DENIED_GLOBALS), this only affects auto-routing.
+const LUNE_DENIED_GLOBALS = new Set(["require", "getfenv", "loadstring"]);
+
+const ROBLOX_GLOBALS = new Set([
+  "game",
+  "workspace",
+  "script",
+  "shared",
+  "plugin",
+  "Instance",
+  "Enum",
+  "Vector2",
+  "Vector3",
+  "Vector2int16",
+  "Vector3int16",
+  "CFrame",
+  "Color3",
+  "ColorSequence",
+  "ColorSequenceKeypoint",
+  "NumberRange",
+  "NumberSequence",
+  "NumberSequenceKeypoint",
+  "BrickColor",
+  "UDim",
+  "UDim2",
+  "Rect",
+  "Ray",
+  "Region3",
+  "Region3int16",
+  "TweenInfo",
+  "PhysicalProperties",
+  "Faces",
+  "Axes",
+  "Random",
+  "DateTime",
+  "OverlapParams",
+  "RaycastParams",
+  "Font",
+  "PathWaypoint",
+  "DockWidgetPluginGuiInfo",
+  "settings",
+  "stats",
+  "UserSettings",
+  "PluginManager",
+  "DebuggerManager",
+  "version",
+  "printidentity",
+  "elapsedTime",
+  "tick",
+  "time",
+  "wait",
+  "delay",
+  "spawn",
+  "gcinfo",
+  "getfenv",
+  "require",
+  "loadstring",
+]);
+
+const BOT_GLOBALS = new Set([
+  // LuauBot.luau
+  "io",
+  "discord",
+  "log",
+  "colorstring",
+  "println",
+  "user",
+  "thread",
+  "setenvkey",
+  "TIMESTAMP",
+  "OUTPUT_LOGS",
+  "TIMEOUT",
+  "_execute",
+  "native",
+  "optimize",
+  "bench",
+  "Image",
+  "misc",
+  "etable",
+  "PacketSizeCounter",
+  "runpy",
+  "newpy",
+  "ask",
+  "matchcodeblock",
+  "GLOBAL",
+]);
+
+function classifyGlobal(name) {
+  if (LOCAL_GLOBALS.has(name)) return null;
+  if (ROBLOX_GLOBALS.has(name)) return "roblox";
+  if (BOT_GLOBALS.has(name)) return "bot";
+  return "unknown";
+}
+
+module.exports = {
+  LOCAL_GLOBALS,
+  LUNE_DENIED_GLOBALS,
+  ROBLOX_GLOBALS,
+  BOT_GLOBALS,
+  classifyGlobal,
+};

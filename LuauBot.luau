@@ -2,7 +2,9 @@ local IP = ""
 local SecretToken = ""
 local POLL_RATE = 1000 --ms
 local DEFAULT_TIMEOUT = 25 -- seconds
-local MAX_STR_HEIGHT = 25
+local EXECUTION_SETTLE_DELAY = 1 -- seconds, excluded from displayed runtime
+local MAX_STR_HEIGHT = 25 -- Discord embeds are small
+local MAX_STR_HEIGHT_WEB = 100 -- a browser can show far more
 local MAX_RESPONSES_BEFORE_TIMEOUT = 50
 local FILE_CHUNK_SIZE = 1024 * 90 -- 90 KB
 local MAX_FILE_SIZE = 10 * 1024 * 1024 -- 10 MB
@@ -11,10 +13,15 @@ local MAX_WRITE_FILES = 8 -- max files queued via io.writefile
 --[[
 	Takes in the number of responses sent so far and returns how often should the next update be sent.
 ]]
-local function UPDATE_INTERVAL_SCALE(count)
+local function UPDATE_INTERVAL_SCALE(count, isweb)
 	if count <= 10 then
 		return 0.1
-	elseif count <= 25 then
+	end
+	-- Discord rate limits edits; the web stream has no such cost.
+	if isweb then
+		return 0.25
+	end
+	if count <= 25 then
 		return 0.25
 	elseif count <= 35 then
 		return 0.5
@@ -79,9 +86,10 @@ local function createText(text, color)
 	return `[0;37m{text}[0m`
 end
 
-local function truncateArray(inputArray)
-	if #inputArray > MAX_STR_HEIGHT then
-		local startLine = #inputArray - MAX_STR_HEIGHT + 1
+local function truncateArray(inputArray, maxHeight)
+	maxHeight = maxHeight or MAX_STR_HEIGHT
+	if #inputArray > maxHeight then
+		local startLine = #inputArray - maxHeight + 1
 		local truncatedLines = {}
 		for i = startLine, #inputArray do
 			table.insert(truncatedLines, inputArray[i])
@@ -93,14 +101,15 @@ local function truncateArray(inputArray)
 	end
 end
 
-local function truncateString(inputString)
+local function truncateString(inputString, maxHeight)
+	maxHeight = maxHeight or MAX_STR_HEIGHT
 	local lines = {}
 	for line in inputString:gsub("\r", "\n"):gmatch("([^\n]*)\n?") do
 		table.insert(lines, line)
 	end
 
-	if #lines > MAX_STR_HEIGHT then
-		local startLine = #lines - MAX_STR_HEIGHT + 1
+	if #lines > maxHeight then
+		local startLine = #lines - maxHeight + 1
 		local truncatedLines = {}
 		for i = startLine, #lines do
 			table.insert(truncatedLines, lines[i])
@@ -185,9 +194,10 @@ end
 
 local SendingChunks = {}
 local FinishedInteractions = {}
-local function sendFileInChunks(token, data)
+local WebTokens = {} -- runs with no Discord message cap
+local function sendFileInChunks(interactionToken, fileId, data)
 	local numChunks = math.ceil(#data / FILE_CHUNK_SIZE)
-	SendingChunks[token] = true
+	SendingChunks[interactionToken] = true
 	task.spawn(function()
 		for i = 1, numChunks do
 			local chunk = data:sub((i - 1) * FILE_CHUNK_SIZE + 1, i * FILE_CHUNK_SIZE)
@@ -196,7 +206,8 @@ local function sendFileInChunks(token, data)
 				Method = "PATCH",
 				Headers = makeHeaders(),
 				Body = Https:JSONEncode({
-					token = token,
+					token = interactionToken,
+					fileId = fileId,
 					chunk = chunk,
 					index = i - 1,
 				}),
@@ -204,7 +215,7 @@ local function sendFileInChunks(token, data)
 			attemptRequest(0.5, 5, Https.RequestAsync, Https, requestData)
 			task.wait(0.1)
 		end
-		SendingChunks[token] = nil
+		SendingChunks[interactionToken] = nil
 	end)
 	return numChunks
 end
@@ -226,7 +237,8 @@ local function respondToInteraction(interactionToken, responseContent, logs, awa
 	local url = IP .. "/respond"
 	local headers = makeHeaders()
 
-	if #responseContent > 1900 then
+	-- Discord messages cap out; the web stream renders whatever it is sent.
+	if not WebTokens[interactionToken] and #responseContent > 1900 then
 		responseContent = responseContent:sub(1, 1900 - 10) .. "... [truncated]"
 	end
 	local fileId = FileIds
@@ -234,7 +246,7 @@ local function respondToInteraction(interactionToken, responseContent, logs, awa
 	if logs and logs ~= "" then
 		logs = encode(logs)
 		if #logs > 10000 and #logs < MAX_FILE_SIZE then
-			sections = sendFileInChunks(fileId, logs)
+			sections = sendFileInChunks(interactionToken, fileId, logs)
 			logs = encode("[Log too large to send]")
 		elseif #logs >= MAX_FILE_SIZE then
 			logs = encode("[Log exceeded maximum size]")
@@ -312,7 +324,7 @@ local function executeCode(id, code, env, thread, delay)
 		`local _ = coroutine.running();task.spawn(function()local _c = {"{}"}local _=_ while coroutine.status(_) ~= 'dead' do {checks} task.wait();end;end);`
 	local header = #fs == 0 and "" or (table.concat(fs, "\n") .. "\n")
 	local src =
-		`{header}return function(imports){imports}{updates}return function() local _=(function (...) --[[START OF CODE]] {code}\n--[[END OF CODE]]\nend)()\n\n\t\t\ntask.wait({delay or 1})\n\tend\nend`
+		`{header}return function(imports){imports}{updates}return function() local _=(function (...) --[[START OF CODE]] {code}\n--[[END OF CODE]]\nend)()\n\n\t\t\ntask.wait({delay or EXECUTION_SETTLE_DELAY})\n\tend\nend`
 
 	local pass, fx = pcall(function()
 		m.Source = src
@@ -436,6 +448,14 @@ local function runCode(compCode, data)
 	thread.blocked = false
 	local userid = data.userId
 	local isCommand = data.isCommand
+	-- Per task, not per session: one session serves both front ends. A local,
+	-- not a `thread` field: env.thread is given to user code and is not frozen.
+	local isweb = data.isWeb == true
+	if isweb then
+		WebTokens[data.token] = true
+	end
+	thread.isweb = isweb -- informational for LoadEnv; nothing below trusts it
+	local maxHeight = isweb and MAX_STR_HEIGHT_WEB or MAX_STR_HEIGHT
 	local runningThreads = {}
 
 	local function wrapThread(fx)
@@ -512,6 +532,7 @@ local function runCode(compCode, data)
 	thread.followUp = false
 	thread.files = {} -- ordered array of {data, fileType}
 	thread.filesByKey = {} -- map fileType -> index for dedup
+	thread.buttonCallbacks = {} -- map Discord button id -> BindableEvent
 	local parsedInputs = {}
 	env.io = {
 		read = function()
@@ -534,6 +555,7 @@ local function runCode(compCode, data)
 			local noTimeStamp = (env :: any).TIMESTAMP == false
 			table.insert(output, noTimeStamp and text or string.format(`[%.3f] %s\n`, time, text))
 		end,
+		-- Deprecated: delivery is a Discord concern, use discord.followUpNext().
 		followupnext = function()
 			thread.followUp = true
 		end,
@@ -590,6 +612,8 @@ local function runCode(compCode, data)
 		return f, e
 	end
 
+	-- Discord clears colour at each newline but not mid-line, so a fragment
+	-- concatenated into a longer line bleeds without this reset.
 	env.colorstring = function(text, color)
 		color = color or ""
 		return (colorsLower[color:lower()] or "") .. tostring(text) .. "\27[0m"
@@ -648,6 +672,123 @@ local function runCode(compCode, data)
 		)
 	end
 	local id = "RluauRunnerV3|PROCESS|" .. processID .. "|"
+
+	local function requestButton(action, buttonId, changes)
+		local body = {
+			token = data.token,
+			action = action,
+			buttonId = buttonId,
+			processId = processID,
+		}
+		for key, value in changes or {} do
+			body[key] = value
+		end
+
+		local success, response = attemptRequest(0.25, 3, Https.RequestAsync, Https, {
+			Url = IP .. "/button",
+			Method = "PATCH",
+			Headers = makeHeaders(),
+			Body = Https:JSONEncode(body),
+		})
+		if not success then
+			error(`Failed to reach the Discord button endpoint: {response}`, 3)
+		end
+		if not response.Success then
+			local message = `HTTP {response.StatusCode}`
+			local decoded, result = pcall(Https.JSONDecode, Https, response.Body)
+			if decoded and type(result) == "table" and type(result.message) == "string" then
+				message = result.message
+			end
+			error(`Failed to update Discord button: {message}`, 3)
+		end
+	end
+
+	local function option(options, upper, lower)
+		local value = options[upper]
+		if value == nil then
+			value = options[lower]
+		end
+		return value
+	end
+
+	local discord = {}
+	-- True when this run came from the web front end rather than Discord.
+	discord.isWeb = isweb
+
+	discord.button = function(options)
+		if isweb then
+			error("discord.button is only available for runs started from Discord", 2)
+		end
+		if type(options) == "string" then
+			options = { Label = options }
+		elseif type(options) ~= "table" then
+			error("discord.button expects a label or options table", 2)
+		end
+
+		local buttonId = Https:GenerateGUID(false)
+		local event = Instance.new("BindableEvent")
+		event.Name = "DiscordButton_" .. buttonId
+		local payload = {
+			label = option(options, "Label", "label"),
+			style = option(options, "Style", "style") or "Primary",
+		}
+		local disabled = option(options, "Disabled", "disabled")
+		local ownerOnly = option(options, "OwnerOnly", "ownerOnly")
+		if disabled ~= nil then
+			payload.disabled = disabled
+		end
+		if ownerOnly ~= nil then
+			payload.ownerOnly = ownerOnly
+		end
+
+		thread.buttonCallbacks[buttonId] = event
+		local created, createError = pcall(requestButton, "create", buttonId, payload)
+		if not created then
+			thread.buttonCallbacks[buttonId] = nil
+			event:Destroy()
+			error(createError, 2)
+		end
+
+		local destroyed = false
+		local handle = {
+			Clicked = event.Event,
+			Event = event.Event,
+		}
+		function handle:Update(changes)
+			if destroyed then
+				error("Cannot update a destroyed Discord button", 2)
+			end
+			if type(changes) ~= "table" then
+				error("DiscordButton:Update expects an options table", 2)
+			end
+			local update = {}
+			for _, name in { "Label", "Style", "Disabled", "OwnerOnly" } do
+				local value = option(changes, name, name:sub(1, 1):lower() .. name:sub(2))
+				if value ~= nil then
+					update[name:sub(1, 1):lower() .. name:sub(2)] = value
+				end
+			end
+			requestButton("update", buttonId, update)
+			return self
+		end
+		function handle:Destroy()
+			if destroyed then
+				return
+			end
+			requestButton("delete", buttonId)
+			destroyed = true
+			thread.buttonCallbacks[buttonId] = nil
+			event:Destroy()
+		end
+		return handle
+	end
+	-- Send the next response as a follow-up: ephemeral in a guild, a DM outside
+	-- one, so inputs can be sent without scrolling back to the original message.
+	discord.followUpNext = function()
+		thread.followUp = true
+	end
+
+	env.discord = table.freeze(discord)
 
 	env._execute = function(code)
 		local fx, err = loadstring(code, id)
@@ -731,10 +872,10 @@ local function runCode(compCode, data)
 	table.insert(runningThreads, thread.running)
 	task.wait(0.5)
 	local numOfResponses = 0
+	local lastSentFiles = {} -- {[fileType] = lastSentData}
 	thread.timeOutThread = task.spawn(function()
 		local waitTime = 0
 		local TIMEOUT = env.TIMEOUT
-		local lastSentFiles = {} -- {[fileType] = lastSentData}
 		while
 			(
 				(
@@ -745,7 +886,7 @@ local function runCode(compCode, data)
 			) and not thread.stopped
 		do
 			TIMEOUT = env.TIMEOUT
-			local outStr = table.concat(truncateArray(thread.output))
+			local outStr = table.concat(truncateArray(thread.output, maxHeight))
 			if outStr == "" then
 				outStr = "  "
 			end
@@ -757,7 +898,7 @@ local function runCode(compCode, data)
 				end
 			end
 			if lastOutput ~= outStr or hasNewFiles then
-				local truncated = truncateString(outStr)
+				local truncated = truncateString(outStr, maxHeight)
 				lastOutput = outStr
 				numOfResponses += 1
 				local followUp = thread.followUp
@@ -765,16 +906,16 @@ local function runCode(compCode, data)
 				local sentAny = false
 				for _, file in thread.files do
 					if lastSentFiles[file.fileType] ~= file.data then
-						lastSentFiles[file.fileType] = file.data
 						respondToInteraction(
 							data.token,
 							truncated,
 							file.data,
-							nil,
+							true,
 							file.fileType,
 							nil,
 							not sentAny and followUp or false
 						)
+						lastSentFiles[file.fileType] = file.data
 						sentAny = true
 					end
 				end
@@ -782,7 +923,7 @@ local function runCode(compCode, data)
 					respondToInteraction(data.token, truncated, "", nil, nil, nil, followUp)
 				end
 			end
-			waitTime += task.wait(UPDATE_INTERVAL_SCALE(numOfResponses))
+			waitTime += task.wait(UPDATE_INTERVAL_SCALE(numOfResponses, isweb))
 		end
 
 		local fileData = table.concat(thread.output)
@@ -794,12 +935,13 @@ local function runCode(compCode, data)
 		local shouldLog = (env :: any).OUTPUT_LOGS
 		if not sus then
 			local str = ((env :: any).TIMESTAMP ~= false) and string.format("[%.3f] ", os.clock() - start) or ""
-			if msg:find("Script timeout: exhausted allowed execution time") then
+			local errorMessage = if type(msg) == "table" then tableToString(msg) else tostring(msg)
+			if errorMessage:find("Script timeout: exhausted allowed execution time") then
 				table.insert(thread.output, createText(str .. "Script timeout: exhausted allowed execution time", 3))
 			else
-				local msg = msg:match("RluauRunnerV3|PROCESS|[%w%-]+|:(.+)") or msg
-				msg = msg:gsub("RluauRunnerV3|PROCESS|[%w%-]+|", "script")
-				table.insert(thread.output, createText(str .. msg, 3))
+				errorMessage = errorMessage:match("RluauRunnerV3|PROCESS|[%w%-]+|:(.+)") or errorMessage
+				errorMessage = errorMessage:gsub("RluauRunnerV3|PROCESS|[%w%-]+|", "script")
+				table.insert(thread.output, createText(str .. errorMessage, 3))
 			end
 		elseif (env :: any).TIMESTAMP ~= false then
 			table.insert(
@@ -811,7 +953,7 @@ local function runCode(compCode, data)
 			table.insert(thread.output, createText(`You can increase it by setting the "TIMEOUT" global`, 2))
 		end
 
-		local truncated = truncateString(table.concat(truncateArray(thread.output)))
+		local truncated = truncateString(table.concat(truncateArray(thread.output, maxHeight)), maxHeight)
 		local log
 		if shouldLog == true then
 			local id, name = data.userId, data.username
@@ -854,19 +996,30 @@ local function runCode(compCode, data)
 		if truncated == "" then
 			truncated = "No Output"
 		end
-		local time = os.clock() - thread.start
+		-- The generated wrapper deliberately stays alive for one second after the
+		-- user's code returns. Keep that behavior, but do not report it as user
+		-- execution time in the Discord/web completion footer.
+		local time = math.max(0, os.clock() - thread.start - EXECUTION_SETTLE_DELAY)
 		pcall(task.cancel, thread.timeOutThread)
 		stopAll()
 		task.wait(0.5)
+		for _, event in thread.buttonCallbacks do
+			pcall(event.Destroy, event)
+		end
+		table.clear(thread.buttonCallbacks)
 
 		for _, file in thread.files do
-			respondToInteraction(data.token, truncated, file.data, true, file.fileType, nil, false)
+			if lastSentFiles[file.fileType] ~= file.data then
+				respondToInteraction(data.token, truncated, file.data, true, file.fileType, nil, false)
+				lastSentFiles[file.fileType] = file.data
+			end
 		end
 
 		respondToInteraction(data.token, truncated, log or "", nil, log and "log.ansi", time, thread.followUp)
 
 		Processes[processID] = nil
 		ProcessesByUser[userid][processID] = nil
+		WebTokens[data.token] = nil
 		--// ![AFAIK] theres no way to fully cleanup a thread (this included sub-threads). If this was in a live environment I could execute it from a script and destroy it later but
 		--// for now we just have to keep the sub-threads running. Either way, this session only runs for a max of 5 mins.
 		--// 10/30/25, wrapped tasks and coroutine creations to be tracked and closed on script end.
@@ -876,20 +1029,7 @@ local function runCode(compCode, data)
 	return true
 end
 
-local function handleRequest(uuid)
-	local sus, data = pcall(function()
-		local res = Https:RequestAsync({
-			Url = IP .. "/get",
-			Method = "POST",
-			Headers = makeHeaders(),
-			Body = encoder({ TaskId = uuid }),
-		})
-		return res.Body
-	end)
-	if not sus then
-		return
-	end
-	local decodedData = Https:JSONDecode(data)
+local function handleRequest(decodedData)
 	local content = decodedData.content
 	if type(content) == "table" then
 		local pass, content_ = getContentFromChunks(content)
@@ -937,7 +1077,13 @@ local function handleInputs()
 				input = "[ERROR WHILE DECODING INPUT]: " .. input .. " " .. tableToString(content)
 			end
 			local isStop = input == "STOP_ALL_SESSIONS_PLS"
-			if not isStop then
+			if data.buttonId and data.targetProcessId then
+				local process = Processes[data.targetProcessId]
+				local callback = process and process.buttonCallbacks[data.buttonId]
+				if callback then
+					callback:Fire(data.clickUserId, data.clickUsername)
+				end
+			elseif not isStop then
 				for _, process in ProcessesByUser[id] or {} do
 					table.insert(process.inputs, input)
 				end
@@ -952,7 +1098,7 @@ end
 
 local function poll()
 	local res = Https:RequestAsync({
-		Url = IP .. "/getAll",
+		Url = IP .. "/getNext",
 		Method = "POST",
 		Headers = makeHeaders(),
 		Body = encoder({ ServerId = ServerId }),
@@ -961,13 +1107,12 @@ local function poll()
 		Closed = true
 		return
 	end
+	if res.StatusCode == 204 then
+		return
+	end
 
 	local data = Https:JSONDecode(res.Body)
-
-	for i, id in data do
-		task.spawn(handleRequest, id)
-		task.wait(0.1)
-	end
+	task.spawn(handleRequest, data)
 end
 
 ScriptContext.Error:Connect(function(err, stackTrace)
