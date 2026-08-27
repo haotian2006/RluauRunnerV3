@@ -56,8 +56,10 @@ async function execute(executablePath, code, args) {
 
     const child = spawn(executablePath, args);
 
-    child.stdout.pipe(outputStream);
-    child.stderr.pipe(outputStream);
+    // Both child streams share one destination. Neither pipe may close it on
+    // its own, because the other stream can still have buffered data to write.
+    child.stdout.pipe(outputStream, { end: false });
+    child.stderr.pipe(outputStream, { end: false });
 
     let timedOut = false;
     let killTimer = null;
@@ -66,6 +68,13 @@ async function execute(executablePath, code, args) {
       child.kill("SIGTERM");
       killTimer = setTimeout(() => child.kill("SIGKILL"), KILL_GRACE_MS);
     }, TOOL_TIMEOUT_MS);
+
+    outputStream.on("error", (err) => {
+      clearTimeout(timer);
+      if (killTimer) clearTimeout(killTimer);
+      child.kill("SIGKILL");
+      reject(err);
+    });
 
     child.on("error", (err) => {
       clearTimeout(timer);
