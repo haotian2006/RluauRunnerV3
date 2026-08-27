@@ -4,6 +4,7 @@ const { encodeZstd } = require("../chunks");
 const { closeSession, getSession, openSession } = require("../core/sessions");
 const {
   cancelLocalRun,
+  deliverLocalInputToToken,
   selectRuntime,
   tryRunLocally,
 } = require("../local/dispatch");
@@ -50,6 +51,7 @@ function clearAllPendingUploads(token) {
 }
 
 function queueInput(token, value) {
+  deliverLocalInputToToken(token, value);
   const uid = generateUUID();
   Inputs[uid] = { uid, id: token, input: value };
   setTimeout(() => delete Inputs[uid], INPUT_TTL_MS);

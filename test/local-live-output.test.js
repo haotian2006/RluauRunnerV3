@@ -4,7 +4,10 @@ const fs = require("fs");
 
 const { ENABLE_LOCAL_EXEC, PATH_TO_LUNE } = require("../src/config");
 const { openSession } = require("../src/core/sessions");
-const { tryRunLocally } = require("../src/local/dispatch");
+const {
+  deliverLocalInput,
+  tryRunLocally,
+} = require("../src/local/dispatch");
 
 test(
   "Lune delivers partial output while yielding",
@@ -96,5 +99,62 @@ test(
     assert.match(output, /\u001b\[0;33m1\u001b\[0m/);
     assert.match(output, /\u001b\[0;31m.*bad.*\u001b\[0m/);
     assert.doesNotMatch(output, /\[(?:warning|error)\]/i);
+  },
+);
+
+test(
+  "Lune writefile is delivered as a Discord attachment",
+  {
+    skip: !ENABLE_LOCAL_EXEC || !fs.existsSync(PATH_TO_LUNE),
+    timeout: 10_000,
+  },
+  async () => {
+    const token = `local-file:${Date.now()}`;
+    const deliveries = [];
+    openSession(token, {
+      async deliver(payload) {
+        deliveries.push(payload);
+      },
+      close() {},
+    });
+
+    await tryRunLocally('--!lune\nio.writefile("hello", "note.txt")', token, {
+      actorKey: `discord:test-${token}:lune`,
+    });
+
+    const fileDelivery = deliveries.find(
+      (delivery) => delivery.changedFileName === "note.txt",
+    );
+    assert.ok(fileDelivery);
+    assert.equal(fileDelivery.logs.toString("utf8"), "hello");
+    assert.equal(fileDelivery.fileMap.get("note.txt")[1], "txt");
+  },
+);
+
+test(
+  "Discord input is forwarded to a waiting Lune io.read",
+  {
+    skip: !ENABLE_LOCAL_EXEC || !fs.existsSync(PATH_TO_LUNE),
+    timeout: 10_000,
+  },
+  async () => {
+    const userId = `local-input-${Date.now()}`;
+    const token = `local-input-token:${Date.now()}`;
+    const deliveries = [];
+    openSession(token, {
+      async deliver(payload) {
+        deliveries.push(payload);
+      },
+      close() {},
+    });
+
+    const run = tryRunLocally("--!lune\nprint(io.read())", token, {
+      actorKey: `discord:${userId}:lune`,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    assert.equal(deliverLocalInput(userId, "from discord"), 1);
+    await run;
+
+    assert.match(deliveries.at(-1).responseContent, /from discord/);
   },
 );

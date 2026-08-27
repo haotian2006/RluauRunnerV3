@@ -111,6 +111,7 @@ async function runLocal(source, options = {}) {
     onEvent = () => {},
     onHeartbeat = () => {},
     onStarted = () => {},
+    onInputReady = () => {},
     beforeStart = () => null,
     timeoutMs = LOCAL_TIMEOUT_MS,
     heartbeatTimeoutMs = LOCAL_HEARTBEAT_TIMEOUT_MS,
@@ -181,7 +182,18 @@ async function runLocal(source, options = {}) {
   return new Promise((resolve) => {
     let child;
     try {
-      child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"] });
+      child = spawn(command, args, { stdio: ["pipe", "pipe", "pipe"] });
+      child.stdin.on("error", () => {});
+      try {
+        onInputReady((value) => {
+          if (!child.stdin.writable || child.stdin.destroyed) return false;
+          const payload = Buffer.isBuffer(value)
+            ? { kind: "buffer", hex: value.toString("hex") }
+            : { kind: "string", value: String(value ?? "") };
+          child.stdin.write(`${JSON.stringify(payload)}\n`, () => {});
+          return true;
+        });
+      } catch {}
       try {
         onStarted();
       } catch {}
@@ -291,6 +303,7 @@ async function runLocal(source, options = {}) {
       if (heartbeatTimer) clearTimeout(heartbeatTimer);
       if (killTimer) clearTimeout(killTimer);
       signal?.removeEventListener("abort", onAbort);
+      child.stdin.end();
       cleanup();
       releaseSlot();
       resolve(result);

@@ -28,6 +28,8 @@ local job: Job = serde.decode("json", fs.readFile(jobPath))
 
 local MAX_LINES = job.maxLines or 2000
 local MAX_LINE_BYTES = job.maxLineBytes or 4000
+local MAX_FILE_BYTES = 10 * 1024 * 1024
+local MAX_WRITE_FILES = 8
 
 local lineCount = 0
 local truncated = false
@@ -36,12 +38,34 @@ local function scrub(value: string): string
 	return (string.gsub(value, "[\128-\255]", "?"))
 end
 
-local function write(kind: string, value: string)
-	local ok, encoded = pcall(serde.encode, "json", { t = kind, v = value })
+local function writeEvent(event)
+	local ok, encoded = pcall(serde.encode, "json", event)
 	if not ok then
-		encoded = serde.encode("json", { t = kind, v = scrub(value) })
+		encoded = serde.encode("json", { t = event.t, v = scrub(tostring(event.v)) })
 	end
 	stdio.write(encoded .. "\n")
+end
+
+local function write(kind: string, value: string)
+	writeEvent({ t = kind, v = value })
+end
+
+local function encodeHex(value: string): string
+	local encoded = table.create(#value)
+	for index = 1, #value do
+		encoded[index] = string.format("%02x", string.byte(value, index))
+	end
+	return table.concat(encoded)
+end
+
+local function decodeHex(value: string): string
+	local decoded = buffer.create(math.floor(#value / 2))
+	local offset = 0
+	for index = 1, #value - 1, 2 do
+		buffer.writeu8(decoded, offset, tonumber(string.sub(value, index, index + 1), 16) or 0)
+		offset += 1
+	end
+	return buffer.tostring(decoded)
 end
 
 local function cutAtCharBoundary(text: string, limit: number): string
@@ -214,6 +238,53 @@ local environment: { [string]: any } = {
 		emit("warn", join(false, ...))
 	end,
 }
+
+local virtualFiles = {}
+local virtualFileOrder = {}
+
+environment.io = table.freeze({
+	read = function()
+		local line = stdio.readLine()
+		if line == nil or line == "" then
+			return line
+		end
+		local input = serde.decode("json", line)
+		if input.kind == "buffer" then
+			return decodeHex(input.hex or "")
+		end
+		return tostring(input.value or "")
+	end,
+	writefile = function(data, fileType)
+		fileType = fileType or "output.txt"
+		if type(data) == "buffer" then
+			data = buffer.tostring(data)
+		elseif type(data) ~= "string" then
+			error("Data must be a string or buffer for writefile", 2)
+		end
+		if #data > MAX_FILE_BYTES then
+			error("File exceeds the 10 MB writefile limit", 2)
+		end
+		if virtualFiles[fileType] == nil then
+			if #virtualFileOrder >= MAX_WRITE_FILES then
+				local oldest = table.remove(virtualFileOrder, 1)
+				virtualFiles[oldest] = nil
+			end
+			table.insert(virtualFileOrder, fileType)
+		end
+		virtualFiles[fileType] = data
+		writeEvent({ t = "file", name = fileType, hex = encodeHex(data) })
+	end,
+	readfile = function(fileType)
+		if fileType ~= nil then
+			return virtualFiles[fileType] or "", fileType
+		end
+		local first = virtualFileOrder[1]
+		if first ~= nil then
+			return virtualFiles[first], first
+		end
+		return "", "txt"
+	end,
+})
 
 for name, value in { typeof = typeof, buffer = buffer, vector = vector } do
 	if value ~= nil then

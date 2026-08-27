@@ -41,6 +41,7 @@ const LOCAL_GLOBALS = new Set([
   "serde",
   "regex",
   "datetime",
+  "io",
 ]);
 
 // require/getfenv/loadstring are real Luau builtins, so luau-analyze never
@@ -108,7 +109,6 @@ const ROBLOX_GLOBALS = new Set([
 
 const BOT_GLOBALS = new Set([
   // LuauBot.luau
-  "io",
   "discord",
   "log",
   "colorstring",

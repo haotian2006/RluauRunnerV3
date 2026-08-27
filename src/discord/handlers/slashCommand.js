@@ -19,7 +19,10 @@ const {
   docCodeStore,
 } = require("../../state");
 const { generateUUID, wait } = require("../../util");
-const { cancelLocalRun } = require("../../local/dispatch");
+const {
+  cancelLocalRun,
+  deliverLocalInput,
+} = require("../../local/dispatch");
 const { closeSession } = require("../../core/sessions");
 const { getResources, resourceDisplayName } = require("../resources");
 const { sendCompileRequestToRoblox } = require("../tasks");
@@ -81,6 +84,7 @@ async function handleInputCommand(interaction) {
     id: interaction.user.id,
     input: input,
   };
+  if (!isStop) deliverLocalInput(interaction.user.id, input);
 
   interaction.reply({
     content: `sent '${isStop ? "a stop command" : censorText(input)}'`,
