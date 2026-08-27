@@ -46,6 +46,7 @@ function createSseResponder(onClose) {
   }
 
   return {
+    isWeb: true,
     outputCharLimit: OUTPUT_CHAR_LIMIT,
 
     attach(res) {

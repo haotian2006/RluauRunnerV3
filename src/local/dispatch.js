@@ -1,5 +1,7 @@
 const {
   ENABLE_LOCAL_EXEC,
+  LOCAL_FORCED_TIMEOUT_MS,
+  LOCAL_TIMEOUT_MS,
   MAX_RESPONSE_FILES,
   SupportedFileTypes,
 } = require("../config");
@@ -161,6 +163,12 @@ async function selectRuntime(source) {
   };
 }
 
+function localTimeoutForSelection(selection) {
+  return selection?.classification?.forced
+    ? LOCAL_FORCED_TIMEOUT_MS
+    : LOCAL_TIMEOUT_MS;
+}
+
 /** Returns false when the caller should enqueue for Roblox instead. */
 async function tryRunLocally(
   source,
@@ -214,12 +222,15 @@ async function tryRunLocally(
     actorKey,
     pendingInputs: [],
     sendInput: null,
+    sendProtocolMessage: null,
   };
   localRunControllers.set(token, runState);
   const fileMap = new Map();
   let liveUpdateTimer = null;
   let liveDelivery = Promise.resolve();
+  let buttonDelivery = Promise.resolve();
   let lastLiveOutput = "";
+  let followUp = false;
 
   function queueLiveUpdate(changedFileName = null) {
     const output = finishOutput(lines, {}, outputLineLimit, outputCharLimit);
@@ -251,6 +262,8 @@ async function tryRunLocally(
     liveUpdateTimer = setInterval(queueLiveUpdate, LIVE_UPDATE_INTERVAL_MS);
     const result = await runLocal(source, {
       allowCodegen,
+      isWeb: session.responder.isWeb === true,
+      timeoutMs: localTimeoutForSelection(selected),
       signal: controller.signal,
       beforeStart() {
         return localAdmissionError(actorKey);
@@ -258,8 +271,9 @@ async function tryRunLocally(
       onStarted() {
         startLocalExecutionHealth(actorKey, executionId);
       },
-      onInputReady(sendInput) {
+      onInputReady(sendInput, sendProtocolMessage) {
         runState.sendInput = sendInput;
+        runState.sendProtocolMessage = sendProtocolMessage;
         for (const input of runState.pendingInputs.splice(0)) {
           sendInput(input);
         }
@@ -268,6 +282,37 @@ async function tryRunLocally(
         heartbeatLocalExecution(actorKey, executionId);
       },
       onEvent(event) {
+        if (event.t === "followup") {
+          followUp = true;
+          return;
+        }
+        if (event.t === "button") {
+          const activeSession = getSession(token);
+          if (!activeSession?.responder.updateButton) {
+            lines.push(
+              formatEvent({
+                t: "error",
+                v: "discord.button is only available for runs started from Discord",
+              }),
+            );
+            return;
+          }
+          buttonDelivery = buttonDelivery
+            .then(() =>
+              activeSession.responder.updateButton(event, (click) => {
+                runState.sendProtocolMessage?.({
+                  kind: "button",
+                  buttonId: click.buttonId,
+                  userId: click.userId,
+                  username: click.username,
+                });
+              }),
+            )
+            .catch((error) => {
+              lines.push(formatEvent({ t: "error", v: error.message }));
+            });
+          return;
+        }
         if (event.t === "file") {
           const data = Buffer.from(String(event.hex || ""), "hex");
           const changedFileName = recordLocalFile(fileMap, event.name, data);
@@ -279,7 +324,7 @@ async function tryRunLocally(
     });
     clearInterval(liveUpdateTimer);
     liveUpdateTimer = null;
-    await liveDelivery;
+    await Promise.all([liveDelivery, buttonDelivery]);
 
     if (result.admissionRejected) {
       session = getSession(token);
@@ -308,11 +353,11 @@ async function tryRunLocally(
       isLast: true,
       runtime: (Date.now() - startedAt) / 1000,
       serverNum: "Lune",
-      followUp: false,
+      followUp,
     });
   } catch (error) {
     if (liveUpdateTimer) clearInterval(liveUpdateTimer);
-    await liveDelivery;
+    await Promise.all([liveDelivery, buttonDelivery]);
     session = getSession(token);
     if (session) {
       await session.responder.fail(error, session.responder.link?.());
@@ -334,6 +379,7 @@ module.exports = {
   cancelLocalRun,
   deliverLocalInput,
   deliverLocalInputToToken,
+  localTimeoutForSelection,
   selectRuntime,
   tryRunLocally,
 };

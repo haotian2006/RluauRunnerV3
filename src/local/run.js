@@ -1,6 +1,7 @@
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const { randomUUID } = require("crypto");
 const { spawn } = require("child_process");
 
 const {
@@ -116,6 +117,7 @@ async function runLocal(source, options = {}) {
     timeoutMs = LOCAL_TIMEOUT_MS,
     heartbeatTimeoutMs = LOCAL_HEARTBEAT_TIMEOUT_MS,
     allowCodegen = false,
+    isWeb = false,
     signal = null,
   } = options;
 
@@ -165,6 +167,8 @@ async function runLocal(source, options = {}) {
         codegenEnabled: allowCodegen && hot.native,
         maxLines: LOCAL_MAX_LINES,
         maxLineBytes: LOCAL_MAX_LINE_BYTES,
+        isWeb,
+        processId: randomUUID(),
       }),
       "utf8",
     );
@@ -185,14 +189,20 @@ async function runLocal(source, options = {}) {
       child = spawn(command, args, { stdio: ["pipe", "pipe", "pipe"] });
       child.stdin.on("error", () => {});
       try {
-        onInputReady((value) => {
+        const sendMessage = (payload) => {
           if (!child.stdin.writable || child.stdin.destroyed) return false;
-          const payload = Buffer.isBuffer(value)
-            ? { kind: "buffer", hex: value.toString("hex") }
-            : { kind: "string", value: String(value ?? "") };
           child.stdin.write(`${JSON.stringify(payload)}\n`, () => {});
           return true;
-        });
+        };
+        onInputReady(
+          (value) =>
+            sendMessage(
+              Buffer.isBuffer(value)
+                ? { kind: "buffer", hex: value.toString("hex") }
+                : { kind: "string", value: String(value ?? "") },
+            ),
+          sendMessage,
+        );
       } catch {}
       try {
         onStarted();

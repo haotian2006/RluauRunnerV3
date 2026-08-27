@@ -63,8 +63,6 @@ Each Roblox place the bot can run code in is one file in `profiles/`. Copy
 | `priority` | Lower appears earlier in the rotation |
 | `enabled` | Set `false` to keep a profile on disk without using it |
 
-`profiles/*.json` is gitignored, because the API key is stored inline.
-
 For `apiKey` you need to create an API key in the Roblox developer hub with the
 permission `luau-execution-sessions` and Experience Operations of
 `universe.place.luau-execution-session:write`.
@@ -92,6 +90,8 @@ CALLBACK_URL=http://your-host:3000
 ENABLE_DISCORD=true(OPTIONAL, default true)
 ENABLE_WEB=false(OPTIONAL, default false)
 ENABLE_LOCAL_EXEC=false(OPTIONAL, default false)
+LOCAL_TIMEOUT_MS=30000(OPTIONAL, default 30000 / 30 seconds for automatically routed Lune scripts)
+LOCAL_FORCED_TIMEOUT_MS=60000(OPTIONAL, default 60000 / 1 minute for --!lune scripts)
 LOCAL_MAX_CONCURRENT=2(OPTIONAL, default 2, global cap on concurrent Lune runs)
 LOCAL_MEMORY_LIMIT_MB=256(OPTIONAL, default 256, Linux only)
 LOCAL_CPU_QUOTA_PERCENT=0(OPTIONAL, default 0/disabled, Linux only, needs systemd)

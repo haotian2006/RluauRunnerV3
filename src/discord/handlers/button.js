@@ -40,6 +40,14 @@ async function handleScriptButton(interaction) {
   }
 
   await interaction.deferUpdate();
+  if (typeof callback.onClick === "function") {
+    callback.onClick({
+      buttonId,
+      userId: interaction.user.id,
+      username: interaction.user.username,
+    });
+    return;
+  }
   const uid = generateUUID();
   Inputs[uid] = {
     uid,

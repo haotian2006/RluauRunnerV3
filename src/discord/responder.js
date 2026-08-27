@@ -9,7 +9,7 @@ const {
   liveAttachmentOptions,
 } = require("./embeds");
 const { getLinkFromData, retryDiscordOperation } = require("./reply");
-const { cleanupScriptButtons } = require("./scriptButtons");
+const { cleanupScriptButtons, updateScriptButton } = require("./scriptButtons");
 
 function createDiscordResponder(token) {
   function entry() {
@@ -17,6 +17,7 @@ function createDiscordResponder(token) {
   }
 
   return {
+    isWeb: false,
     // Matches the Roblox executor's visible line count. SSE has no limit.
     outputLineLimit: 24,
 
@@ -25,6 +26,10 @@ function createDiscordResponder(token) {
       if (!current) return null;
       const [interaction, originalInteraction] = current;
       return getLinkFromData(originalInteraction || interaction);
+    },
+
+    updateButton(body, onClick) {
+      return updateScriptButton(token, body, onClick);
     },
 
     async deliver({

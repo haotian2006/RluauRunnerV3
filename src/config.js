@@ -202,6 +202,7 @@ module.exports = {
   ENABLE_LOCAL_EXEC,
 
   LOCAL_TIMEOUT_MS: envNumber("LOCAL_TIMEOUT_MS", 30000),
+  LOCAL_FORCED_TIMEOUT_MS: envNumber("LOCAL_FORCED_TIMEOUT_MS", 60000),
   LOCAL_HEARTBEAT_TIMEOUT_MS: envNumber("LOCAL_HEARTBEAT_TIMEOUT_MS", 11000),
   // Enforced by ulimit on Linux only; ignored on Windows.
   LOCAL_MEMORY_LIMIT_MB: envNumber("LOCAL_MEMORY_LIMIT_MB", 256),

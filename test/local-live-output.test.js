@@ -4,10 +4,24 @@ const fs = require("fs");
 
 const { ENABLE_LOCAL_EXEC, PATH_TO_LUNE } = require("../src/config");
 const { openSession } = require("../src/core/sessions");
+const { classifyGlobal } = require("../src/local/keywords");
 const {
   deliverLocalInput,
+  localTimeoutForSelection,
   tryRunLocally,
 } = require("../src/local/dispatch");
+
+test("only forced Lune runs receive the one-minute timeout", () => {
+  assert.equal(
+    localTimeoutForSelection({ classification: { forced: true } }),
+    60_000,
+  );
+  assert.equal(
+    localTimeoutForSelection({ classification: { forced: false } }),
+    30_000,
+  );
+  assert.equal(localTimeoutForSelection({ runtime: "lune" }), 30_000);
+});
 
 test(
   "Lune delivers partial output while yielding",
@@ -156,5 +170,52 @@ test(
     await run;
 
     assert.match(deliveries.at(-1).responseContent, /from discord/);
+  },
+);
+
+test(
+  "Lune discord clicks and follow-ups use the responder bridge",
+  {
+    skip: !ENABLE_LOCAL_EXEC || !fs.existsSync(PATH_TO_LUNE),
+    timeout: 10_000,
+  },
+  async () => {
+    assert.equal(classifyGlobal("discord"), null);
+    const token = `local-button:${Date.now()}`;
+    const deliveries = [];
+    const buttonEvents = [];
+    openSession(token, {
+      isWeb: false,
+      async updateButton(event, onClick) {
+        buttonEvents.push(event);
+        if (event.action === "create") {
+          onClick({
+            buttonId: event.buttonId,
+            userId: "456",
+            username: "clicker",
+          });
+        }
+      },
+      async deliver(payload) {
+        deliveries.push(payload);
+      },
+      close() {},
+    });
+
+    await tryRunLocally(
+      'local button = discord.button("Go")\nlocal id, name = button.Clicked:Wait()\nprint(id, name)\ndiscord.followUpNext()\nbutton:Destroy()',
+      token,
+      {
+        actorKey: `discord:test-${token}:lune`,
+        selection: { runtime: "lune" },
+      },
+    );
+
+    assert.deepEqual(buttonEvents.map((event) => event.action), [
+      "create",
+      "delete",
+    ]);
+    assert.match(deliveries.at(-1).responseContent, /456\tclicker/);
+    assert.equal(deliveries.at(-1).followUp, true);
   },
 );

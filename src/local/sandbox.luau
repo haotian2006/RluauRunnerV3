@@ -16,6 +16,8 @@ type Job = {
 	codegenEnabled: boolean?,
 	maxLines: number?,
 	maxLineBytes: number?,
+	isWeb: boolean?,
+	processId: string?,
 }
 
 local jobPath = process.args[1]
@@ -241,19 +243,62 @@ local environment: { [string]: any } = {
 
 local virtualFiles = {}
 local virtualFileOrder = {}
+local inputQueue = {}
+local buttonDispatchers = {}
+local protocolClosed = false
+local protocolReading = false
+
+local function decodeProtocolInput(input)
+	if input.kind == "buffer" then
+		return decodeHex(input.hex or "")
+	end
+	return tostring(input.value or "")
+end
+
+local function pumpProtocol()
+	while protocolReading and not protocolClosed do
+		task.wait()
+	end
+	if protocolClosed then
+		return
+	end
+	protocolReading = true
+	local readOk, line = pcall(stdio.readLine)
+	protocolReading = false
+	if not readOk or line == nil then
+		protocolClosed = true
+		return
+	end
+	if line == "" then
+		return
+	end
+	local ok, message = pcall(serde.decode, "json", line)
+	if ok and message.kind == "button" then
+		local dispatch = buttonDispatchers[message.buttonId]
+		if dispatch ~= nil then
+			dispatch(tostring(message.userId or ""), tostring(message.username or ""))
+		end
+	elseif ok then
+		if #inputQueue >= 32 then
+			table.remove(inputQueue, 1)
+		end
+		table.insert(inputQueue, decodeProtocolInput(message))
+	end
+end
+
+local function readDiscordInput()
+	while #inputQueue == 0 do
+		if protocolClosed then
+			return nil
+		end
+		pumpProtocol()
+		task.wait()
+	end
+	return table.remove(inputQueue, 1)
+end
 
 environment.io = table.freeze({
-	read = function()
-		local line = stdio.readLine()
-		if line == nil or line == "" then
-			return line
-		end
-		local input = serde.decode("json", line)
-		if input.kind == "buffer" then
-			return decodeHex(input.hex or "")
-		end
-		return tostring(input.value or "")
-	end,
+	read = readDiscordInput,
 	writefile = function(data, fileType)
 		fileType = fileType or "output.txt"
 		if type(data) == "buffer" then
@@ -333,16 +378,291 @@ local dataModel = roblox.Instance.new("DataModel")
 environment.game = dataModel
 environment.workspace = dataModel:GetService("Workspace")
 
--- Kept nil regardless of source classification, since --!lune forces a
--- script straight to Lune and skips the classifier's global check entirely.
--- require/loadstring hand back the real ambient environment to anything
--- they load (verified); getfenv(0) hands back _G, which still has a live
--- require in it even after this shadowing (verified) - so it has to go too.
-local DENIED_GLOBALS = {
-	"require",
-	"loadstring",
-	"getfenv",
+-- Explicit allowlist: do not expose getAuthCookie, host Studio paths, or any
+-- capabilities added to @lune/roblox by a future Lune update by default.
+local sandboxRoblox = {}
+for _, name in ROBLOX_DATATYPES do
+	sandboxRoblox[name] = (roblox :: any)[name]
+end
+for _, name in {
+	"deserializePlace",
+	"deserializeModel",
+	"serializePlace",
+	"serializeModel",
+	"getReflectionDatabase",
+	"implementProperty",
+	"implementMethod",
+} do
+	sandboxRoblox[name] = (roblox :: any)[name]
+end
+sandboxRoblox = table.freeze(sandboxRoblox)
+
+local sandboxStdio = table.freeze({
+	write = function(value)
+		emit("out", tostring(value))
+	end,
+	ewrite = function(value)
+		emit("warn", tostring(value))
+	end,
+	format = function(...)
+		return join(true, ...)
+	end,
+	readLine = readDiscordInput,
+	-- One Discord input or attachment is the complete available input payload.
+	readToEnd = readDiscordInput,
+	color = stdio.color,
+	style = stdio.style,
+})
+
+local buttonCount = 0
+local processId = job.processId or "lune"
+
+local function createButtonSignal(buttonId)
+	local waitQueue = {}
+	local connections = {}
+
+	local function waitFor(queue)
+		while #queue == 0 do
+			if protocolClosed then
+				return nil
+			end
+			pumpProtocol()
+			task.wait()
+		end
+		local click = table.remove(queue, 1)
+		return click.userId, click.username
+	end
+
+	local function connect(callback, once)
+		if type(callback) ~= "function" then
+			error("DiscordButton.Clicked:Connect expects a function", 3)
+		end
+		local queue = {}
+		local connection = { Connected = true }
+		local threadValue
+		function connection:Disconnect()
+			if not self.Connected then
+				return
+			end
+			self.Connected = false
+			connections[self] = nil
+			if threadValue ~= coroutine.running() then
+				pcall(sandboxTask.cancel, threadValue)
+			end
+		end
+		connections[connection] = queue
+		threadValue = sandboxTask.spawn(function()
+			while connection.Connected do
+				local userId, username = waitFor(queue)
+				if userId == nil and protocolClosed then
+					connection:Disconnect()
+					return
+				end
+				if once then
+					connection.Connected = false
+					connections[connection] = nil
+				end
+				local ok, callbackError = pcall(callback, userId, username)
+				if not ok then
+					emit("error", tostring(callbackError))
+				end
+				if once then
+					return
+				end
+			end
+		end)
+		return connection
+	end
+
+	local signal = {}
+	function signal:Wait()
+		return waitFor(waitQueue)
+	end
+	function signal:Connect(callback)
+		return connect(callback, false)
+	end
+	function signal:Once(callback)
+		return connect(callback, true)
+	end
+
+	local function fire(userId, username)
+		local click = { userId = userId, username = username }
+		if #waitQueue >= 32 then
+			table.remove(waitQueue, 1)
+		end
+		table.insert(waitQueue, click)
+		for _, queue in connections do
+			if #queue >= 32 then
+				table.remove(queue, 1)
+			end
+			table.insert(queue, click)
+		end
+	end
+
+	local function destroy()
+		buttonDispatchers[buttonId] = nil
+		for connection in connections do
+			connection:Disconnect()
+		end
+	end
+
+	buttonDispatchers[buttonId] = fire
+	return table.freeze(signal), destroy
+end
+
+local function option(options, upper, lower)
+	local value = options[upper]
+	if value == nil then
+		value = options[lower]
+	end
+	return value
+end
+
+local function buttonChanges(options, creating)
+	local changes = {}
+	local label = option(options, "Label", "label")
+	if creating or label ~= nil then
+		if type(label) ~= "string" or #label < 1 or #label > 80 then
+			error("Discord button label must contain 1-80 characters", 3)
+		end
+		changes.label = label
+	end
+	local style = option(options, "Style", "style")
+	if creating and style == nil then
+		style = "Primary"
+	end
+	if style ~= nil then
+		local styles = {
+			primary = "Primary",
+			secondary = "Secondary",
+			success = "Success",
+			danger = "Danger",
+		}
+		local normalized = if type(style) == "string" then styles[string.lower(style)] else nil
+		if normalized == nil then
+			error("Discord button style must be Primary, Secondary, Success, or Danger", 3)
+		end
+		changes.style = normalized
+	end
+	for _, name in { "Disabled", "OwnerOnly" } do
+		local lower = string.lower(string.sub(name, 1, 1)) .. string.sub(name, 2)
+		local value = option(options, name, lower)
+		if value ~= nil then
+			if type(value) ~= "boolean" then
+				error(`Discord button {name} must be a boolean`, 3)
+			end
+			changes[lower] = value
+		end
+	end
+	return changes
+end
+
+local discord = { isWeb = job.isWeb == true }
+
+discord.button = function(options)
+	if discord.isWeb then
+		error("discord.button is only available for runs started from Discord", 2)
+	end
+	if type(options) == "string" then
+		options = { Label = options }
+	elseif type(options) ~= "table" then
+		error("discord.button expects a label or options table", 2)
+	end
+	if buttonCount >= 25 then
+		error("A response can contain at most 25 buttons", 2)
+	end
+	buttonCount += 1
+	local buttonId = `{processId}-{buttonCount}`
+	local changes = buttonChanges(options, true)
+	local clicked, destroySignal = createButtonSignal(buttonId)
+	writeEvent({
+		t = "button",
+		action = "create",
+		buttonId = buttonId,
+		processId = processId,
+		label = changes.label,
+		style = changes.style,
+		disabled = changes.disabled,
+		ownerOnly = changes.ownerOnly,
+	})
+
+	local destroyed = false
+	local handle = { Clicked = clicked, Event = clicked }
+	function handle:Update(update)
+		if destroyed then
+			error("Cannot update a destroyed Discord button", 2)
+		end
+		if type(update) ~= "table" then
+			error("DiscordButton:Update expects an options table", 2)
+		end
+		local updateChanges = buttonChanges(update, false)
+		updateChanges.t = "button"
+		updateChanges.action = "update"
+		updateChanges.buttonId = buttonId
+		updateChanges.processId = processId
+		writeEvent(updateChanges)
+		return self
+	end
+	function handle:Destroy()
+		if destroyed then
+			return
+		end
+		destroyed = true
+		destroySignal()
+		writeEvent({
+			t = "button",
+			action = "delete",
+			buttonId = buttonId,
+			processId = processId,
+		})
+	end
+	return table.freeze(handle)
+end
+
+discord.followUpNext = function()
+	writeEvent({ t = "followup" })
+end
+
+environment.discord = table.freeze(discord)
+
+local requireModules = {
+	["@lune/datetime"] = environment.datetime,
+	["@lune/regex"] = environment.regex,
+	["@lune/roblox"] = sandboxRoblox,
+	["@lune/serde"] = environment.serde,
+	["@lune/stdio"] = sandboxStdio,
+	["@lune/task"] = sandboxTask,
 }
+
+local compileSandboxed
+
+environment.require = function(name)
+	if type(name) ~= "string" then
+		error("require expects a module name string", 2)
+	end
+	local module = requireModules[name]
+	if module == nil then
+		if name == "@lune/fs" then
+			error("module '@lune/fs' is not enabled in this sandbox; use the io global instead", 2)
+		end
+		error(`module '{name}' is not enabled in this sandbox`, 2)
+	end
+	return module
+end
+
+environment.getfenv = function(_target)
+	return environment
+end
+
+environment.loadstring = function(source, chunkName)
+	if type(source) ~= "string" then
+		error("loadstring expects source code as a string", 2)
+	end
+	if chunkName ~= nil and type(chunkName) ~= "string" then
+		error("loadstring expects the chunk name to be a string", 2)
+	end
+	return compileSandboxed(source, chunkName)
+end
 
 local importNames = {}
 for name in environment do
@@ -359,20 +679,39 @@ end
 local prelude = `return function(imports) local {table.concat(importNames, ", ")} = {table.concat(
 	importAssignments,
 	", "
-)}; local {table.concat(DENIED_GLOBALS, ", ")}; return function() `
+)}; return function() `
 
-local compiled = luau.compile(prelude .. job.source .. "\nend\nend", {
-	optimizationLevel = job.optimizationLevel or 1,
-	debugLevel = 1,
-})
+compileSandboxed = function(source, chunkName, codegenEnabled)
+	local ok, compiledOrError = pcall(luau.compile, prelude .. source .. "\nend\nend", {
+		optimizationLevel = job.optimizationLevel or 1,
+		debugLevel = 1,
+	})
+	if not ok then
+		return nil, tostring(compiledOrError)
+	end
 
-local topLevel = luau.load(compiled, {
-	debugName = "script",
-	codegenEnabled = job.codegenEnabled or false,
-})
+	local loaded, topLevelOrError = pcall(luau.load, compiledOrError, {
+		debugName = chunkName or "loadstring",
+		codegenEnabled = codegenEnabled or false,
+	})
+	if not loaded then
+		return nil, tostring(topLevelOrError)
+	end
 
-local wrapper = topLevel()
-local chunk = wrapper(environment)
+	local wrapped, wrapperOrError = pcall(topLevelOrError)
+	if not wrapped then
+		return nil, tostring(wrapperOrError)
+	end
+	return wrapperOrError(environment)
+end
+
+table.freeze(environment)
+
+local chunk, compileError = compileSandboxed(job.source, "script", job.codegenEnabled)
+if chunk == nil then
+	emit("error", compileError)
+	process.exit(1)
+end
 
 local mainFinished = false
 local heartbeatThread = task.delay(0, function()

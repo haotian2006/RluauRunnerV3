@@ -42,14 +42,8 @@ const LOCAL_GLOBALS = new Set([
   "regex",
   "datetime",
   "io",
+  "discord",
 ]);
-
-// require/getfenv/loadstring are real Luau builtins, so luau-analyze never
-// reports them as "unknown globals" - the classifier's normal detection
-// can't see them at all. They're checked separately, via the AST, in
-// router.js. Sandbox execution keeps them nil regardless (see
-// sandbox.luau's DENIED_GLOBALS), this only affects auto-routing.
-const LUNE_DENIED_GLOBALS = new Set(["require", "getfenv", "loadstring"]);
 
 const ROBLOX_GLOBALS = new Set([
   "game",
@@ -143,7 +137,6 @@ function classifyGlobal(name) {
 
 module.exports = {
   LOCAL_GLOBALS,
-  LUNE_DENIED_GLOBALS,
   ROBLOX_GLOBALS,
   BOT_GLOBALS,
   classifyGlobal,
