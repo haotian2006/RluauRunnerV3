@@ -26,12 +26,13 @@ const HEARTBEAT_STALE_MS = 1500;
 let active = 0;
 const waiting = [];
 
-function acquireSlot(signal) {
+function acquireSlot(signal, queueIfBusy) {
   if (signal?.aborted) return Promise.resolve(false);
   if (active < LOCAL_MAX_CONCURRENT) {
     active += 1;
     return Promise.resolve(true);
   }
+  if (!queueIfBusy) return Promise.resolve("busy");
   return new Promise((resolve) => {
     const waiter = { resolve, signal, onAbort: null };
     waiter.onAbort = () => {
@@ -118,12 +119,21 @@ async function runLocal(source, options = {}) {
     heartbeatTimeoutMs = LOCAL_HEARTBEAT_TIMEOUT_MS,
     allowCodegen = false,
     isWeb = false,
+    queueIfBusy = true,
     signal = null,
   } = options;
 
   const hot = parseHotComments(source);
 
-  const acquired = await acquireSlot(signal);
+  const acquired = await acquireSlot(signal, queueIfBusy);
+  if (acquired === "busy") {
+    return {
+      ok: false,
+      timedOut: false,
+      luneBusy: true,
+      error: "All Lune execution slots are busy",
+    };
+  }
   if (!acquired || signal?.aborted) {
     if (acquired) releaseSlot();
     return {

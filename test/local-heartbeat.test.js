@@ -2,8 +2,13 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("fs");
 
-const { PATH_TO_LUNE } = require("../src/config");
-const { runLocal } = require("../src/local/run");
+const {
+  LOCAL_MAX_CONCURRENT,
+  PATH_TO_LUNE,
+} = require("../src/config");
+const { closeSession, hasSession, openSession } = require("../src/core/sessions");
+const { tryRunLocally } = require("../src/local/dispatch");
+const { queueDepth, runLocal } = require("../src/local/run");
 
 test("Lune rechecks admission after receiving a queue slot", async () => {
   const result = await runLocal("print(1)", {
@@ -15,6 +20,66 @@ test("Lune rechecks admission after receiving a queue slot", async () => {
   assert.equal(result.admissionRejected, true);
   assert.equal(result.error, "Queued execution is now blocked");
 });
+
+test(
+  "busy Lune slots decline automatic work but still queue forced work",
+  { skip: !fs.existsSync(PATH_TO_LUNE), timeout: 15_000 },
+  async () => {
+    const controllers = [];
+    const runs = [];
+    const started = [];
+
+    for (let index = 0; index < LOCAL_MAX_CONCURRENT; index += 1) {
+      const controller = new AbortController();
+      controllers.push(controller);
+      started.push(
+        new Promise((resolve) => {
+          runs.push(
+            runLocal("while true do task.wait() end", {
+              signal: controller.signal,
+              timeoutMs: 10_000,
+              onStarted: resolve,
+            }),
+          );
+        }),
+      );
+    }
+
+    try {
+      await Promise.all(started);
+
+      const busy = await runLocal("print(1)", { queueIfBusy: false });
+      assert.equal(busy.luneBusy, true);
+      assert.equal(queueDepth(), 0);
+
+      const fallbackToken = `busy-fallback:${Date.now()}`;
+      openSession(fallbackToken, { async deliver() {}, close() {} });
+      const ranLocally = await tryRunLocally("print(1)", fallbackToken, {
+        actorKey: `discord:busy-${Date.now()}:lune`,
+        selection: {
+          runtime: "lune",
+          classification: { forced: false },
+        },
+      });
+      assert.equal(ranLocally, false);
+      assert.equal(hasSession(fallbackToken), true);
+      closeSession(fallbackToken);
+
+      const queuedController = new AbortController();
+      const queued = runLocal("print(1)", {
+        queueIfBusy: true,
+        signal: queuedController.signal,
+      });
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      assert.equal(queueDepth(), 1);
+      queuedController.abort();
+      assert.equal((await queued).cancelled, true);
+    } finally {
+      controllers.forEach((controller) => controller.abort());
+      await Promise.all(runs);
+    }
+  },
+);
 
 test(
   "Lune identifies a non-yielding timeout as blocked",

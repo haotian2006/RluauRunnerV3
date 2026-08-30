@@ -31,7 +31,7 @@ async function sendCompileRequestToRoblox(
     components: [],
   });
 
-  const actorKey = `${baseActorKey}:${selection.runtime}`;
+  let actorKey = `${baseActorKey}:${selection.runtime}`;
   const block = getActorBlock(actorKey);
   if (block) {
     await interaction.editReply({
@@ -75,6 +75,25 @@ async function sendCompileRequestToRoblox(
   }
 
   if (!CompilingTasks[interaction.token]) return;
+
+  if (selection.runtime === "lune") {
+    actorKey = `${baseActorKey}:roblox`;
+    const fallbackBlock = getActorBlock(actorKey);
+    if (fallbackBlock) {
+      await interaction.editReply({
+        content: `Failed to start. Try again <t:${Math.ceil(fallbackBlock.blockedUntil / 1000)}:R>.`,
+        embeds: [],
+        components: [],
+      });
+      closeSession(interaction.token);
+      return;
+    }
+    await interaction.editReply({
+      content: null,
+      embeds: [createPendingResponseEmbed("roblox", interaction.user.id)],
+      components: [],
+    });
+  }
 
   ExecuteTasks[uuid] = {
     content: encodeZstd(code),

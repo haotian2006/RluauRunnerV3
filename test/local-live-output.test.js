@@ -8,6 +8,7 @@ const { classifyGlobal } = require("../src/local/keywords");
 const {
   deliverLocalInput,
   localTimeoutForSelection,
+  queueLuneWhenBusy,
   tryRunLocally,
 } = require("../src/local/dispatch");
 
@@ -21,6 +22,8 @@ test("only forced Lune runs receive the one-minute timeout", () => {
     30_000,
   );
   assert.equal(localTimeoutForSelection({ runtime: "lune" }), 30_000);
+  assert.equal(queueLuneWhenBusy({ classification: { forced: true } }), true);
+  assert.equal(queueLuneWhenBusy({ classification: { forced: false } }), false);
 });
 
 test(

@@ -169,6 +169,10 @@ function localTimeoutForSelection(selection) {
     : LOCAL_TIMEOUT_MS;
 }
 
+function queueLuneWhenBusy(selection) {
+  return selection?.classification?.forced === true;
+}
+
 /** Returns false when the caller should enqueue for Roblox instead. */
 async function tryRunLocally(
   source,
@@ -231,6 +235,7 @@ async function tryRunLocally(
   let buttonDelivery = Promise.resolve();
   let lastLiveOutput = "";
   let followUp = false;
+  let preserveSessionForRobloxFallback = false;
 
   function queueLiveUpdate(changedFileName = null) {
     const output = finishOutput(lines, {}, outputLineLimit, outputCharLimit);
@@ -264,6 +269,7 @@ async function tryRunLocally(
       allowCodegen,
       isWeb: session.responder.isWeb === true,
       timeoutMs: localTimeoutForSelection(selected),
+      queueIfBusy: queueLuneWhenBusy(selected),
       signal: controller.signal,
       beforeStart() {
         return localAdmissionError(actorKey);
@@ -326,6 +332,11 @@ async function tryRunLocally(
     liveUpdateTimer = null;
     await Promise.all([liveDelivery, buttonDelivery]);
 
+    if (result.luneBusy && !selected.classification?.forced) {
+      preserveSessionForRobloxFallback = true;
+      return false;
+    }
+
     if (result.admissionRejected) {
       session = getSession(token);
       if (session) {
@@ -369,7 +380,9 @@ async function tryRunLocally(
     }
     finishLocalExecutionHealth(actorKey, executionId);
     releaseLocalExecution(actorKey);
-    closeSession(token);
+    if (!preserveSessionForRobloxFallback) {
+      closeSession(token);
+    }
   }
 
   return true;
@@ -380,6 +393,7 @@ module.exports = {
   deliverLocalInput,
   deliverLocalInputToToken,
   localTimeoutForSelection,
+  queueLuneWhenBusy,
   selectRuntime,
   tryRunLocally,
 };

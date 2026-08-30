@@ -103,7 +103,7 @@ function registerWebRoutes(app) {
     }
 
     const selection = await selectRuntime(code);
-    const actorKey = `web:${anonIp}:${selection.runtime}`;
+    let actorKey = `web:${anonIp}:${selection.runtime}`;
     const block = getActorBlock(actorKey);
     if (block) {
       return res.status(429).json({
@@ -167,6 +167,20 @@ function registerWebRoutes(app) {
         allowCodegen: true,
       });
       if (ranLocally || !getSession(token)) return;
+      if (selection.runtime === "lune") {
+        actorKey = `web:${anonIp}:roblox`;
+        task.actorKey = actorKey;
+        const fallbackBlock = getActorBlock(actorKey);
+        if (fallbackBlock) {
+          await getSession(token)?.responder.fail(
+            new Error(
+              `Failed to start. Try again in ${Math.ceil(fallbackBlock.remainingMs / 1000)} seconds.`,
+            ),
+          );
+          closeSession(token);
+          return;
+        }
+      }
       ExecuteTasks[taskId] = task;
       WebTasks.set(token, taskId);
     })();
