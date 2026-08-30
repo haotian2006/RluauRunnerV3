@@ -209,6 +209,9 @@ async function tryRunLocally(
   }
 
   if (!acquireLocalExecution(actorKey)) {
+    if (!queueLuneWhenBusy(selected)) {
+      return false;
+    }
     await session.responder.fail(
       new Error("Too many concurrent Lune executions; try again shortly."),
       session.responder.link?.(),

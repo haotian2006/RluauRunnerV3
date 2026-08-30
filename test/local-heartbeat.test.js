@@ -6,6 +6,11 @@ const {
   LOCAL_MAX_CONCURRENT,
   PATH_TO_LUNE,
 } = require("../src/config");
+const {
+  LOCAL_MAX_PER_ACTOR,
+  acquireLocalExecution,
+  releaseLocalExecution,
+} = require("../src/abuse");
 const { closeSession, hasSession, openSession } = require("../src/core/sessions");
 const { tryRunLocally } = require("../src/local/dispatch");
 const { queueDepth, runLocal } = require("../src/local/run");
@@ -20,6 +25,57 @@ test("Lune rechecks admission after receiving a queue slot", async () => {
   assert.equal(result.admissionRejected, true);
   assert.equal(result.error, "Queued execution is now blocked");
 });
+
+test(
+  "per-user Lune capacity falls back unless the run is forced",
+  { skip: !fs.existsSync(PATH_TO_LUNE), timeout: 10_000 },
+  async () => {
+    const actorKey = `discord:actor-cap-${Date.now()}:lune`;
+    for (let index = 0; index < LOCAL_MAX_PER_ACTOR; index += 1) {
+      assert.equal(acquireLocalExecution(actorKey), true);
+    }
+
+    try {
+      const automaticToken = `actor-fallback:${Date.now()}`;
+      openSession(automaticToken, { async deliver() {}, close() {} });
+      const ranAutomatically = await tryRunLocally("print(1)", automaticToken, {
+        actorKey,
+        selection: {
+          runtime: "lune",
+          classification: { forced: false },
+        },
+      });
+      assert.equal(ranAutomatically, false);
+      assert.equal(hasSession(automaticToken), true);
+      closeSession(automaticToken);
+
+      const failures = [];
+      const forcedToken = `actor-forced:${Date.now()}`;
+      openSession(forcedToken, {
+        async fail(error) {
+          failures.push(error.message);
+        },
+        close() {},
+      });
+      const ranForced = await tryRunLocally("--!lune\nprint(1)", forcedToken, {
+        actorKey,
+        selection: {
+          runtime: "lune",
+          classification: { forced: true },
+        },
+      });
+      assert.equal(ranForced, true);
+      assert.deepEqual(failures, [
+        "Too many concurrent Lune executions; try again shortly.",
+      ]);
+      assert.equal(hasSession(forcedToken), false);
+    } finally {
+      for (let index = 0; index < LOCAL_MAX_PER_ACTOR; index += 1) {
+        releaseLocalExecution(actorKey);
+      }
+    }
+  },
+);
 
 test(
   "busy Lune slots decline automatic work but still queue forced work",
