@@ -153,7 +153,16 @@ async function startAnyProfile() {
 
 async function failTask(task, message) {
   const session = getSession(task.token);
-  if (!session) return;
+  if (!session) {
+    // Nothing left to reply to, so the user's embed keeps whatever it last
+    // showed - usually the pending one. Say so rather than vanishing.
+    logBot(
+      "Task Failure Dropped",
+      `"${message}" for token ${task.token} had no session; its embed is now stuck`,
+    );
+    return;
+  }
+  logBot("Task Failed", `${task.token}: ${message}`);
 
   let link = null;
   try {
@@ -183,6 +192,10 @@ async function failPendingTasks() {
 function reapRobloxServer(serverId) {
   const tasks = takeUnfinishedTasksForServer(serverId);
   unregisterRobloxServer(serverId);
+  logBot(
+    "Roblox Server Reaped",
+    `${serverId}: ${tasks.length} unfinished task(s) failed`,
+  );
 
   return Promise.allSettled(
     tasks.map((task) => failTask(task, "Roblox server stopped responding.")),
@@ -218,12 +231,38 @@ async function fallbackPendingTasksToLune() {
     }
 
     const actorKey = luneActorKey(task.actorKey);
+    // tryRunLocally returns false to mean "the caller should enqueue this for
+    // Roblox instead" - it happens whenever Lune is at capacity. The task was
+    // already pulled out of ExecuteTasks above, so dropping that answer loses
+    // the task outright: never run, never queued, never reported.
     runs.push(
       tryRunLocally(source, task.token, {
         actorKey,
         allowCodegen: true,
         selection: { runtime: "lune", classification: null },
-      }),
+      })
+        .then((handled) => {
+          if (handled) return;
+          if (!getSession(task.token)) {
+            logBot(
+              "Roblox Fallback",
+              `Lune declined task ${taskId} and its session is gone; dropping it`,
+            );
+            return;
+          }
+          ExecuteTasks[taskId] = task;
+          logBot(
+            "Roblox Fallback",
+            `Lune was busy, requeued task ${taskId} for Roblox`,
+          );
+        })
+        .catch(async (error) => {
+          logBot(
+            "Roblox Fallback",
+            `Lune run for task ${taskId} threw: ${error.message}`,
+          );
+          await failTask(task, `Fallback to Lune failed: ${error.message}`);
+        }),
     );
   }
 
@@ -285,11 +324,21 @@ async function checkRobloxServer() {
         now - server.startedAt > SERVER_RUN_TIME_MAX
       ) {
         server.retiring = true;
+        logBot(
+          "Roblox Server",
+          `${server.serverId} reached its ${SERVER_RUN_TIME_MAX / 1000}s ` +
+            `lifespan while idle; retiring`,
+        );
       }
 
       if (now - server.lastPing <= SERVER_PING_TIMEOUT) continue;
 
       if (server.retiring) {
+        logBot(
+          "Roblox Server",
+          `${server.serverId} retiring and past ping timeout; reaping ` +
+            `(held ${server.activeTaskIds.size} task(s))`,
+        );
         void reapRobloxServer(server.serverId);
         continue;
       }

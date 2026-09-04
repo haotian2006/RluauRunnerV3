@@ -1,5 +1,6 @@
 const crypto = require("crypto");
 const { closeSession, getSession } = require("./core/sessions");
+const { logBot } = require("./log");
 
 const state = {
   CallbackUrl: "",
@@ -107,6 +108,12 @@ function dispatchTask(uuid, serverId = state.RunningServer) {
     delete DispatchedTasks[uuid];
     releaseServerTask(entry?.serverId, uuid);
 
+    logBot(
+      "Roblox Handoff",
+      `task ${uuid} was claimed by ${entry?.serverId} but never responded ` +
+        `in ${DISPATCH_RETRY_MS / 1000}s`,
+    );
+
     if (retriedTasks.has(task)) {
       const session = getSession(task.token);
       if (session) {
@@ -125,6 +132,7 @@ function dispatchTask(uuid, serverId = state.RunningServer) {
 
     retriedTasks.add(task);
     ExecuteTasks[uuid] = task;
+    logBot("Roblox Handoff", `task ${uuid} requeued for another worker`);
   }, DISPATCH_RETRY_MS);
 
   DispatchedTasks[uuid] = {
@@ -133,6 +141,7 @@ function dispatchTask(uuid, serverId = state.RunningServer) {
     serverId,
     dispatchedAt: Date.now(),
   };
+  logBot("Roblox Handoff", `task ${uuid} claimed by ${serverId}`);
   return DispatchedTasks[uuid];
 }
 
@@ -156,11 +165,17 @@ function settleTasksForToken(token, finished = true) {
       clearTimeout(entry.timer);
       delete DispatchedTasks[uuid];
       if (!finished) {
+        // The retry timer is dropped here. From now on only a server reap can
+        // recover this task, so record where it went.
         ActiveRobloxTasks[uuid] = {
           ...entry,
           timer: null,
           startedAt: Date.now(),
         };
+        logBot(
+          "Roblox Handoff",
+          `task ${uuid} is running on ${entry.serverId}; retry timer cleared`,
+        );
       } else {
         releaseServerTask(entry.serverId, uuid);
       }

@@ -8,6 +8,7 @@ const {
 } = require("../../chunks");
 const { SERVER_RUN_TIME_MAX } = require("../../config");
 const { closeSession, getSession } = require("../../core/sessions");
+const { logBot } = require("../../log");
 const { getMaxWorkers } = require("../../profiles");
 const {
   ExecuteTasks,
@@ -34,6 +35,11 @@ async function reserveNextAllowedTask(serverId) {
     if (!block) return reserveNextTask(serverId);
 
     delete ExecuteTasks[taskId];
+    logBot(
+      "Roblox Handoff",
+      `task ${taskId} dropped from the queue: ${task.actorKey} is blocked ` +
+        `for another ${Math.ceil(block.remainingMs / 1000)}s`,
+    );
     const session = getSession(task.token);
     if (session) {
       Promise.resolve(
@@ -85,6 +91,10 @@ function registerSessionRoutes(app) {
     }
     const existing = RobloxServers[serverId];
     if (!existing && Object.keys(RobloxServers).length >= getMaxWorkers()) {
+      logBot(
+        "Roblox Server",
+        `${serverId} refused: pool already holds ${Object.keys(RobloxServers).length}/${getMaxWorkers()}`,
+      );
       return res.status(429).json({ message: "Worker pool is full" });
     }
 
@@ -93,6 +103,13 @@ function registerSessionRoutes(app) {
       state.PendingRobloxStarts.shift();
     }
     state.SERVER_NUMBERS += 1;
+    if (!existing) {
+      logBot(
+        "Roblox Server",
+        `${serverId} registered as Server #${state.SERVER_NUMBERS % SERVER_NUMBER_MODULO} ` +
+          `(${Object.keys(ExecuteTasks).length} task(s) queued)`,
+      );
+    }
     res.json({
       message: "Server started",
       id: state.SERVER_NUMBERS % SERVER_NUMBER_MODULO,

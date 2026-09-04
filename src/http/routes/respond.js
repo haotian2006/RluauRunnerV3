@@ -119,6 +119,11 @@ function registerRespondRoutes(app) {
 
       session = getSession(token);
       if (!session) {
+        logBot(
+          "Response Discarded",
+          `Roblox replied for token ${token} but its session is gone; ` +
+            `the user's embed keeps whatever it last showed`,
+        );
         if (req.body.finished) settleTasksForToken(token, true);
         return res.status(500).json({
           message: "Failed to deliver response",

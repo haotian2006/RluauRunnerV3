@@ -132,6 +132,9 @@ async function handleCompileCommand(interaction) {
     interaction.commandName,
     `Code length: ${code.length} characters`,
   );
+  console.log(
+    `User ${interaction.user.username} (${interaction.user.id}) invoked ${interaction.commandName} with code length: ${code.length} characters`,
+  );
 
   sendCompileRequestToRoblox(
     code,
