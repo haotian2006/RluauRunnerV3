@@ -102,9 +102,7 @@ local function emitLine(kind: string, text: string)
 	write(kind, text)
 end
 
--- io.write can leave a partial line buffered. Anything else reaching the host
--- has to push that out first, or output arrives in a different order than the
--- script produced it.
+-- io.write can leave a partial line buffered.
 local function flushPendingWrite()
 	if pendingWrite == "" then
 		return
@@ -115,7 +113,19 @@ local function flushPendingWrite()
 end
 
 local function emit(kind: string, text: string)
-	flushPendingWrite()
+	if pendingWrite ~= "" then
+		if kind == "out" then
+			-- The Roblox executor keeps one flat output buffer, so io.write
+			-- text with no trailing newline continues into whatever is printed
+			-- next instead of becoming a line of its own.
+			text = pendingWrite .. text
+			pendingWrite = ""
+		else
+			-- warn/error colour the whole event, so buffered plain text has to
+			-- leave first rather than be dragged inside the colour codes.
+			flushPendingWrite()
+		end
+	end
 	emitLine(kind, text)
 end
 
@@ -153,13 +163,32 @@ local function tableToString(value: { [any]: any }, indent: number?, lookup: { [
 	return result .. indentString .. "}\n"
 end
 
-local function join(formatTables: boolean, ...): string
-	local parts = table.create(select("#", ...))
-	for index = 1, select("#", ...) do
+local function renderArgs(formatTables: boolean, ...): ({ string }, number)
+	local count = select("#", ...)
+	local parts = table.create(count)
+	for index = 1, count do
 		local value = select(index, ...)
 		parts[index] = if formatTables and type(value) == "table" then tableToString(value) else tostring(value)
 	end
-	return table.concat(parts, "\t")
+	return parts, count
+end
+
+-- The Roblox executor builds print/warn output as `value .. " "` per
+-- argument, trailing space included, rather than joining with a separator.
+-- Match it exactly so a script's output reads the same on either runtime.
+local function join(formatTables: boolean, ...): string
+	local parts, count = renderArgs(formatTables, ...)
+	if count == 0 then
+		return ""
+	end
+	return table.concat(parts, " ") .. " "
+end
+
+-- stdio.format is a Lune API rather than one of the bot's globals, so it
+-- keeps the conventional form with no trailing space.
+local function formatArgs(...): string
+	local parts = renderArgs(true, ...)
+	return table.concat(parts, " ")
 end
 
 local function copyFrozen(source: any): any
@@ -456,7 +485,7 @@ local sandboxStdio = table.freeze({
 		emit("warn", tostring(value))
 	end,
 	format = function(...)
-		return join(true, ...)
+		return formatArgs(...)
 	end,
 	readLine = readDiscordInput,
 	-- One Discord input or attachment is the complete available input payload.
