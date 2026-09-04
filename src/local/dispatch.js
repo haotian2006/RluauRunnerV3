@@ -75,7 +75,8 @@ function parseLocalFileName(raw) {
     [fileName, fileType] = raw.split(".");
   }
   fileType =
-    typeof fileType === "string" && SupportedFileTypes.has(fileType.toLowerCase())
+    typeof fileType === "string" &&
+    SupportedFileTypes.has(fileType.toLowerCase())
       ? fileType.toLowerCase()
       : "ansi";
   fileName =
@@ -200,7 +201,8 @@ async function tryRunLocally(
     return true;
   }
   const outputLineLimit = session.responder.outputLineLimit ?? null;
-  const outputCharLimit = session.responder.outputCharLimit ?? MAX_RESPONSE_LENGTH;
+  const outputCharLimit =
+    session.responder.outputCharLimit ?? MAX_RESPONSE_LENGTH;
 
   const admissionError = localAdmissionError(actorKey);
   if (admissionError) {
@@ -231,21 +233,24 @@ async function tryRunLocally(
   // Last line of defence. Every stall found so far ended the same way: the
   // pending embed never changes and nothing anywhere records why. Whatever
   // else breaks, the user gets an answer and the journal gets a reason.
-  const stallWatchdog = setTimeout(() => {
-    if (terminalUpdateSent) return;
-    logBot(
-      "Lune Stall",
-      `${executionId} produced no terminal update after ${localTimeoutForSelection(selected) + TERMINAL_UPDATE_GRACE_MS}ms; forcing an error reply`,
-    );
-    const stalled = getSession(token);
-    if (!stalled) return;
-    Promise.resolve(
-      stalled.responder.fail(
-        new Error("Run stalled: the sandbox never reported a result."),
-        stalled.responder.link?.(),
-      ),
-    ).catch(() => {});
-  }, localTimeoutForSelection(selected) + TERMINAL_UPDATE_GRACE_MS);
+  const stallWatchdog = setTimeout(
+    () => {
+      if (terminalUpdateSent) return;
+      logBot(
+        "Lune Stall",
+        `${executionId} produced no terminal update after ${localTimeoutForSelection(selected) + TERMINAL_UPDATE_GRACE_MS}ms; forcing an error reply`,
+      );
+      const stalled = getSession(token);
+      if (!stalled) return;
+      Promise.resolve(
+        stalled.responder.fail(
+          new Error("Run stalled: the sandbox never reported a result."),
+          stalled.responder.link?.(),
+        ),
+      ).catch(() => {});
+    },
+    localTimeoutForSelection(selected) + TERMINAL_UPDATE_GRACE_MS,
+  );
   stallWatchdog.unref?.();
   const controller = new AbortController();
   const runState = {
@@ -319,6 +324,11 @@ async function tryRunLocally(
           followUp = true;
           return;
         }
+        if (event.t === "clear") {
+          lines.length = 0;
+          lastLiveOutput = "";
+          return;
+        }
         if (event.t === "button") {
           const activeSession = getSession(token);
           if (!activeSession?.responder.updateButton) {
@@ -389,7 +399,12 @@ async function tryRunLocally(
 
     terminalUpdateSent = true;
     await session.responder.deliver({
-      responseContent: finishOutput(lines, result, outputLineLimit, outputCharLimit),
+      responseContent: finishOutput(
+        lines,
+        result,
+        outputLineLimit,
+        outputCharLimit,
+      ),
       fileMap,
       isLast: true,
       runtime: (Date.now() - startedAt) / 1000,

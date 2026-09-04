@@ -36,6 +36,9 @@ local MAX_WRITE_FILES = 8
 local lineCount = 0
 local truncated = false
 
+local outputLog: { string } = {}
+local pendingWrite = ""
+
 local function scrub(value: string): string
 	return (string.gsub(value, "[\128-\255]", "?"))
 end
@@ -82,7 +85,7 @@ local function cutAtCharBoundary(text: string, limit: number): string
 	return string.sub(text, 1, cut)
 end
 
-local function emit(kind: string, text: string)
+local function emitLine(kind: string, text: string)
 	if truncated then
 		return
 	end
@@ -95,7 +98,25 @@ local function emit(kind: string, text: string)
 	if #text > MAX_LINE_BYTES then
 		text = cutAtCharBoundary(text, MAX_LINE_BYTES) .. "... (line truncated)"
 	end
+	table.insert(outputLog, text .. "\n")
 	write(kind, text)
+end
+
+-- io.write can leave a partial line buffered. Anything else reaching the host
+-- has to push that out first, or output arrives in a different order than the
+-- script produced it.
+local function flushPendingWrite()
+	if pendingWrite == "" then
+		return
+	end
+	local trailing = pendingWrite
+	pendingWrite = ""
+	emitLine("out", trailing)
+end
+
+local function emit(kind: string, text: string)
+	flushPendingWrite()
+	emitLine(kind, text)
 end
 
 local MAX_TABLE_DEPTH = 20
@@ -299,6 +320,34 @@ end
 
 environment.io = table.freeze({
 	read = readDiscordInput,
+
+	write = function(...)
+		local parts = table.create(select("#", ...))
+		for index = 1, select("#", ...) do
+			parts[index] = tostring((select(index, ...)))
+		end
+		pendingWrite ..= table.concat(parts)
+		while true do
+			local breakAt = string.find(pendingWrite, "\n", 1, true)
+			if breakAt == nil then
+				break
+			end
+			local line = string.sub(pendingWrite, 1, breakAt - 1)
+			pendingWrite = string.sub(pendingWrite, breakAt + 1)
+			emitLine("out", line)
+		end
+	end,
+	getoutput = function()
+		return table.concat(outputLog) .. pendingWrite
+	end,
+	clearoutput = function()
+		table.clear(outputLog)
+		pendingWrite = ""
+		writeEvent({ t = "clear" })
+	end,
+	followupnext = function()
+		writeEvent({ t = "followup" })
+	end,
 	writefile = function(data, fileType)
 		fileType = fileType or "output.txt"
 		if type(data) == "buffer" then
@@ -384,15 +433,17 @@ local sandboxRoblox = {}
 for _, name in ROBLOX_DATATYPES do
 	sandboxRoblox[name] = (roblox :: any)[name]
 end
-for _, name in {
-	"deserializePlace",
-	"deserializeModel",
-	"serializePlace",
-	"serializeModel",
-	"getReflectionDatabase",
-	"implementProperty",
-	"implementMethod",
-} do
+for _, name in
+	{
+		"deserializePlace",
+		"deserializeModel",
+		"serializePlace",
+		"serializeModel",
+		"getReflectionDatabase",
+		"implementProperty",
+		"implementMethod",
+	}
+do
 	sandboxRoblox[name] = (roblox :: any)[name]
 end
 sandboxRoblox = table.freeze(sandboxRoblox)
@@ -725,6 +776,8 @@ local heartbeatThread = task.delay(0, function()
 end)
 
 local ok, err = pcall(chunk)
+-- io.write text with no trailing line break would otherwise never be sent.
+flushPendingWrite()
 mainFinished = true
 if not hasTrackedThreads() then
 	pcall(task.cancel, heartbeatThread)
