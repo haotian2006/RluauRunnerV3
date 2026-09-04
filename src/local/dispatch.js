@@ -26,6 +26,10 @@ const { classify, describeClassification } = require("./router");
 // Matches the bound the Roblox executor already applies before Discord.
 const MAX_RESPONSE_LENGTH = 1900;
 const LIVE_UPDATE_INTERVAL_MS = 1000;
+// Beyond the run's own timeout, how long to wait for a terminal embed before
+// declaring the run stalled. Generous on purpose: a slow Discord edit is not a
+// stall, a run that never reports anything is.
+const TERMINAL_UPDATE_GRACE_MS = 60000;
 const ANSI_RED = "\u001b[0;31m";
 const ANSI_YELLOW = "\u001b[0;33m";
 const ANSI_RESET = "\u001b[0m";
@@ -223,6 +227,26 @@ async function tryRunLocally(
   const lines = [];
   const startedAt = Date.now();
   const executionId = `lune:${token}:${startedAt}`;
+  let terminalUpdateSent = false;
+  // Last line of defence. Every stall found so far ended the same way: the
+  // pending embed never changes and nothing anywhere records why. Whatever
+  // else breaks, the user gets an answer and the journal gets a reason.
+  const stallWatchdog = setTimeout(() => {
+    if (terminalUpdateSent) return;
+    logBot(
+      "Lune Stall",
+      `${executionId} produced no terminal update after ${localTimeoutForSelection(selected) + TERMINAL_UPDATE_GRACE_MS}ms; forcing an error reply`,
+    );
+    const stalled = getSession(token);
+    if (!stalled) return;
+    Promise.resolve(
+      stalled.responder.fail(
+        new Error("Run stalled: the sandbox never reported a result."),
+        stalled.responder.link?.(),
+      ),
+    ).catch(() => {});
+  }, localTimeoutForSelection(selected) + TERMINAL_UPDATE_GRACE_MS);
+  stallWatchdog.unref?.();
   const controller = new AbortController();
   const runState = {
     controller,
@@ -337,10 +361,12 @@ async function tryRunLocally(
 
     if (result.luneBusy && !selected.classification?.forced) {
       preserveSessionForRobloxFallback = true;
+      terminalUpdateSent = true;
       return false;
     }
 
     if (result.admissionRejected) {
+      terminalUpdateSent = true;
       session = getSession(token);
       if (session) {
         await session.responder.fail(
@@ -361,6 +387,7 @@ async function tryRunLocally(
     session = getSession(token);
     if (!session) return true;
 
+    terminalUpdateSent = true;
     await session.responder.deliver({
       responseContent: finishOutput(lines, result, outputLineLimit, outputCharLimit),
       fileMap,
@@ -372,11 +399,14 @@ async function tryRunLocally(
   } catch (error) {
     if (liveUpdateTimer) clearInterval(liveUpdateTimer);
     await Promise.all([liveDelivery, buttonDelivery]);
+    logBot("Lune Run Failed", `${executionId}: ${error.message}`);
+    terminalUpdateSent = true;
     session = getSession(token);
     if (session) {
       await session.responder.fail(error, session.responder.link?.());
     }
   } finally {
+    clearTimeout(stallWatchdog);
     if (liveUpdateTimer) clearInterval(liveUpdateTimer);
     if (localRunControllers.get(token) === runState) {
       localRunControllers.delete(token);

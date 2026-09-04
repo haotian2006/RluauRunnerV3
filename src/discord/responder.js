@@ -43,7 +43,16 @@ function createDiscordResponder(token) {
       followUp,
     }) {
       const current = entry();
-      if (!current) return;
+      if (!current) {
+        // The task entry is gone, so this edit is discarded and whatever the
+        // user is looking at stays frozen on the pending embed forever. Never
+        // let that happen without a trace.
+        logBot(
+          "Delivery Dropped",
+          `${isLast ? "final" : "live"} update for ${token} had no CompilingTasks entry; the embed is now stuck`,
+        );
+        return;
+      }
 
       const [
         interaction,
@@ -117,7 +126,13 @@ function createDiscordResponder(token) {
 
     async fail(error, link) {
       const current = entry();
-      if (!current) return;
+      if (!current) {
+        logBot(
+          "Failure Dropped",
+          `could not report "${safeMessage(error)}" for ${token}: no CompilingTasks entry`,
+        );
+        return;
+      }
       const [interaction] = current;
 
       try {

@@ -21,6 +21,11 @@ const { stripHostPaths } = require("../sanitize");
 const SANDBOX_PATH = path.join(ROOT_DIR, "src", "local", "sandbox.luau");
 const KILL_GRACE_MS = 1000;
 const HEARTBEAT_STALE_MS = 1500;
+// After SIGKILL, how long to wait for 'close' before giving up on it entirely.
+const HARD_SETTLE_GRACE_MS = 5000;
+// After the process exits, how long to let the stdio pipes drain before
+// settling without them.
+const EXIT_DRAIN_MS = 1500;
 
 // Capped, not unbounded: this box shares few cores with the Discord client.
 let active = 0;
@@ -97,6 +102,15 @@ function buildCommand(jobPath) {
   return { command, args: finalArgs, shell: false };
 }
 
+function cleanupJob(tmpDir, jobPath) {
+  try {
+    if (jobPath) fs.unlinkSync(jobPath);
+  } catch {}
+  try {
+    if (tmpDir) fs.rmdirSync(tmpDir);
+  } catch {}
+}
+
 function isMemoryLimitAvailable() {
   return process.platform !== "win32" && Boolean(LOCAL_MEMORY_LIMIT_MB);
 }
@@ -164,9 +178,13 @@ async function runLocal(source, options = {}) {
   }
 
   let command, args;
+  // Declared out here on purpose: cleanup() below lives in the promise
+  // executor's scope and cannot see consts block-scoped to this try.
+  let tmpDir = null;
+  let jobPath = null;
   try {
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "luau-local-"));
-    const jobPath = path.join(tmpDir, "job.json");
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "luau-local-"));
+    jobPath = path.join(tmpDir, "job.json");
 
     fs.writeFileSync(
       jobPath,
@@ -185,6 +203,7 @@ async function runLocal(source, options = {}) {
 
     ({ command, args } = buildCommand(jobPath));
   } catch (error) {
+    cleanupJob(tmpDir, jobPath);
     releaseSlot();
     return {
       ok: false,
@@ -230,11 +249,13 @@ async function runLocal(source, options = {}) {
     let cancelled = false;
     let settled = false;
     let killTimer = null;
+    let hardSettleTimer = null;
     let heartbeatTimer = null;
     let lastHeartbeatAt = 0;
     let timeoutKind = null;
 
     let scriptErrored = false;
+    let abandoned = false;
 
     function terminate(reason, kind = null) {
       if (settled || timedOut || cancelled) return;
@@ -244,6 +265,17 @@ async function runLocal(source, options = {}) {
       child.kill("SIGTERM");
 
       killTimer = setTimeout(() => child.kill("SIGKILL"), KILL_GRACE_MS);
+
+      // 'close' only fires once the process has exited AND every stdio pipe
+      // has hit EOF. A grandchild that inherited stdout can hold that pipe
+      // open after the direct child is gone, and then 'close' never arrives
+      // and this promise hangs forever, leaking its execution slot. Settle on
+      // our own clock instead of trusting the event.
+      hardSettleTimer = setTimeout(() => {
+        if (settled) return;
+        abandoned = true;
+        finish(null);
+      }, KILL_GRACE_MS + HARD_SETTLE_GRACE_MS);
     }
 
     function schedulerResponsive() {
@@ -272,10 +304,7 @@ async function runLocal(source, options = {}) {
     if (signal?.aborted) onAbort();
 
     function cleanup() {
-      try {
-        fs.unlinkSync(jobPath);
-        fs.rmdirSync(tmpDir);
-      } catch {}
+      cleanupJob(tmpDir, jobPath);
     }
 
     function handleLine(line) {
@@ -322,6 +351,7 @@ async function runLocal(source, options = {}) {
       clearTimeout(timer);
       if (heartbeatTimer) clearTimeout(heartbeatTimer);
       if (killTimer) clearTimeout(killTimer);
+      if (hardSettleTimer) clearTimeout(hardSettleTimer);
       signal?.removeEventListener("abort", onAbort);
       child.stdin.end();
       cleanup();
@@ -340,7 +370,8 @@ async function runLocal(source, options = {}) {
       });
     });
 
-    child.on("close", (code) => {
+    function finish(code) {
+      if (settled) return;
       if (stdoutBuffer.trim()) handleLine(stdoutBuffer);
 
       if (timedOut) {
@@ -348,6 +379,7 @@ async function runLocal(source, options = {}) {
           ok: false,
           timedOut: true,
           timeoutKind,
+          abandoned,
           error:
             timeoutKind === "yielding"
               ? `Script reached its ${timeoutMs / 1000}s lifespan while yielding`
@@ -361,6 +393,7 @@ async function runLocal(source, options = {}) {
           ok: false,
           timedOut: false,
           cancelled: true,
+          abandoned,
           error: "Script stopped by user",
         });
         return;
@@ -372,11 +405,27 @@ async function runLocal(source, options = {}) {
         timedOut: false,
         abnormalExit: code !== 0,
         scriptErrored,
+        abandoned,
         error:
           code === 0
             ? null
             : stripHostPaths(stderr.trim()) || `Sandbox exited with ${code}`,
       });
+    }
+
+    child.on("close", finish);
+
+    // 'close' additionally waits for every copy of the stdio pipes to be
+    // closed, which a surviving grandchild can stall indefinitely. The exit
+    // code is already final here, so drain briefly and then settle regardless.
+    child.on("exit", (code) => {
+      if (settled) return;
+      const drain = setTimeout(() => {
+        if (settled) return;
+        abandoned = true;
+        finish(code);
+      }, EXIT_DRAIN_MS);
+      drain.unref?.();
     });
   });
 }

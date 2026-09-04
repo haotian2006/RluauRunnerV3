@@ -35,7 +35,11 @@ function log(userid, name, commandName, data) {
     .catch(() => {});
 }
 
+// Also goes to stdout: the Google Form is write-only from here, so without
+// this every diagnostic (router decisions, Discord retries, delivery failures)
+// is invisible in `journalctl -u luau-bot`.
 function logBot(name, data) {
+  console.log(`[${name}] ${data}`);
   log("0", "BOT", name, data);
 }
 
