@@ -106,7 +106,7 @@ function buildChildEnv(tmpDir) {
 // and a BindReadOnlyPaths for a file underneath does NOT punch back through
 // (verified on the box - the unit dies with 203/EXEC). Hence the staged binary
 // and the per-job copy of sandbox.luau that the caller drops in tmpDir.
-function buildServiceArgs(jobPath, tmpDir, sandboxPath, timeoutMs) {
+function buildServiceArgs(jobPath, tmpDir, sandboxPath, timeoutMs, unitName) {
   const properties = [
     // Transient units default to root. Without this the sandbox would run with
     // MORE privilege than scope mode, and an empty CapabilityBoundingSet then
@@ -142,6 +142,7 @@ function buildServiceArgs(jobPath, tmpDir, sandboxPath, timeoutMs) {
   }
 
   const args = ["--pipe", "--wait", "--quiet", "--collect"];
+  if (unitName) args.push(`--unit=${unitName}`);
   for (const property of properties) args.push("-p", property);
   args.push("--", LOCAL_LUNE_STAGED_PATH, "run", sandboxPath, jobPath);
   return args;
@@ -149,7 +150,7 @@ function buildServiceArgs(jobPath, tmpDir, sandboxPath, timeoutMs) {
 
 // No portable memory cap in Node. ulimit is a shell builtin, hence bash -c;
 // Windows has no equivalent short of Job Objects.
-function buildCommand(jobPath, tmpDir, sandboxPath, timeoutMs) {
+function buildCommand(jobPath, tmpDir, sandboxPath, timeoutMs, unitName) {
   const args = ["run", SANDBOX_PATH, jobPath];
 
   let command = PATH_TO_LUNE;
@@ -162,7 +163,7 @@ function buildCommand(jobPath, tmpDir, sandboxPath, timeoutMs) {
   if (LOCAL_ISOLATION === "service") {
     return {
       command: "systemd-run",
-      args: buildServiceArgs(jobPath, tmpDir, sandboxPath, timeoutMs),
+      args: buildServiceArgs(jobPath, tmpDir, sandboxPath, timeoutMs, unitName),
       shell: false,
     };
   }
@@ -193,6 +194,19 @@ function buildCommand(jobPath, tmpDir, sandboxPath, timeoutMs) {
   }
 
   return { command, args: finalArgs, shell: false };
+}
+
+// --pipe --wait makes systemd-run a client; the unit belongs to PID 1 and
+// survives killing the client, so stop it by name.
+function stopUnit(unitName) {
+  if (!unitName) return;
+  try {
+    const stop = spawn("systemctl", ["stop", "--no-block", `${unitName}.service`], {
+      stdio: "ignore",
+    });
+    stop.on("error", () => {});
+    stop.unref();
+  } catch {}
 }
 
 function cleanupJob(tmpDir, jobPath) {
@@ -270,6 +284,9 @@ async function runLocal(source, options = {}) {
     };
   }
 
+  const unitName =
+    LOCAL_ISOLATION === "service" ? `luau-${randomUUID()}` : null;
+
   let command, args;
   // Declared out here on purpose: cleanup() below lives in the promise
   // executor's scope and cannot see consts block-scoped to this try.
@@ -303,7 +320,13 @@ async function runLocal(source, options = {}) {
       fs.copyFileSync(SANDBOX_PATH, sandboxPath);
     }
 
-    ({ command, args } = buildCommand(jobPath, tmpDir, sandboxPath, timeoutMs));
+    ({ command, args } = buildCommand(
+      jobPath,
+      tmpDir,
+      sandboxPath,
+      timeoutMs,
+      unitName,
+    ));
   } catch (error) {
     cleanupJob(tmpDir, jobPath);
     releaseSlot();
@@ -369,6 +392,7 @@ async function runLocal(source, options = {}) {
       timedOut = reason === "timeout";
       timeoutKind = timedOut ? kind : null;
       cancelled = reason === "cancelled";
+      stopUnit(unitName);
       child.kill("SIGTERM");
 
       killTimer = setTimeout(() => child.kill("SIGKILL"), KILL_GRACE_MS);
