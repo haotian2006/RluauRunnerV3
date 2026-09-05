@@ -93,8 +93,10 @@ function createDiscordResponder(token) {
 
       logBot(
         "Delivery",
-        `${token.slice(-8)} isLast=${isLast} serverNum=${serverNum} ` +
-          `chars=${String(responseContent ?? "").length} files=${fileMap?.size ?? 0}`,
+        `${token.slice(-8)} user=${interaction.user.id} isLast=${isLast} ` +
+          `serverNum=${serverNum} chars=${String(responseContent ?? "").length} ` +
+          `files=${fileMap?.size ?? 0} ` +
+          `preview=${JSON.stringify(String(responseContent ?? "").slice(0, 60))}`,
       );
       const sent = await retryDiscordOperation(
         () => interaction.editReply(replyOptions),
