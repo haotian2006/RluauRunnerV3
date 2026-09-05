@@ -1,12 +1,5 @@
 const { generateAST } = require("../tools/luau");
 
-// Lune's bundled Luau predates the `const` keyword (introduced in Luau
-// 0.711); this repo's standalone `luau-ast` tool is fetched at "latest" and
-// already parses it fine. Rather than a blind text replace (which could
-// clobber "const" inside a string, comment, or identifier), we ask the AST
-// for the exact byte position of each real `const` declaration and splice
-// only those. "const" and "local" are both 5 bytes, so this never shifts
-// any other location in the file.
 async function desugarConstForLune(source) {
   let ast;
   try {
@@ -16,13 +9,10 @@ async function desugarConstForLune(source) {
     return source;
   }
 
-  // Both forms start their statement location at the `const` keyword itself.
   function isConstDeclaration(node) {
     if (node.type === "AstStatLocal") {
       return Array.isArray(node.vars) && node.vars.some((v) => v?.isConst);
     }
-    // `const function f() end` is a local function whose *name* carries the
-    // flag rather than a vars list, so it needs its own check.
     if (node.type === "AstStatLocalFunction") {
       return node.name?.isConst === true;
     }

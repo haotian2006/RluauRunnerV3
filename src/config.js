@@ -1,4 +1,5 @@
 const fs = require("fs");
+const os = require("os");
 const path = require("path");
 
 require("dotenv").config();
@@ -156,11 +157,57 @@ const LOCAL_CPU_QUOTA_PERCENT = Math.max(
   0,
   Math.floor(envNumber("LOCAL_CPU_QUOTA_PERCENT", 0)),
 );
-if (ENABLE_LOCAL_EXEC && LOCAL_CPU_QUOTA_PERCENT && process.platform === "win32") {
+if (
+  ENABLE_LOCAL_EXEC &&
+  LOCAL_CPU_QUOTA_PERCENT &&
+  process.platform === "win32"
+) {
   console.warn(
     "Warning: LOCAL_CPU_QUOTA_PERCENT is set, but CPU quotas need systemd-run " +
       "and are not enforceable on Windows. Sandboxed scripts can use full CPU.",
   );
+}
+
+const LOCAL_ISOLATION_MODES = ["scope", "service", "none"];
+let LOCAL_ISOLATION = (process.env.LOCAL_ISOLATION || "scope")
+  .trim()
+  .toLowerCase();
+if (!LOCAL_ISOLATION_MODES.includes(LOCAL_ISOLATION)) {
+  console.warn(
+    `Warning: LOCAL_ISOLATION="${process.env.LOCAL_ISOLATION}" is not one of ` +
+      `${LOCAL_ISOLATION_MODES.join("/")}, using scope.`,
+  );
+  LOCAL_ISOLATION = "scope";
+}
+if (process.platform === "win32") LOCAL_ISOLATION = "none";
+
+// Transient units run as root unless told otherwise, which would hand the
+// sandbox more privilege than scope mode gives it. Default to whoever the bot
+// runs as, since that user owns the per-job tmpdir.
+const LOCAL_SANDBOX_USER = (
+  process.env.LOCAL_SANDBOX_USER || os.userInfo().username
+).trim();
+
+// ProtectHome=yes makes /home inaccessible to the unit, and a BindReadOnlyPaths
+// for a file underneath it does NOT punch back through (verified on the box:
+// execve fails with 203/EXEC). So service mode runs a copy of lune staged
+// outside /home; sandbox.luau is copied into the job's tmpdir per run.
+const LOCAL_LUNE_STAGED_PATH = (
+  process.env.LOCAL_LUNE_STAGED_PATH || "/opt/luau-runner/bin/lune"
+).trim();
+if (
+  ENABLE_LOCAL_EXEC &&
+  LOCAL_ISOLATION === "service" &&
+  !fs.existsSync(LOCAL_LUNE_STAGED_PATH)
+) {
+  console.error(
+    `Fatal: LOCAL_ISOLATION=service needs lune staged outside /home, but ` +
+      `${LOCAL_LUNE_STAGED_PATH} does not exist.\n` +
+      "Install it with:\n" +
+      `  sudo install -D -m 0755 ${resolveExec("lune")} ${LOCAL_LUNE_STAGED_PATH}\n` +
+      "or set LOCAL_ISOLATION=scope to fall back to cgroup-only limits.",
+  );
+  process.exit(1);
 }
 
 if (!ENABLE_DISCORD && !ENABLE_WEB) {
@@ -209,6 +256,9 @@ module.exports = {
   // Percent of one core, enforced via systemd-run --scope on Linux only.
   // 0 disables the quota. 100 = 1 full core.
   LOCAL_CPU_QUOTA_PERCENT,
+  LOCAL_ISOLATION,
+  LOCAL_LUNE_STAGED_PATH,
+  LOCAL_SANDBOX_USER,
 
   LOCAL_MAX_CONCURRENT: envNumber("LOCAL_MAX_CONCURRENT", 2),
   LOCAL_MAX_LINES: envNumber("LOCAL_MAX_LINES", 2000),

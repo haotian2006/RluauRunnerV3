@@ -10,6 +10,9 @@ const {
   LOCAL_MAX_LINE_BYTES,
   LOCAL_MEMORY_LIMIT_MB,
   LOCAL_CPU_QUOTA_PERCENT,
+  LOCAL_ISOLATION,
+  LOCAL_LUNE_STAGED_PATH,
+  LOCAL_SANDBOX_USER,
   LOCAL_HEARTBEAT_TIMEOUT_MS,
   LOCAL_TIMEOUT_MS,
   PATH_TO_LUNE,
@@ -69,23 +72,113 @@ function queueDepth() {
   return waiting.length;
 }
 
+function buildChildEnv(tmpDir) {
+  const env =
+    process.platform === "win32"
+      ? {
+          SystemRoot: process.env.SystemRoot,
+          windir: process.env.windir,
+          TEMP: tmpDir,
+          TMP: tmpDir,
+          PATH: process.env.SystemRoot
+            ? `${process.env.SystemRoot}\\System32`
+            : process.env.PATH,
+        }
+      : {
+          PATH: "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+          HOME: tmpDir,
+          TMPDIR: tmpDir,
+          LANG: process.env.LANG || "C.UTF-8",
+          DBUS_SYSTEM_BUS_ADDRESS: process.env.DBUS_SYSTEM_BUS_ADDRESS,
+          XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR,
+        };
+
+  for (const key of Object.keys(env)) {
+    if (env[key] === undefined) delete env[key];
+  }
+  return env;
+}
+// A --scope is only a cgroup: same uid, same filesystem, same /home as the
+// bot, so it caps resources and nothing else. A transient service has an exec
+// context and can also take the filesystem and privilege restrictions below.
+//
+// Nothing here may reach into /home: ProtectHome=yes makes it inaccessible,
+// and a BindReadOnlyPaths for a file underneath does NOT punch back through
+// (verified on the box - the unit dies with 203/EXEC). Hence the staged binary
+// and the per-job copy of sandbox.luau that the caller drops in tmpDir.
+function buildServiceArgs(jobPath, tmpDir, sandboxPath, timeoutMs) {
+  const properties = [
+    // Transient units default to root. Without this the sandbox would run with
+    // MORE privilege than scope mode, and an empty CapabilityBoundingSet then
+    // costs root CAP_DAC_OVERRIDE, so it cannot even enter its own 0700 tmpdir.
+    `User=${LOCAL_SANDBOX_USER}`,
+    `WorkingDirectory=${tmpDir}`,
+    `ReadWritePaths=${tmpDir}`,
+    "ProtectHome=yes",
+    "ProtectSystem=strict",
+    "ProtectProc=invisible",
+    "PrivateDevices=yes",
+    "PrivateNetwork=yes",
+    "NoNewPrivileges=yes",
+    "RestrictSUIDSGID=yes",
+    "RestrictRealtime=yes",
+    "RestrictNamespaces=yes",
+    "LockPersonality=yes",
+    "ProtectKernelTunables=yes",
+    "ProtectKernelModules=yes",
+    "ProtectControlGroups=yes",
+    "CapabilityBoundingSet=",
+    "AmbientCapabilities=",
+    "SystemCallFilter=@system-service",
+    "SystemCallFilter=~@privileged @resources @obsolete",
+    `RuntimeMaxSec=${Math.ceil(timeoutMs / 1000) + 10}`,
+  ];
+
+  if (LOCAL_MEMORY_LIMIT_MB) {
+    properties.push(`MemoryMax=${LOCAL_MEMORY_LIMIT_MB}M`, "MemorySwapMax=0");
+  }
+  if (LOCAL_CPU_QUOTA_PERCENT) {
+    properties.push(`CPUQuota=${LOCAL_CPU_QUOTA_PERCENT}%`);
+  }
+
+  const args = ["--pipe", "--wait", "--quiet", "--collect"];
+  for (const property of properties) args.push("-p", property);
+  args.push("--", LOCAL_LUNE_STAGED_PATH, "run", sandboxPath, jobPath);
+  return args;
+}
+
 // No portable memory cap in Node. ulimit is a shell builtin, hence bash -c;
 // Windows has no equivalent short of Job Objects.
-function buildCommand(jobPath) {
+function buildCommand(jobPath, tmpDir, sandboxPath, timeoutMs) {
   const args = ["run", SANDBOX_PATH, jobPath];
 
   let command = PATH_TO_LUNE;
   let finalArgs = args;
 
-  if (process.platform !== "win32" && LOCAL_MEMORY_LIMIT_MB) {
+  if (process.platform === "win32" || LOCAL_ISOLATION === "none") {
+    return { command, args: finalArgs, shell: false };
+  }
+
+  if (LOCAL_ISOLATION === "service") {
+    return {
+      command: "systemd-run",
+      args: buildServiceArgs(jobPath, tmpDir, sandboxPath, timeoutMs),
+      shell: false,
+    };
+  }
+
+  if (LOCAL_MEMORY_LIMIT_MB) {
     const quoted = [PATH_TO_LUNE, ...args]
       .map((part) => `'${String(part).replace(/'/g, "'\\''")}'`)
       .join(" ");
     command = "/bin/bash";
-    finalArgs = ["-c", `ulimit -v ${LOCAL_MEMORY_LIMIT_MB * 1024}; exec ${quoted}`];
+    finalArgs = [
+      "-c",
+      `ulimit -v ${LOCAL_MEMORY_LIMIT_MB * 1024}; exec ${quoted}`,
+    ];
   }
 
-  if (process.platform !== "win32" && LOCAL_CPU_QUOTA_PERCENT) {
+  if (LOCAL_CPU_QUOTA_PERCENT) {
     finalArgs = [
       "--scope",
       "--quiet",
@@ -107,7 +200,7 @@ function cleanupJob(tmpDir, jobPath) {
     if (jobPath) fs.unlinkSync(jobPath);
   } catch {}
   try {
-    if (tmpDir) fs.rmdirSync(tmpDir);
+    if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
   } catch {}
 }
 
@@ -201,7 +294,16 @@ async function runLocal(source, options = {}) {
       "utf8",
     );
 
-    ({ command, args } = buildCommand(jobPath));
+    // Service mode cannot read the repo copy: ProtectHome=yes hides /home from
+    // the unit. Copying per job (rather than staging it next to the binary)
+    // keeps it impossible for the sandbox to go stale against the repo.
+    let sandboxPath = SANDBOX_PATH;
+    if (LOCAL_ISOLATION === "service") {
+      sandboxPath = path.join(tmpDir, "sandbox.luau");
+      fs.copyFileSync(SANDBOX_PATH, sandboxPath);
+    }
+
+    ({ command, args } = buildCommand(jobPath, tmpDir, sandboxPath, timeoutMs));
   } catch (error) {
     cleanupJob(tmpDir, jobPath);
     releaseSlot();
@@ -215,7 +317,12 @@ async function runLocal(source, options = {}) {
   return new Promise((resolve) => {
     let child;
     try {
-      child = spawn(command, args, { stdio: ["pipe", "pipe", "pipe"] });
+      child = spawn(command, args, {
+        stdio: ["pipe", "pipe", "pipe"],
+
+        cwd: tmpDir,
+        env: buildChildEnv(tmpDir),
+      });
       child.stdin.on("error", () => {});
       try {
         const sendMessage = (payload) => {

@@ -448,13 +448,12 @@ local function runCode(compCode, data)
 	thread.blocked = false
 	local userid = data.userId
 	local isCommand = data.isCommand
-	-- Per task, not per session: one session serves both front ends. A local,
-	-- not a `thread` field: env.thread is given to user code and is not frozen.
+
 	local isweb = data.isWeb == true
 	if isweb then
 		WebTokens[data.token] = true
 	end
-	thread.isweb = isweb -- informational for LoadEnv; nothing below trusts it
+	thread.isweb = isweb
 	local maxHeight = isweb and MAX_STR_HEIGHT_WEB or MAX_STR_HEIGHT
 	local runningThreads = {}
 
@@ -531,7 +530,7 @@ local function runCode(compCode, data)
 	env.OUTPUT_LOGS = false
 	thread.followUp = false
 	thread.files = {} -- ordered array of {data, fileType}
-	thread.filesByKey = {} -- map fileType -> index for dedup
+	thread.filesByKey = {}
 	thread.buttonCallbacks = {} -- map Discord button id -> BindableEvent
 	local parsedInputs = {}
 	env.io = {
@@ -612,8 +611,6 @@ local function runCode(compCode, data)
 		return f, e
 	end
 
-	-- Discord clears colour at each newline but not mid-line, so a fragment
-	-- concatenated into a longer line bleeds without this reset.
 	env.colorstring = function(text, color)
 		color = color or ""
 		return (colorsLower[color:lower()] or "") .. tostring(text) .. "\27[0m"
