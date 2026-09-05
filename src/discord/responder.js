@@ -91,10 +91,19 @@ function createDiscordResponder(token) {
         );
       }
 
+      logBot(
+        "Delivery",
+        `${token.slice(-8)} isLast=${isLast} serverNum=${serverNum} ` +
+          `chars=${String(responseContent ?? "").length} files=${fileMap?.size ?? 0}`,
+      );
       const sent = await retryDiscordOperation(
         () => interaction.editReply(replyOptions),
         3,
         "Edit reply",
+      );
+      logBot(
+        "Delivery",
+        `${token.slice(-8)} edit accepted, message ${sent?.id ?? "?"}`,
       );
 
       if (changedFileName && CompilingTasks[token]) {
