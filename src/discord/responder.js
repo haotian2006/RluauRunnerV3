@@ -108,6 +108,23 @@ function createDiscordResponder(token) {
         `${token.slice(-8)} edit accepted, message ${sent?.id ?? "?"}`,
       );
 
+      // A retried pending-embed request can land after this one and revert the
+      // message, so confirm the final embed actually stuck.
+      if (isLast) {
+        const applied = await interaction.fetchReply().catch(() => null);
+        if (applied && !applied.embeds?.[0]?.footer) {
+          logBot(
+            "Delivery",
+            `${token.slice(-8)} final embed was overwritten; re-applying`,
+          );
+          await retryDiscordOperation(
+            () => interaction.editReply(replyOptions),
+            2,
+            "Re-apply final embed",
+          ).catch(() => {});
+        }
+      }
+
       if (changedFileName && CompilingTasks[token]) {
         CompilingTasks[token][6] = new Map(
           [...sent.attachments.values()].map((attachment) => [
