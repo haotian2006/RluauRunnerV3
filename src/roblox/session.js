@@ -313,9 +313,19 @@ async function checkRobloxServer() {
   while (true) {
     const now = Date.now();
 
+    const abandonedStarts = state.PendingRobloxStarts.filter(
+      (entry) => now - entry.createdAt > 90_000,
+    );
     state.PendingRobloxStarts = state.PendingRobloxStarts.filter(
       (entry) => now - entry.createdAt <= 90_000,
     );
+    if (abandonedStarts.length) {
+      logBot(
+        "Roblox Server",
+        `${abandonedStarts.length} start(s) accepted but never registered: ` +
+          abandonedStarts.map((entry) => entry.profileName).join(", "),
+      );
+    }
 
     for (const server of Object.values(RobloxServers)) {
       if (
@@ -376,21 +386,33 @@ async function checkRobloxServer() {
       pendingWorkers,
     );
 
+    let startFailed = false;
     if (needsWorker && belowWorkerCap && lastCreationDebounce) {
       console.log("Starting new Roblox server...");
       logBot(
         "Roblox Server",
         `Starting worker ${workers.length + pendingWorkers + 1}/${maxWorkers}...`,
       );
+      startFailed = !(await startAnyProfile());
+    }
 
-      if (!(await startAnyProfile())) {
-        if (workers.length === 0 && state.PendingRobloxStarts.length === 0) {
-          if (ENABLE_LOCAL_EXEC) {
-            void fallbackPendingTasksToLune();
-          } else {
-            await failPendingTasks();
-          }
-        }
+    // Open Cloud accepting a launch is not the same as a worker existing, so
+    // an expired reservation counts as a failed start too. Only these two
+    // cases mean no worker is coming; a debounce gap does not.
+    if (
+      (startFailed || abandonedStarts.length > 0) &&
+      Object.keys(ExecuteTasks).length > 0 &&
+      Object.keys(RobloxServers).length === 0 &&
+      state.PendingRobloxStarts.length === 0
+    ) {
+      logBot(
+        "Roblox Server",
+        `No worker and no pending start for ${Object.keys(ExecuteTasks).length} queued task(s)`,
+      );
+      if (ENABLE_LOCAL_EXEC) {
+        void fallbackPendingTasksToLune();
+      } else {
+        await failPendingTasks();
       }
     }
     await wait(SERVER_CHECK_INTERVAL);

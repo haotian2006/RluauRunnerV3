@@ -1,6 +1,6 @@
 const { encodeZstd } = require("../chunks");
 const { codeHash, getActorBlock } = require("../abuse");
-const { closeSession, openSession } = require("../core/sessions");
+const { closeSession, getSession, openSession } = require("../core/sessions");
 const { selectRuntime, tryRunLocally } = require("../local/dispatch");
 const { logBot } = require("../log");
 const { createPendingResponseEmbed } = require("./embeds");
@@ -54,15 +54,27 @@ async function sendCompileRequestToRoblox(
   }
 
   const uuid = generateUUID();
-  const timeoutId = setTimeout(() => {
-    // Nothing here tells the user anything, so the embed simply stops at
-    // whichever pending state it reached. At minimum, say that it happened.
+  const timeoutId = setTimeout(async () => {
     logBot(
       "Task Expired",
       `${interaction.token} hit the ${TASK_TTL_MS / 1000}s TTL still unfinished ` +
-        `(queued=${Boolean(ExecuteTasks[uuid])}); its embed is now stuck`,
+        `(queued=${Boolean(ExecuteTasks[uuid])})`,
     );
-    interaction.editReply({ components: [] }).catch(() => {});
+    const expired = getSession(interaction.token);
+    if (expired) {
+      let link = null;
+      try {
+        link = expired.responder.link?.();
+      } catch {}
+      try {
+        await expired.responder.fail(
+          new Error("Timed out waiting for a server."),
+          link,
+        );
+      } catch {}
+    } else {
+      interaction.editReply({ components: [] }).catch(() => {});
+    }
     // closeSession runs the responder's cleanup, which clears the button map
     // and drops the CompilingTasks entry.
     closeSession(interaction.token);
