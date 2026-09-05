@@ -11,6 +11,13 @@ const { cleanupScriptButtons } = require("./scriptButtons");
 
 const TASK_TTL_MS = 1000 * 60 * 6; //How long a task can last
 
+// Compiles have frozen on the pending embed with no trace at all: no stall
+// watchdog, no TTL expiry, nothing. That can only happen if the flow stops
+// before either timer is armed, so trace each step until they are.
+function trace(token, step) {
+  logBot("Compile Trace", `${String(token).slice(-8)} ${step}`);
+}
+
 async function sendCompileRequestToRoblox(
   code,
   interactionId,
@@ -22,8 +29,10 @@ async function sendCompileRequestToRoblox(
   isCommand = false,
 ) {
   const baseActorKey = `discord:${interaction.user.id}`;
+  trace(interaction.token, "routing");
   const selection = await selectRuntime(code);
 
+  trace(interaction.token, "editing pending embed");
   await interaction.editReply({
     content: null,
     embeds: [
@@ -31,6 +40,7 @@ async function sendCompileRequestToRoblox(
     ],
     components: [],
   });
+  trace(interaction.token, "pending embed applied");
 
   let actorKey = `${baseActorKey}:${selection.runtime}`;
   const block = getActorBlock(actorKey);
@@ -71,14 +81,15 @@ async function sendCompileRequestToRoblox(
     new Map(),
   ];
   openSession(interaction.token, createDiscordResponder(interaction.token));
+  trace(interaction.token, "ttl armed, entering tryRunLocally");
 
-  if (
-    await tryRunLocally(code, interaction.token, {
-      allowCodegen: true,
-      actorKey,
-      selection,
-    })
-  ) {
+  const handledLocally = await tryRunLocally(code, interaction.token, {
+    allowCodegen: true,
+    actorKey,
+    selection,
+  });
+  trace(interaction.token, `tryRunLocally returned ${handledLocally}`);
+  if (handledLocally) {
     return;
   }
 

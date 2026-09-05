@@ -21,7 +21,7 @@ test(
     assert.deepEqual(events, [
       {
         t: "out",
-        v: "{\n  [1] = 1,\n  [2] = 2,\n  [3] = 3,\n  [4] = 4,\n}\n",
+        v: "{\n  [1] = 1,\n  [2] = 2,\n  [3] = 3,\n  [4] = 4,\n}\n ",
       },
     ]);
   },
@@ -70,7 +70,7 @@ test(
       name: "note.txt",
       hex: "61626300",
     });
-    assert.deepEqual(events[1], { t: "out", v: "note.txt\t4\t0" });
+    assert.deepEqual(events[1], { t: "out", v: "note.txt 4 0 " });
   },
 );
 
@@ -93,7 +93,7 @@ test(
     );
 
     assert.equal(result.ok, true);
-    assert.deepEqual(events, [{ t: "out", v: "3\t0\t255" }]);
+    assert.deepEqual(events, [{ t: "out", v: "3 0 255 " }]);
   },
 );
 
@@ -113,7 +113,7 @@ test(
     );
 
     assert.equal(result.ok, true);
-    assert.deepEqual(events, [{ t: "out", v: '{"safe":true}' }]);
+    assert.deepEqual(events, [{ t: "out", v: '{"safe":true} ' }]);
 
     const deniedEvents = [];
     const denied = await runLocal('require("@lune/fs")', {
@@ -138,8 +138,8 @@ test(
     );
     assert.equal(robloxResult.ok, true);
     assert.deepEqual(robloxEvents, [
-      { t: "out", v: "function\ttable" },
-      { t: "out", v: "nil\tnil\tnil\tnil\tnil" },
+      { t: "out", v: "function table " },
+      { t: "out", v: "nil nil nil nil nil " },
     ]);
   },
 );
@@ -161,9 +161,9 @@ test(
 
     assert.equal(result.ok, true);
     assert.deepEqual(events, [
-      { t: "out", v: "true\tstring" },
-      { t: "out", v: "true\ttrue" },
-      { t: "out", v: "false\ttrue" },
+      { t: "out", v: "true string " },
+      { t: "out", v: "true true " },
+      { t: "out", v: "false true " },
     ]);
   },
 );
@@ -191,9 +191,9 @@ test(
     assert.deepEqual(events, [
       { t: "out", v: "hello" },
       { t: "warn", v: "careful" },
-      { t: "out", v: "{\n  [1] = 1,\n  [2] = 2,\n}\n" },
-      { t: "out", v: "first\tsecond" },
-      { t: "out", v: "function\tfunction\tnil" },
+      { t: "out", v: "{\n  [1] = 1,\n  [2] = 2,\n}\n " },
+      { t: "out", v: "first second " },
+      { t: "out", v: "function function nil " },
     ]);
   },
 );
@@ -237,7 +237,7 @@ test(
       "followup",
       "button",
     ]);
-    assert.equal(events[1].v, "123\ttester\tkept input");
+    assert.equal(events[1].v, "123 tester kept input ");
     assert.equal(events[2].action, "update");
     assert.equal(events[2].disabled, true);
     assert.equal(events[4].action, "delete");

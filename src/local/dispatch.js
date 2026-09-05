@@ -184,13 +184,21 @@ async function tryRunLocally(
   token,
   { actorKey = null, allowCodegen = false, selection = null } = {},
 ) {
+  const short = String(token).slice(-8);
+  const step = (name) => logBot("Compile Trace", `${short} ${name}`);
+
   const selected = selection || (await selectRuntime(source));
   if (selected.runtime !== "lune") return false;
 
+  step("desugaring const");
   source = await desugarConstForLune(source);
+  step("desugared");
 
   let session = getSession(token);
-  if (!session) return true;
+  if (!session) {
+    step("no session after desugar");
+    return true;
+  }
 
   await session.responder.waitUntilReady?.();
   session = getSession(token);
@@ -216,6 +224,7 @@ async function tryRunLocally(
 
   if (!acquireLocalExecution(actorKey)) {
     if (!queueLuneWhenBusy(selected)) {
+      step("actor at Lune capacity, deferring to Roblox");
       return false;
     }
     await session.responder.fail(
@@ -252,6 +261,7 @@ async function tryRunLocally(
     localTimeoutForSelection(selected) + TERMINAL_UPDATE_GRACE_MS,
   );
   stallWatchdog.unref?.();
+  step("stall watchdog armed");
   const controller = new AbortController();
   const runState = {
     controller,
@@ -367,6 +377,7 @@ async function tryRunLocally(
     });
     clearInterval(liveUpdateTimer);
     liveUpdateTimer = null;
+    step(`runLocal settled (ok=${result.ok} busy=${!!result.luneBusy})`);
     await Promise.all([liveDelivery, buttonDelivery]);
 
     if (result.luneBusy && !selected.classification?.forced) {

@@ -86,8 +86,8 @@ test(
 
     const outputLines = deliveries.at(-1).responseContent.split("\n");
     assert.equal(outputLines.length, 24);
-    assert.equal(outputLines[0], "7");
-    assert.equal(outputLines.at(-1), "30");
+    assert.equal(outputLines[0], "7 ");
+    assert.equal(outputLines.at(-1), "30 ");
   },
 );
 
@@ -113,7 +113,7 @@ test(
     });
 
     const output = deliveries.at(-1).responseContent;
-    assert.match(output, /\u001b\[0;33m1\u001b\[0m/);
+    assert.match(output, /\u001b\[0;33m1 \u001b\[0m/);
     assert.match(output, /\u001b\[0;31m.*bad.*\u001b\[0m/);
     assert.doesNotMatch(output, /\[(?:warning|error)\]/i);
   },
@@ -218,7 +218,7 @@ test(
       "create",
       "delete",
     ]);
-    assert.match(deliveries.at(-1).responseContent, /456\tclicker/);
+    assert.match(deliveries.at(-1).responseContent, /456 clicker/);
     assert.equal(deliveries.at(-1).followUp, true);
   },
 );

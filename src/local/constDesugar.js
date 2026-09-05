@@ -16,15 +16,23 @@ async function desugarConstForLune(source) {
     return source;
   }
 
+  // Both forms start their statement location at the `const` keyword itself.
+  function isConstDeclaration(node) {
+    if (node.type === "AstStatLocal") {
+      return Array.isArray(node.vars) && node.vars.some((v) => v?.isConst);
+    }
+    // `const function f() end` is a local function whose *name* carries the
+    // flag rather than a vars list, so it needs its own check.
+    if (node.type === "AstStatLocalFunction") {
+      return node.name?.isConst === true;
+    }
+    return false;
+  }
+
   const positions = [];
   function walk(node) {
     if (!node || typeof node !== "object") return;
-    if (
-      node.type === "AstStatLocal" &&
-      Array.isArray(node.vars) &&
-      node.vars.some((v) => v?.isConst) &&
-      typeof node.location === "string"
-    ) {
+    if (isConstDeclaration(node) && typeof node.location === "string") {
       const [line, col] = node.location.split(" - ")[0].split(",").map(Number);
       if (Number.isInteger(line) && Number.isInteger(col)) {
         positions.push({ line, col });
