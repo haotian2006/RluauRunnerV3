@@ -11,6 +11,8 @@ const {
 const { getLinkFromData, retryDiscordOperation } = require("./reply");
 const { cleanupScriptButtons, updateScriptButton } = require("./scriptButtons");
 
+const LATE_REVERT_RECHECK_MS = 3000;
+
 function createDiscordResponder(token) {
   function entry() {
     return CompilingTasks[token];
@@ -109,20 +111,28 @@ function createDiscordResponder(token) {
       );
 
       // A retried pending-embed request can land after this one and revert the
-      // message, so confirm the final embed actually stuck.
+      // message. It has been seen arriving ~400ms late, so checking once
+      // immediately is not enough - check again after it would have landed.
       if (isLast) {
-        const applied = await interaction.fetchReply().catch(() => null);
-        if (applied && !applied.embeds?.[0]?.footer) {
+        const repairIfReverted = async (when) => {
+          const applied = await interaction.fetchReply().catch(() => null);
+          if (!applied || applied.embeds?.[0]?.footer) return;
           logBot(
             "Delivery",
-            `${token.slice(-8)} final embed was overwritten; re-applying`,
+            `${token.slice(-8)} final embed was overwritten (${when}); re-applying`,
           );
           await retryDiscordOperation(
             () => interaction.editReply(replyOptions),
             2,
             "Re-apply final embed",
           ).catch(() => {});
-        }
+        };
+
+        await repairIfReverted("immediate");
+        const recheck = setTimeout(() => {
+          repairIfReverted("delayed").catch(() => {});
+        }, LATE_REVERT_RECHECK_MS);
+        recheck.unref?.();
       }
 
       if (changedFileName && CompilingTasks[token]) {
