@@ -43,12 +43,49 @@ local function scrub(value: string): string
 	return (string.gsub(value, "[\128-\255]", "?"))
 end
 
+-- stdio.write yields, which is illegal inside a metamethod, a sort comparator
+-- or any other C-call boundary. Events are queued and written once the caller
+-- is somewhere a yield is allowed; coroutine.isyieldable() tells the two apart,
+-- so top-level output still streams immediately rather than batching to the end.
+local eventQueue: { string } = {}
+local draining = false
+local flushScheduled = false
+
+local function drainEvents()
+	if draining then
+		return
+	end
+	draining = true
+	while #eventQueue > 0 do
+		local batch = table.concat(eventQueue)
+		table.clear(eventQueue)
+		stdio.write(batch)
+	end
+	draining = false
+end
+
+local function scheduleFlush()
+	if flushScheduled then
+		return
+	end
+	flushScheduled = true
+	task.defer(function()
+		flushScheduled = false
+		drainEvents()
+	end)
+end
+
 local function writeEvent(event)
 	local ok, encoded = pcall(serde.encode, "json", event)
 	if not ok then
 		encoded = serde.encode("json", { t = event.t, v = scrub(tostring(event.v)) })
 	end
-	stdio.write(encoded .. "\n")
+	table.insert(eventQueue, encoded .. "\n")
+	if coroutine.isyieldable() then
+		drainEvents()
+	else
+		scheduleFlush()
+	end
 end
 
 local function write(kind: string, value: string)
@@ -790,6 +827,7 @@ table.freeze(environment)
 local chunk, compileError = compileSandboxed(job.source, "script", job.codegenEnabled)
 if chunk == nil then
 	emit("error", compileError)
+	drainEvents()
 	process.exit(1)
 end
 
@@ -814,3 +852,5 @@ end
 if not ok then
 	emit("error", if type(err) == "table" then tableToString(err) else tostring(err))
 end
+
+drainEvents()
