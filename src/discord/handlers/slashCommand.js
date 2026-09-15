@@ -201,13 +201,13 @@ async function handleTagCommand(interaction) {
     const contentRes = await axios.get(file.download_url);
     const text = contentRes.data;
     const displayName = resourceDisplayName(file.name);
-    const displayText = stripNoShowForDisplay(text);
+    const displayText = stripNoShowForDisplay(text).trim();
     const embed = new EmbedBuilder()
       .setTitle(displayName)
       .setDescription(
-        displayText.length > MAX_EMBED_DESCRIPTION
+        (displayText.length > MAX_EMBED_DESCRIPTION
           ? displayText.substring(0, MAX_EMBED_DESCRIPTION - 3) + "..."
-          : displayText,
+          : displayText) || null,
       )
       .setURL(file.html_url)
       .setColor(0x5865f2);
