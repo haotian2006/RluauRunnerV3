@@ -9,6 +9,7 @@ const {
 const {
   censorText,
   extractDocCodeBlocks,
+  extractDocImages,
   stripNoShowForDisplay,
 } = require("../../filter");
 const { log } = require("../../log");
@@ -210,13 +211,21 @@ async function handleTagCommand(interaction) {
       )
       .setURL(file.html_url)
       .setColor(0x5865f2);
+    const [firstImage, ...moreImages] = extractDocImages(text).slice(0, 4);
+    if (firstImage) embed.setImage(firstImage);
+    const embeds = [
+      embed,
+      ...moreImages.map((url) =>
+        new EmbedBuilder().setURL(file.html_url).setImage(url),
+      ),
+    ];
     const mention = target ? `<@${target.id}> ` : "";
 
     const components = buildTagComponents(extractDocCodeBlocks(text));
 
     await interaction.editReply({
       content: mention || undefined,
-      embeds: [embed],
+      embeds,
       components,
       allowedMentions: { users: target ? [target.id] : [] },
     });

@@ -28,7 +28,14 @@ function stripNoShowForDisplay(text) {
   return text
     .replace(/--\[\[NO_SHOW\]\][\s\S]*?--\[\[END\]\]/g, "")
     .replace(/--\[\[NO_EXECUTE\]\]\r?\n?/g, "")
-    .replace(/--\[\[name:[^\]]*\]\]\r?\n?/g, "");
+    .replace(/--\[\[name:[^\]]*\]\]\r?\n?/g, "")
+    .replace(/--\[\[image:[^\]]*\]\]\r?\n?/g, "");
+}
+
+function extractDocImages(text) {
+  return [...text.matchAll(/--\[\[image:\s*(https?:\/\/[^\s\]]+)\s*\]\]/g)].map(
+    (m) => m[1],
+  );
 }
 
 function extractDocCodeBlocks(markdown) {
@@ -71,4 +78,9 @@ function extractDocCodeBlocks(markdown) {
   return results;
 }
 
-module.exports = { censorText, stripNoShowForDisplay, extractDocCodeBlocks };
+module.exports = {
+  censorText,
+  stripNoShowForDisplay,
+  extractDocCodeBlocks,
+  extractDocImages,
+};
