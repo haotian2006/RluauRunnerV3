@@ -149,19 +149,29 @@ local function tableToString(t, indent, lookup, bypass)
 	local indentString = string.rep("  ", indent)
 	local result = "{\n"
 	lookup[t] = true
-	for key, value in pairs(t) do
+	local function inner(key, value)
 		local key_ = typeof(key) == "string" and `"{key}"` or tostring(key)
 		result = result .. indentString .. "  [" .. tostring(key_) .. "] = "
 
 		if type(value) == "table" then
 			if lookup[value] then
 				result ..= "<Circular Reference>"
-				continue
+				return
 			end
 
 			result = result .. tableToString(value, indent + 1, lookup, bypass)
 		else
 			result = result .. "" .. tostring(value) .. ",\n"
+		end
+	end
+	local array = {}
+	for i = 1, rawlen(t) do
+		array[i] = true
+		inner(i, rawget(t, i))
+	end
+	for key, value in pairs(t) do
+		if not array[key] then
+			inner(key, value)
 		end
 	end
 

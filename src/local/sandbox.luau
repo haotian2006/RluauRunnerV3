@@ -168,13 +168,21 @@ end
 
 local MAX_TABLE_DEPTH = 20
 
-local function tableToString(value: { [any]: any }, indent: number?, lookup: { [any]: boolean }?): string
-	local rendered = tostring(value)
-	if not string.find(rendered, "table:") then
-		return rendered
+local function tableToString(
+	value: { [any]: any },
+	indent: number?,
+	lookup: { [any]: boolean }?,
+	bypass: boolean?
+): string
+	if type(value) == "table" and not bypass then
+		local rendered = tostring(value)
+		if not string.find(rendered, "table:") then
+			return rendered
+		end
 	end
 
 	indent = indent or 0
+	-- Sandbox-only cap: untrusted input can nest arbitrarily deep and overflow.
 	if indent >= MAX_TABLE_DEPTH then
 		return "{...},\n"
 	end
@@ -183,17 +191,28 @@ local function tableToString(value: { [any]: any }, indent: number?, lookup: { [
 	local result = "{\n"
 	lookup[value] = true
 
-	for key, nested in pairs(value) do
+	local function inner(key: any, nested: any)
 		local formattedKey = if type(key) == "string" then `"{key}"` else tostring(key)
 		result ..= indentString .. "  [" .. formattedKey .. "] = "
 		if type(nested) == "table" then
 			if lookup[nested] then
-				result ..= "<Circular Reference>,\n"
+				result ..= "<Circular Reference>"
 			else
-				result ..= tableToString(nested, indent + 1, lookup)
+				result ..= tableToString(nested, indent + 1, lookup, bypass)
 			end
 		else
 			result ..= tostring(nested) .. ",\n"
+		end
+	end
+
+	local array = {}
+	for index = 1, rawlen(value) do
+		array[index] = true
+		inner(index, rawget(value, index))
+	end
+	for key, nested in pairs(value) do
+		if not array[key] then
+			inner(key, nested)
 		end
 	end
 
