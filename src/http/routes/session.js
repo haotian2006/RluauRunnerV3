@@ -103,13 +103,6 @@ function registerSessionRoutes(app) {
       state.PendingRobloxStarts.shift();
     }
     state.SERVER_NUMBERS += 1;
-    if (!existing) {
-      logBot(
-        "Roblox Server",
-        `${serverId} registered as Server #${state.SERVER_NUMBERS % SERVER_NUMBER_MODULO} ` +
-          `(${Object.keys(ExecuteTasks).length} task(s) queued)`,
-      );
-    }
     res.json({
       message: "Server started",
       id: state.SERVER_NUMBERS % SERVER_NUMBER_MODULO,

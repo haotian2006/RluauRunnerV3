@@ -12,7 +12,7 @@ const {
   extractDocImages,
   stripNoShowForDisplay,
 } = require("../../filter");
-const { log } = require("../../log");
+const { log, logBot } = require("../../log");
 const {
   CompilingTasks,
   ExecuteTasks,
@@ -34,6 +34,7 @@ const DOC_CODE_TTL_MS = 1000 * 60 * 10;
 const HIDDEN_INPUT_DELETE_MS = 3000;
 const STOP_SENTINEL = "STOP_ALL_SESSIONS_PLS";
 const MAX_EMBED_DESCRIPTION = 4096;
+const MAX_INPUT_ECHO = 1900;
 
 async function handlePing(interaction) {
   const sent = await interaction.reply({
@@ -87,15 +88,23 @@ async function handleInputCommand(interaction) {
   };
   if (!isStop) deliverLocalInput(interaction.user.id, input);
 
-  interaction.reply({
-    content: `sent '${isStop ? "a stop command" : censorText(input)}'`,
-    ephemeral:
-      interaction.commandName === "hiddeninput" ||
-      interaction.commandName === "stopall",
-  });
+  // Unawaited on purpose, so a rejection here must be caught: an echo over
+  // Discord's 2000 character limit used to crash the whole process.
+  let echo = isStop ? "a stop command" : censorText(input);
+  if (echo.length > MAX_INPUT_ECHO) {
+    echo = `${echo.slice(0, MAX_INPUT_ECHO)}... (${input.length} characters)`;
+  }
+  interaction
+    .reply({
+      content: `sent '${echo}'`,
+      ephemeral:
+        interaction.commandName === "hiddeninput" ||
+        interaction.commandName === "stopall",
+    })
+    .catch((error) => logBot("Input Reply Failed", error.message));
   if (interaction.commandName === "hiddeninput") {
     setTimeout(() => {
-      interaction.deleteReply();
+      interaction.deleteReply().catch(() => {});
     }, HIDDEN_INPUT_DELETE_MS);
   }
 

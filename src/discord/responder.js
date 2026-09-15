@@ -93,21 +93,10 @@ function createDiscordResponder(token) {
         );
       }
 
-      logBot(
-        "Delivery",
-        `${token.slice(-8)} user=${interaction.user.id} isLast=${isLast} ` +
-          `serverNum=${serverNum} chars=${String(responseContent ?? "").length} ` +
-          `files=${fileMap?.size ?? 0} ` +
-          `preview=${JSON.stringify(String(responseContent ?? "").slice(0, 60))}`,
-      );
       const sent = await retryDiscordOperation(
         () => interaction.editReply(replyOptions),
         3,
         "Edit reply",
-      );
-      logBot(
-        "Delivery",
-        `${token.slice(-8)} edit accepted, message ${sent?.id ?? "?"}`,
       );
 
       // A retried pending-embed request can land after this one and revert the

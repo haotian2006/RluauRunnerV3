@@ -192,10 +192,12 @@ async function failPendingTasks() {
 function reapRobloxServer(serverId) {
   const tasks = takeUnfinishedTasksForServer(serverId);
   unregisterRobloxServer(serverId);
-  logBot(
-    "Roblox Server Reaped",
-    `${serverId}: ${tasks.length} unfinished task(s) failed`,
-  );
+  if (tasks.length) {
+    logBot(
+      "Roblox Server Reaped",
+      `${serverId}: ${tasks.length} unfinished task(s) failed`,
+    );
+  }
 
   return Promise.allSettled(
     tasks.map((task) => failTask(task, "Roblox server stopped responding.")),
@@ -334,21 +336,11 @@ async function checkRobloxServer() {
         now - server.startedAt > SERVER_RUN_TIME_MAX
       ) {
         server.retiring = true;
-        logBot(
-          "Roblox Server",
-          `${server.serverId} reached its ${SERVER_RUN_TIME_MAX / 1000}s ` +
-            `lifespan while idle; retiring`,
-        );
       }
 
       if (now - server.lastPing <= SERVER_PING_TIMEOUT) continue;
 
       if (server.retiring) {
-        logBot(
-          "Roblox Server",
-          `${server.serverId} retiring and past ping timeout; reaping ` +
-            `(held ${server.activeTaskIds.size} task(s))`,
-        );
         void reapRobloxServer(server.serverId);
         continue;
       }

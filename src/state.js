@@ -141,7 +141,6 @@ function dispatchTask(uuid, serverId = state.RunningServer) {
     serverId,
     dispatchedAt: Date.now(),
   };
-  logBot("Roblox Handoff", `task ${uuid} claimed by ${serverId}`);
   return DispatchedTasks[uuid];
 }
 
@@ -172,10 +171,6 @@ function settleTasksForToken(token, finished = true) {
           timer: null,
           startedAt: Date.now(),
         };
-        logBot(
-          "Roblox Handoff",
-          `task ${uuid} is running on ${entry.serverId}; retry timer cleared`,
-        );
       } else {
         releaseServerTask(entry.serverId, uuid);
       }
