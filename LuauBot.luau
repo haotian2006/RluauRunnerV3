@@ -298,6 +298,16 @@ local function respondToInteraction(interactionToken, responseContent, logs, awa
 		task.spawn(a)
 	end
 end
+local CHUNK_ROOT_PATTERN = "RluauRunnerV3|PROCESS|[%w%-]+|"
+local CHUNK_NAMED_PATTERN = "RluauRunnerV3|PROCESS|[%w%-]+|([%w%-_]+)|"
+local function cleanChunkNames(text)
+	text = text:gsub(CHUNK_NAMED_PATTERN .. ":", "%1.")
+	text = text:gsub(CHUNK_NAMED_PATTERN, "%1")
+	text = text:match(CHUNK_ROOT_PATTERN .. ":(.+)") or text
+	text = text:gsub(CHUNK_ROOT_PATTERN, "script")
+	return text
+end
+
 local loadEnv
 local smt = script:FindFirstChild("LoadEnv")
 if smt then
@@ -334,7 +344,7 @@ local function executeCode(id, code, env, thread, delay)
 		`local _ = coroutine.running();task.spawn(function()local _c = {"{}"}local _=_ while coroutine.status(_) ~= 'dead' do {checks} task.wait();end;end);`
 	local header = #fs == 0 and "" or (table.concat(fs, "\n") .. "\n")
 	local src =
-		`{header}return function(imports){imports}{updates}return function() local _=(function (...) --[[START OF CODE]] {code}\n--[[END OF CODE]]\nend)()\n\n\t\t\ntask.wait({delay or EXECUTION_SETTLE_DELAY})\n\tend\nend`
+		`{header}return function(imports){imports}{updates}return function() return (function (...) --[[START OF CODE]] {code}\n--[[END OF CODE]]\nend)()\n\n\t\t\n\n\tend\nend`
 
 	local pass, fx = pcall(function()
 		m.Source = src
@@ -796,14 +806,23 @@ local function runCode(compCode, data)
 	end
 
 	env.discord = table.freeze(discord)
-
-	env._execute = function(code)
-		local fx, err = loadstring(code, id)
+	env._execute = function(code, name)
+		local chunk = id
+		if name ~= nil then
+			if type(name) ~= "string" then
+				error("_execute: name must be a string", 2)
+			end
+			local cleaned = name:gsub("[^%w%-_]", "")
+			if cleaned ~= "" then
+				chunk ..= cleaned .. "|"
+			end
+		end
+		local fx, err = loadstring(code, chunk)
 		if not fx then
 			return false, err
 		end
 		local m
-		fx, m = executeCode(id, code, env, thread, 0)
+		fx, m = executeCode(chunk, code, env, thread, 0)
 		return function()
 			fx = fx(env)
 			return fx()
@@ -870,6 +889,7 @@ local function runCode(compCode, data)
 		sus, msg = pcall(fx, env)
 		if sus then
 			sus, msg = pcall(msg)
+			task.wait(EXECUTION_SETTLE_DELAY)
 		end
 	end)
 	thread.stopped = false
@@ -934,8 +954,6 @@ local function runCode(compCode, data)
 			waitTime += task.wait(UPDATE_INTERVAL_SCALE(numOfResponses, isweb))
 		end
 
-		local fileData = table.concat(thread.output)
-
 		if thread.stopped then
 			sus = false
 			msg = "Script was forcefully stopped."
@@ -947,8 +965,7 @@ local function runCode(compCode, data)
 			if errorMessage:find("Script timeout: exhausted allowed execution time") then
 				table.insert(thread.output, createText(str .. "Script timeout: exhausted allowed execution time", 3))
 			else
-				errorMessage = errorMessage:match("RluauRunnerV3|PROCESS|[%w%-]+|:(.+)") or errorMessage
-				errorMessage = errorMessage:gsub("RluauRunnerV3|PROCESS|[%w%-]+|", "script")
+				errorMessage = cleanChunkNames(errorMessage)
 				table.insert(thread.output, createText(str .. errorMessage, 3))
 			end
 		elseif (env :: any).TIMESTAMP ~= false then
@@ -961,6 +978,11 @@ local function runCode(compCode, data)
 			table.insert(thread.output, createText(`You can increase it by setting the "TIMEOUT" global`, 2))
 		end
 
+		local time = math.max(0, os.clock() - thread.start - EXECUTION_SETTLE_DELAY)
+		pcall(task.cancel, thread.timeOutThread)
+		stopAll()
+		task.wait(0.5)
+		local fileData = table.concat(thread.output)
 		local truncated = truncateString(table.concat(truncateArray(thread.output, maxHeight)), maxHeight)
 		local log
 		if shouldLog == true then
@@ -1004,13 +1026,6 @@ local function runCode(compCode, data)
 		if truncated == "" then
 			truncated = "No Output"
 		end
-		-- The generated wrapper deliberately stays alive for one second after the
-		-- user's code returns. Keep that behavior, but do not report it as user
-		-- execution time in the Discord/web completion footer.
-		local time = math.max(0, os.clock() - thread.start - EXECUTION_SETTLE_DELAY)
-		pcall(task.cancel, thread.timeOutThread)
-		stopAll()
-		task.wait(0.5)
 		for _, event in thread.buttonCallbacks do
 			pcall(event.Destroy, event)
 		end
@@ -1133,8 +1148,7 @@ local function notifyClosing(reason)
 end
 
 ScriptContext.Error:Connect(function(err, stackTrace)
-	local msg = err:match("RluauRunnerV3|PROCESS|[%w%-]+|:(.+)") or err
-	msg = msg:gsub("RluauRunnerV3|PROCESS|[%w%-]+|", "script")
+	local msg = cleanChunkNames(err)
 	local process = stackTrace:match("RluauRunnerV3|PROCESS|([%w%-]+)|")
 	if process then
 		sendMessageTo(process, `{msg}`)
