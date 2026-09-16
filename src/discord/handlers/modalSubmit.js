@@ -4,6 +4,7 @@ const {
   getByteCodeOptions,
 } = require("../../tools/bytecode");
 const { byteCodeModalData } = require("../modals");
+const { logBot } = require("../../log");
 const { reply } = require("../reply");
 const { sendCompileRequestToRoblox } = require("../tasks");
 
@@ -76,6 +77,8 @@ async function handleCompileModal(interaction, nonce) {
     interaction.targetId,
     interaction,
     originalInteraction,
+  ).catch((error) =>
+    logBot("Compile Dispatch Failed", error.message),
   );
 }
 

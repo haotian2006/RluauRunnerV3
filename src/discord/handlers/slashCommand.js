@@ -155,6 +155,8 @@ async function handleCompileCommand(interaction) {
     interaction,
     null,
     true,
+  ).catch((error) =>
+    logBot("Compile Dispatch Failed", error.message),
   );
 }
 

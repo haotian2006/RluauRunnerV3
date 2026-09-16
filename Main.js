@@ -5,6 +5,7 @@ const {
   missingTools,
 } = require("./src/config");
 const { logBot } = require("./src/log");
+const { installSafetyNets } = require("./src/safety");
 const { migrationHint, reportProfiles } = require("./src/profiles");
 const { state } = require("./src/state");
 const { start: startHttpServer } = require("./src/http/server");
@@ -13,6 +14,7 @@ const { login } = require("./src/discord/client");
 const { registerInteractionHandler } = require("./src/discord/handlers");
 
 function main() {
+  installSafetyNets();
   const { loaded, skipped } = reportProfiles();
   if (loaded.length === 0) {
     if (skipped.length) {

@@ -132,6 +132,8 @@ async function handleContextMenu(interaction) {
       interaction.channelId,
       interaction.targetId,
       interaction,
+    ).catch((error) =>
+      logBot("Compile Dispatch Failed", error.message),
     );
   }
 }

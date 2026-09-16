@@ -5,6 +5,7 @@ const {
   docCodeStore,
 } = require("../../state");
 const { generateUUID } = require("../../util");
+const { logBot } = require("../../log");
 const { SCRIPT_BUTTON_PREFIX } = require("../scriptButtons");
 const { sendCompileRequestToRoblox } = require("../tasks");
 
@@ -87,6 +88,8 @@ async function handleTagRun(interaction) {
     interaction,
     null,
     false,
+  ).catch((error) =>
+    logBot("Compile Dispatch Failed", error.message),
   );
 }
 
