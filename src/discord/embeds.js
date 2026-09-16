@@ -3,6 +3,9 @@ const { censorText } = require("../filter");
 const { logBot } = require("../log");
 const { retryDiscordOperation } = require("./reply");
 
+const ANSI_GREY = "\u001b[0;30m";
+const ANSI_RESET = "\u001b[0m";
+
 function filesFromMap(fileMap) {
   return fileMap?.size > 0
     ? [...fileMap.values()].map(([l, ft, fn]) => ({
@@ -26,11 +29,14 @@ function liveAttachmentOptions(existingAttachments, fileMap, changedFile) {
 }
 
 // An empty ansi block renders as a bare "1" gutter, which reads as a result
-// that never arrived rather than one with no output.
+// that never arrived rather than one with no output. Keep the block and
+// put dimmed placeholder text in it so every state looks the same.
 function describeBody(responseContent, isLast) {
   const censored = censorText(String(responseContent ?? ""));
-  if (censored.trim()) return `\`\`\`ansi\n${censored}\n\`\`\``;
-  return isLast ? "\n*No output.*" : "\n*Running...*";
+  const body = censored.trim()
+    ? censored
+    : `${ANSI_GREY}${isLast ? "No output" : "Running..."}${ANSI_RESET}`;
+  return `\`\`\`ansi\n${body}\n\`\`\``;
 }
 
 function createResponseEmbed(
