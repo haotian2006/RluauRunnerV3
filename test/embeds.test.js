@@ -19,16 +19,35 @@ test("Roblox results retain their numbered server label", () => {
 test("pending results use a blank compiler embed without a runtime label", () => {
   const embed = createResponseEmbed(null, "user", "", false, 0, null);
   assert.equal(embed.data.title, "Luau Compiler Results");
-  assert.match(embed.data.description, /```ansi\n \n```$/);
+  assert.match(embed.data.description, /\*Running\.\.\.\*$/);
+  assert.doesNotMatch(embed.data.description, /ansi/);
 });
 
 test("pending Roblox results show that the server is starting", () => {
   const embed = createPendingResponseEmbed("roblox", "user");
   assert.equal(embed.data.title, "Starting Server...");
-  assert.match(embed.data.description, /```ansi\n \n```$/);
+  assert.match(embed.data.description, /\*Running\.\.\.\*$/);
+  assert.doesNotMatch(embed.data.description, /ansi/);
 });
 
 test("pending Lune results retain the Lune title", () => {
   const embed = createPendingResponseEmbed("lune", "user");
   assert.equal(embed.data.title, "Luau Compiler Results | Lune");
+});
+
+test("a finished run with no output says so instead of showing an empty block", () => {
+  const embed = createResponseEmbed("Lune", "user", "", true, 0.3, null);
+  assert.match(embed.data.description, /\*No output\.\*$/);
+  assert.doesNotMatch(embed.data.description, /ansi/);
+});
+
+test("whitespace-only output counts as no output", () => {
+  const embed = createResponseEmbed("Lune", "user", "   ", true, 0.3, null);
+  assert.match(embed.data.description, /\*No output\.\*$/);
+});
+
+test("real output still renders in an ansi block", () => {
+  const embed = createResponseEmbed("Lune", "user", "1 ", true, 0.3, null);
+  assert.match(embed.data.description, /```ansi/);
+  assert.match(embed.data.description, /1/);
 });

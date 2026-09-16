@@ -25,6 +25,14 @@ function liveAttachmentOptions(existingAttachments, fileMap, changedFile) {
   };
 }
 
+// An empty ansi block renders as a bare "1" gutter, which reads as a result
+// that never arrived rather than one with no output.
+function describeBody(responseContent, isLast) {
+  const censored = censorText(String(responseContent ?? ""));
+  if (censored.trim()) return `\`\`\`ansi\n${censored}\n\`\`\``;
+  return isLast ? "\n*No output.*" : "\n*Running...*";
+}
+
 function createResponseEmbed(
   serverNum,
   userId,
@@ -45,10 +53,7 @@ function createResponseEmbed(
         ? `Luau Compiler Results | ${runtimeLabel}`
         : "Luau Compiler Results",
     )
-    .setDescription(
-      `Requested by: <@${userId}>` +
-        `\`\`\`ansi\n${censorText(responseContent) || " "}\n\`\`\``,
-    )
+    .setDescription(`Requested by: <@${userId}>${describeBody(responseContent, isLast)}`)
     .setColor(0x8ce4ff);
 
   if (isLast) {
