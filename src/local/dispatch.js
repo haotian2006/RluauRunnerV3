@@ -31,6 +31,8 @@ const LIVE_UPDATE_INTERVAL_MS = 1000;
 // declaring the run stalled. Generous on purpose: a slow Discord edit is not a
 // stall, a run that never reports anything is.
 const TERMINAL_UPDATE_GRACE_MS = 60000;
+// Bounds both /input delivery and inputs parsed out of the source itself.
+const MAX_PENDING_INPUTS = 32;
 const ANSI_RED = "\u001b[0;31m";
 const ANSI_YELLOW = "\u001b[0;33m";
 const ANSI_RESET = "\u001b[0m";
@@ -50,7 +52,7 @@ function deliverLocalInput(userId, value) {
     if (run.actorKey !== actorKey) continue;
     if (run.sendInput?.(value)) {
       delivered += 1;
-    } else if (run.pendingInputs.length < 32) {
+    } else if (run.pendingInputs.length < MAX_PENDING_INPUTS) {
       run.pendingInputs.push(value);
       delivered += 1;
     }
@@ -58,11 +60,28 @@ function deliverLocalInput(userId, value) {
   return delivered;
 }
 
+// The Roblox executor queues inputs written into the source itself, so a
+// script that pairs --[[@ ... ]] with io.read works there and used to hang on
+// Lune, which only ever saw inputs arriving from /input. Patterns mirror the
+// Luau side, including block-form first and the [ exclusion that keeps --@
+// from matching the opening of a --[[@ block.
+function parseQueuedInputs(source) {
+  if (typeof source !== "string") return [];
+  const queued = [];
+  for (const match of source.matchAll(/--\[\[@([\s\S]*?)\]\]/g)) {
+    queued.push(match[1]);
+  }
+  for (const match of source.matchAll(/--@([^\n\r[]+)/g)) {
+    queued.push(match[1]);
+  }
+  return queued.slice(0, MAX_PENDING_INPUTS);
+}
+
 function deliverLocalInputToToken(token, value) {
   const run = localRunControllers.get(token);
   if (!run) return false;
   if (run.sendInput?.(value)) return true;
-  if (run.pendingInputs.length >= 32) return false;
+  if (run.pendingInputs.length >= MAX_PENDING_INPUTS) return false;
   run.pendingInputs.push(value);
   return true;
 }
@@ -188,6 +207,8 @@ async function tryRunLocally(
   const selected = selection || (await selectRuntime(source));
   if (selected.runtime !== "lune") return false;
 
+  const queuedInputs = parseQueuedInputs(source);
+
   source = await desugarConstForLune(source);
   // What actually runs, which is not what the user typed.
   storeSource(token, source);
@@ -259,7 +280,7 @@ async function tryRunLocally(
   const runState = {
     controller,
     actorKey,
-    pendingInputs: [],
+    pendingInputs: queuedInputs,
     sendInput: null,
     sendProtocolMessage: null,
   };
@@ -440,10 +461,12 @@ async function tryRunLocally(
 }
 
 module.exports = {
+  MAX_PENDING_INPUTS,
   cancelLocalRun,
   deliverLocalInput,
   deliverLocalInputToToken,
   localTimeoutForSelection,
+  parseQueuedInputs,
   queueLuneWhenBusy,
   selectRuntime,
   tryRunLocally,

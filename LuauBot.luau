@@ -680,7 +680,8 @@ local function runCode(compCode, data)
 		local length = select("#", ...)
 		local time = os.clock() - start
 		for i = 1, length do
-			text ..= tostring(array[i]) .. " "
+			local value = type(array[i]) == "table" and tableToString(array[i]) or tostring(array[i])
+			text ..= value .. " "
 		end
 		local noTimeStamp = (env :: any).TIMESTAMP == false
 		table.insert(
