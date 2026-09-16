@@ -123,7 +123,7 @@ function finishOutput(
     lines.push(`${color}${result.error}${ANSI_RESET}`);
   }
 
-  let output = lines.filter(Boolean).join("\n");
+  let output = lines.filter((line) => line != null).join("\n");
   if (Number.isInteger(maxLines) && maxLines > 0) {
     const outputLines = output.split("\n");
     if (outputLines.length > maxLines) {
@@ -280,7 +280,7 @@ async function tryRunLocally(
         const activeSession = getSession(token);
         if (!activeSession) return;
         await activeSession.responder.deliver({
-          responseContent: output || " ",
+          responseContent: output,
           logs: changedFile?.[0],
           changedFileName,
           fileMap,

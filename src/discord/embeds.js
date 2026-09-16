@@ -32,8 +32,10 @@ function liveAttachmentOptions(existingAttachments, fileMap, changedFile) {
 // that never arrived rather than one with no output. Keep the block and
 // put dimmed placeholder text in it so every state looks the same.
 function describeBody(responseContent, isLast) {
+  // Only a total absence of output is "no output": a script that printed a
+  // space or a blank line did produce something.
   const censored = censorText(String(responseContent ?? ""));
-  const body = censored.trim()
+  const body = censored.length
     ? censored
     : `${ANSI_GREY}${isLast ? "No output" : "Running..."}${ANSI_RESET}`;
   return `\`\`\`ansi\n${body}\n\`\`\``;

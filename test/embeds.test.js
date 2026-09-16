@@ -41,9 +41,14 @@ test("a finished run with no output says so instead of showing an empty block", 
   assert.match(embed.data.description, /No output/);
 });
 
-test("whitespace-only output counts as no output", () => {
+test("whitespace a script actually printed is not no output", () => {
   const embed = createResponseEmbed("Lune", "user", "   ", true, 0.3, null);
-  assert.match(embed.data.description, /No output/);
+  assert.doesNotMatch(embed.data.description, /No output/);
+});
+
+test("a blank line a script printed is not no output", () => {
+  const embed = createResponseEmbed("Lune", "user", "\n", true, 0.3, null);
+  assert.doesNotMatch(embed.data.description, /No output/);
 });
 
 test("real output still renders in an ansi block", () => {
