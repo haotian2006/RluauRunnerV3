@@ -7,11 +7,17 @@ const LOCAL_MAX_PER_ACTOR = 10;
 const LOCAL_STALE_AFTER_MS = 3 * 1000;
 const LOCAL_STALE_LIMIT = 2;
 const LOCAL_STALE_BLOCK_MS = 11 * 1000;
+const INPUT_WINDOW_MS = 10 * 1000;
+// Text inputs are typed by a person; chunks are one file split up, so the
+// chunk budget has to clear a full upload in one window rather than pace it.
+const INPUT_MAX_PER_WINDOW = 40;
+const INPUT_CHUNK_MAX_PER_WINDOW = 600;
 
 const actorIncidents = new Map();
 const localExecutions = new Map();
 const localExecutionHealth = new Map();
 const localAdmissionBlocks = new Map();
+const inputRates = new Map();
 
 function codeHash(source) {
   return crypto.createHash("sha256").update(source).digest("hex");
@@ -177,6 +183,27 @@ function getLocalAdmissionBlock(actorKey, now = Date.now()) {
   };
 }
 
+/** Caps how often an actor can queue inputs. Size limits are enforced elsewhere. */
+function checkInputRate(actorKey, kind = "input", now = Date.now()) {
+  if (!actorKey) return { allowed: true, remainingMs: 0 };
+
+  const limit =
+    kind === "chunk" ? INPUT_CHUNK_MAX_PER_WINDOW : INPUT_MAX_PER_WINDOW;
+  const key = `${actorKey}|${kind}`;
+  let entry = inputRates.get(key);
+  if (!entry || now >= entry.resetAt) {
+    entry = { count: 0, resetAt: now + INPUT_WINDOW_MS };
+    inputRates.set(key, entry);
+  }
+
+  if (entry.count >= limit) {
+    return { allowed: false, remainingMs: entry.resetAt - now, limit };
+  }
+
+  entry.count += 1;
+  return { allowed: true, remainingMs: 0, limit };
+}
+
 const sweep = setInterval(() => {
   const now = Date.now();
   for (const [actorKey, entry] of actorIncidents) {
@@ -187,6 +214,9 @@ const sweep = setInterval(() => {
   }
   for (const [actorKey, blockedUntil] of localAdmissionBlocks) {
     if (blockedUntil <= now) localAdmissionBlocks.delete(actorKey);
+  }
+  for (const [key, entry] of inputRates) {
+    if (now >= entry.resetAt) inputRates.delete(key);
   }
 }, CRASH_WINDOW_MS);
 sweep.unref();
@@ -199,7 +229,11 @@ module.exports = {
   LOCAL_STALE_AFTER_MS,
   LOCAL_STALE_BLOCK_MS,
   LOCAL_STALE_LIMIT,
+  INPUT_CHUNK_MAX_PER_WINDOW,
+  INPUT_MAX_PER_WINDOW,
+  INPUT_WINDOW_MS,
   acquireLocalExecution,
+  checkInputRate,
   codeHash,
   finishLocalExecutionHealth,
   getActorBlock,

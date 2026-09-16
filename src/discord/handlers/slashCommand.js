@@ -12,6 +12,7 @@ const {
   extractDocImages,
   stripNoShowForDisplay,
 } = require("../../filter");
+const { INPUT_WINDOW_MS, checkInputRate } = require("../../abuse");
 const { log, logBot } = require("../../log");
 const {
   CompilingTasks,
@@ -77,6 +78,20 @@ function stopUserSessions(interaction) {
 
 async function handleInputCommand(interaction) {
   const isStop = interaction.commandName === "stopall";
+
+  // Never throttle a stop - it is the way out of a run that is already misbehaving.
+  if (!isStop) {
+    const rate = checkInputRate(`discord:${interaction.user.id}`);
+    if (!rate.allowed) {
+      return interaction
+        .reply({
+          content: `Slow down - max ${rate.limit} inputs per ${Math.round(INPUT_WINDOW_MS / 1000)}s. Try again in ${Math.ceil(rate.remainingMs / 1000)} seconds.`,
+          ephemeral: true,
+        })
+        .catch((error) => logBot("Input Rate Reply Failed", error.message));
+    }
+  }
+
   const input = isStop
     ? STOP_SENTINEL
     : interaction.options.getString("input") || "";

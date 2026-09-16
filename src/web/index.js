@@ -1,4 +1,9 @@
-const { codeHash, getActorBlock } = require("../abuse");
+const {
+  INPUT_WINDOW_MS,
+  checkInputRate,
+  codeHash,
+  getActorBlock,
+} = require("../abuse");
 const { MAX_DATA_TO_SEND, TRUST_PROXY } = require("../config");
 const { encodeZstd } = require("../chunks");
 const { closeSession, getSession, openSession } = require("../core/sessions");
@@ -249,6 +254,17 @@ function registerWebRoutes(app) {
       return res.status(404).json({ error: "Session not found" });
     }
 
+    const anonIp = hashIp(req.ip);
+    const rate = checkInputRate(
+      `web:${anonIp}`,
+      isFileChunk ? "chunk" : "input",
+    );
+    if (!rate.allowed) {
+      return res.status(429).json({
+        error: `Rate limit: max ${rate.limit} inputs per ${Math.round(INPUT_WINDOW_MS / 1000)}s. Try again in ${Math.ceil(rate.remainingMs / 1000)} seconds.`,
+      });
+    }
+
     if (isFileChunk) {
       if (!isFile || typeof input !== "string") {
         return res.status(400).json({ error: "Missing file chunk data" });
@@ -325,12 +341,7 @@ function registerWebRoutes(app) {
         return res.status(400).json(tooLarge());
       }
 
-      log(
-        hashIp(req.ip),
-        "web",
-        "input",
-        `File uploaded: ${joined.length} bytes`,
-      );
+      log(anonIp, "web", "input", `File uploaded: ${joined.length} bytes`);
       queueInput(token, joined);
       return res.json({ message: "Sent", complete: true });
     }
@@ -339,7 +350,6 @@ function registerWebRoutes(app) {
       return res.status(400).json({ error: "Missing input" });
     }
 
-    const anonIp = hashIp(req.ip);
     let value;
     if (isFile) {
       const buf = Buffer.from(input, "base64");
