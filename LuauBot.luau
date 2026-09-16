@@ -802,11 +802,12 @@ local function runCode(compCode, data)
 		if not fx then
 			return false, err
 		end
-		fx = executeCode(id, code, env, thread, 0)
+		local m
+		fx, m = executeCode(id, code, env, thread, 0)
 		return function()
 			fx = fx(env)
 			return fx()
-		end
+		end, m
 	end
 
 	env.TIMEOUT = DEFAULT_TIMEOUT
