@@ -3,6 +3,7 @@ const { EmbedBuilder } = require("discord.js");
 const { safeMessage } = require("../sanitize");
 const { logBot } = require("../log");
 const { CompilingTasks } = require("../state");
+const { getSourceUrl } = require("../sourceStore");
 const {
   createResponseEmbed,
   handleFollowUpResponse,
@@ -75,6 +76,7 @@ function createDiscordResponder(token) {
         isLast,
         runtime,
         link,
+        getSourceUrl(token),
       );
 
       const replyOptions = {

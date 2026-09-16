@@ -6,6 +6,7 @@ const { logBot } = require("../log");
 const { createPendingResponseEmbed } = require("./embeds");
 const { createDiscordResponder } = require("./responder");
 const { CompilingTasks, ExecuteTasks } = require("../state");
+const { getSourceUrl, storeSource } = require("../sourceStore");
 const { generateUUID } = require("../util");
 const { cleanupScriptButtons } = require("./scriptButtons");
 
@@ -24,10 +25,18 @@ async function sendCompileRequestToRoblox(
   const baseActorKey = `discord:${interaction.user.id}`;
   const selection = await selectRuntime(code);
 
+  // Stored before dispatch so the pending embed already carries the link. The
+  // local runtime rewrites the source and stores its own copy over this one.
+  storeSource(interaction.token, code);
+
   await interaction.editReply({
     content: null,
     embeds: [
-      createPendingResponseEmbed(selection.runtime, interaction.user.id),
+      createPendingResponseEmbed(
+        selection.runtime,
+        interaction.user.id,
+        getSourceUrl(interaction.token),
+      ),
     ],
     components: [],
   });
@@ -110,7 +119,13 @@ async function sendCompileRequestToRoblox(
     }
     await interaction.editReply({
       content: null,
-      embeds: [createPendingResponseEmbed("roblox", interaction.user.id)],
+      embeds: [
+        createPendingResponseEmbed(
+          "roblox",
+          interaction.user.id,
+          getSourceUrl(interaction.token),
+        ),
+      ],
       components: [],
     });
   }

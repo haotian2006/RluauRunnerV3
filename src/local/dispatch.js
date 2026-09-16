@@ -20,6 +20,7 @@ const {
 const { closeSession, getSession } = require("../core/sessions");
 const { logBot } = require("../log");
 const { desugarConstForLune } = require("./constDesugar");
+const { storeSource } = require("../sourceStore");
 const { runLocal } = require("./run");
 const { classify, describeClassification } = require("./router");
 
@@ -188,6 +189,8 @@ async function tryRunLocally(
   if (selected.runtime !== "lune") return false;
 
   source = await desugarConstForLune(source);
+  // What actually runs, which is not what the user typed.
+  storeSource(token, source);
 
   let session = getSession(token);
   if (!session) return true;

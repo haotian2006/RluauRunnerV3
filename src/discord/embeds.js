@@ -48,6 +48,7 @@ function createResponseEmbed(
   isLast,
   runtime,
   msgLink,
+  sourceUrl,
 ) {
   const runtimeLabel =
     serverNum == null
@@ -61,7 +62,10 @@ function createResponseEmbed(
         ? `Luau Compiler Results | ${runtimeLabel}`
         : "Luau Compiler Results",
     )
-    .setDescription(`Requested by: <@${userId}>${describeBody(responseContent, isLast)}`)
+    .setDescription(
+      `Requested by: <@${userId}>${sourceUrl ? ` | [see raw](${sourceUrl})` : ""}` +
+        describeBody(responseContent, isLast),
+    )
     .setColor(0x8ce4ff);
 
   if (isLast) {
@@ -76,7 +80,7 @@ function createResponseEmbed(
   return embed;
 }
 
-function createPendingResponseEmbed(runtime, userId) {
+function createPendingResponseEmbed(runtime, userId, sourceUrl) {
   const embed = createResponseEmbed(
     runtime === "lune" ? "Lune" : null,
     userId,
@@ -84,6 +88,7 @@ function createPendingResponseEmbed(runtime, userId) {
     false,
     0,
     null,
+    sourceUrl,
   );
   if (runtime === "roblox") embed.setTitle("Starting Server...");
   return embed;

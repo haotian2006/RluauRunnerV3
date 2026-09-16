@@ -144,6 +144,31 @@ const TRUST_PROXY = loadTrustProxy();
 const ENABLE_DISCORD = envFlag("ENABLE_DISCORD", true);
 const ENABLE_WEB = envFlag("ENABLE_WEB", false);
 
+const STORE_COMPILE_SOURCE = envFlag("STORE_COMPILE_SOURCE", false);
+
+function loadPlaygroundUrl() {
+  const raw = process.env.PLAYGROUND_URL;
+  if (raw === undefined) return DEFAULT_PLAYGROUND_URL;
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  try {
+    const parsed = new URL(trimmed);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      throw new Error("bad scheme");
+    }
+  } catch {
+    console.warn(
+      `Warning: PLAYGROUND_URL="${raw}" is not a valid http(s) URL, source links will serve raw text.`,
+    );
+    return null;
+  }
+  return trimmed;
+}
+
+const DEFAULT_PLAYGROUND_URL =
+  "https://haotian2006.github.io/LuauBotSite/playground.html";
+const PLAYGROUND_URL = loadPlaygroundUrl();
+
 const ENABLE_LOCAL_EXEC = envFlag("ENABLE_LOCAL_EXEC", false);
 if (ENABLE_LOCAL_EXEC && process.platform === "win32") {
   console.warn(
@@ -244,6 +269,22 @@ module.exports = {
   ENABLE_DISCORD,
   ENABLE_WEB,
   TRUST_PROXY,
+
+  // Keeps the exact source of each Discord compile on disk so the result embed
+  // can link to it. Off by default: it is user code sitting on the host.
+  STORE_COMPILE_SOURCE,
+  PLAYGROUND_URL,
+  // The link lives in a Discord message forever, so a short TTL means most
+  // clicks 404. A day covers "why did my script break" without unbounded growth.
+  COMPILE_SOURCE_TTL_MS: envNumber(
+    "COMPILE_SOURCE_TTL_MS",
+    1000 * 60 * 60 * 24,
+  ),
+  COMPILE_SOURCE_MAX_BYTES: envNumber("COMPILE_SOURCE_MAX_BYTES", 1024 * 1024),
+  COMPILE_SOURCE_TOTAL_BYTES: envNumber(
+    "COMPILE_SOURCE_TOTAL_BYTES",
+    200 * 1024 * 1024,
+  ),
   missingTools,
 
   ENABLE_LOCAL_EXEC,

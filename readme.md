@@ -96,6 +96,11 @@ LOCAL_MAX_CONCURRENT=2(OPTIONAL, default 2, global cap on concurrent Lune runs)
 LOCAL_MEMORY_LIMIT_MB=256(OPTIONAL, default 256, Linux only)
 LOCAL_CPU_QUOTA_PERCENT=0(OPTIONAL, default 0/disabled, Linux only, needs systemd)
 MAX_ROBLOX_WORKERS=4(OPTIONAL, default 4, per enabled profile)
+STORE_COMPILE_SOURCE=false(OPTIONAL, default false, adds a "see raw" link to results)
+COMPILE_SOURCE_TTL_MS=86400000(OPTIONAL, default 86400000 / 24 hours)
+COMPILE_SOURCE_MAX_BYTES=1048576(OPTIONAL, default 1 MB per source)
+COMPILE_SOURCE_TOTAL_BYTES=209715200(OPTIONAL, default 200 MB for all stored sources)
+PLAYGROUND_URL=https://haotian2006.github.io/LuauBotSite/playground.html(OPTIONAL, blank disables the redirect)
 TRUST_PROXY=false(OPTIONAL, default false)
 FORM_ID=Google_Form_Id(OPTIONAL)
 FORM_ENTRY_NAME=entry.0000000000(OPTIONAL)
@@ -106,6 +111,8 @@ FORM_ENTRY_DATA=entry.0000000000(OPTIONAL)
 
 `CALLBACK_URL` is the address the Roblox session sends its requests back to.
 It must include the scheme and no trailing slash.
+
+`STORE_COMPILE_SOURCE` is covered in [Source links](#source-links-optional).
 
 Roblox credentials are **not** read from `.env` any more. They live in
 `profiles/`. The `FORM_*` variables are covered in
@@ -162,6 +169,45 @@ so two enabled profiles allow up to 8 workers total), and gives responsive
 workers one new task per poll, so another task can run while existing code is
 yielding. A non-yielding script can temporarily pause tasks sharing its
 worker, but queued work moves to a responsive or replacement worker.
+
+## Source links (optional)
+
+With `STORE_COMPILE_SOURCE=true`, every Discord compile writes the source it is
+about to run to `<tmp>/rluau-sources/` and the result embed gains a **see raw**
+link. Off by default, since that is user code sitting on the host disk.
+
+What is stored is what actually ran, not what was typed: a script routed to Lune
+is desugared first ([`src/local/constDesugar.js`](src/local/constDesugar.js)),
+and the stored copy is replaced with the desugared one.
+
+Two routes serve it:
+
+- `GET /raw/:id` returns the text as `text/plain`.
+- `GET /source/:id` is what the embed links to. When the playground is usable
+  (`ENABLE_WEB=true` and `PLAYGROUND_URL` set) it redirects to
+  `PLAYGROUND_URL?source=<id>`; otherwise it serves the text itself.
+
+Only the id travels to the playground. The playground already knows this host
+address, so it builds the `/raw/:id` URL and fetches the code itself.
+
+A miss is not an HTTP error: `/raw/:id` answers 200 with runnable Luau -
+`error("EXPIRED")` for an id whose source is gone, `error("DOES NOT EXIST")`
+for one that was never stored - so the playground can drop the reply straight
+into its editor. `X-Source-Status: expired|unknown` marks those replies for
+anything that needs to tell them apart.
+
+Opening a source in the playground needs the playground to read that `source`
+query parameter and fetch `/raw/<id>`. Without that support on the site, set
+`PLAYGROUND_URL=` (blank) so links serve plain text instead.
+
+The id is a UUID and is the only thing guarding the source, so treat the link as
+the secret: anyone holding it can read that script until it expires.
+
+Three limits bound the store, all tunable in `.env`: `COMPILE_SOURCE_TTL_MS`
+(24h default - the link sits in a Discord message forever, so a short TTL means
+most clicks 404), `COMPILE_SOURCE_MAX_BYTES` (1 MB, above which no link is
+offered at all), and `COMPILE_SOURCE_TOTAL_BYTES` (200 MB, oldest evicted
+first). Nothing survives a restart.
 
 ## Usage logging (optional)
 

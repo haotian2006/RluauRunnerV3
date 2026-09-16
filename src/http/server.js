@@ -4,6 +4,7 @@ const { BODY_LIMIT, ENABLE_WEB, PORT } = require("../config");
 const { registerButtonRoutes } = require("./routes/buttons");
 const { registerRespondRoutes } = require("./routes/respond");
 const { registerSessionRoutes } = require("./routes/session");
+const { registerSourceRoutes } = require("./routes/source");
 const { registerWebRoutes } = require("../web");
 
 const app = express();
@@ -21,6 +22,7 @@ app.use(express.json({ limit: BODY_LIMIT }));
 registerRespondRoutes(app);
 registerButtonRoutes(app);
 registerSessionRoutes(app);
+registerSourceRoutes(app);
 
 if (ENABLE_WEB) {
   registerWebRoutes(app);
