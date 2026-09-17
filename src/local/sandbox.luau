@@ -815,7 +815,7 @@ end
 local prelude = `return function(imports) local {table.concat(importNames, ", ")} = {table.concat(
 	importAssignments,
 	", "
-)}; return function() `
+)}; return function(...) `
 
 compileSandboxed = function(source, chunkName, codegenEnabled)
 	local ok, compiledOrError = pcall(luau.compile, prelude .. source .. "\nend\nend", {
