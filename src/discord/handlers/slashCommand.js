@@ -1,24 +1,12 @@
 const axios = require("axios");
-const {
-  ActionRowBuilder,
-  ButtonBuilder,
-  ButtonStyle,
-  EmbedBuilder,
-} = require("discord.js");
 
-const {
-  censorText,
-  extractDocCodeBlocks,
-  extractDocImages,
-  stripNoShowForDisplay,
-} = require("../../filter");
+const { censorText } = require("../../filter");
 const { INPUT_WINDOW_MS, checkInputRate } = require("../../abuse");
 const { log, logBot } = require("../../log");
 const {
   CompilingTasks,
   ExecuteTasks,
   Inputs,
-  docCodeStore,
 } = require("../../state");
 const { generateUUID, wait } = require("../../util");
 const {
@@ -29,12 +17,11 @@ const { closeSession } = require("../../core/sessions");
 const { getResources, resourceDisplayName } = require("../resources");
 const { sendCompileRequestToRoblox } = require("../tasks");
 const { cleanupScriptButtons } = require("../scriptButtons");
+const { buildTagMessage } = require("../tagRender");
 
 const INPUT_TTL_MS = 1000 * 30;
-const DOC_CODE_TTL_MS = 1000 * 60 * 10;
 const HIDDEN_INPUT_DELETE_MS = 3000;
 const STOP_SENTINEL = "STOP_ALL_SESSIONS_PLS";
-const MAX_EMBED_DESCRIPTION = 4096;
 const MAX_INPUT_ECHO = 1900;
 
 async function handlePing(interaction) {
@@ -175,36 +162,6 @@ async function handleCompileCommand(interaction) {
   );
 }
 
-function buildTagComponents(codeBlocks) {
-  const components = [];
-  if (codeBlocks.length === 0) return components;
-
-  const uuids = codeBlocks.map((block) => {
-    const uuid = generateUUID();
-    docCodeStore[uuid] =
-      `log("Running: ${block.label}", "cyan", true)\n${block.code}`;
-    setTimeout(() => {
-      delete docCodeStore[uuid];
-    }, DOC_CODE_TTL_MS);
-    return uuid;
-  });
-
-  for (let i = 0; i < Math.min(codeBlocks.length, 25); i += 5) {
-    const row = new ActionRowBuilder();
-    const slice = codeBlocks.slice(i, i + 5);
-    row.addComponents(
-      slice.map((block, j) =>
-        new ButtonBuilder()
-          .setCustomId(`tag_run:${uuids[i + j]}`)
-          .setLabel(block.label)
-          .setStyle(ButtonStyle.Primary),
-      ),
-    );
-    components.push(row);
-  }
-  return components;
-}
-
 async function handleTagCommand(interaction) {
   await interaction.deferReply({ ephemeral: false });
   const resourceName = interaction.options.getString("resource");
@@ -226,28 +183,11 @@ async function handleTagCommand(interaction) {
     }
     const contentRes = await axios.get(file.download_url);
     const text = contentRes.data;
-    const displayName = resourceDisplayName(file.name);
-    const displayText = stripNoShowForDisplay(text).trim();
-    const embed = new EmbedBuilder()
-      .setTitle(displayName)
-      .setDescription(
-        (displayText.length > MAX_EMBED_DESCRIPTION
-          ? displayText.substring(0, MAX_EMBED_DESCRIPTION - 3) + "..."
-          : displayText) || null,
-      )
-      .setURL(file.html_url)
-      .setColor(0x5865f2);
-    const [firstImage, ...moreImages] = extractDocImages(text).slice(0, 4);
-    if (firstImage) embed.setImage(firstImage);
-    const embeds = [
-      embed,
-      ...moreImages.map((url) =>
-        new EmbedBuilder().setURL(file.html_url).setImage(url),
-      ),
-    ];
+    const { embeds, components } = buildTagMessage(text, {
+      displayName: resourceDisplayName(file.name),
+      url: file.html_url,
+    });
     const mention = target ? `<@${target.id}> ` : "";
-
-    const components = buildTagComponents(extractDocCodeBlocks(text));
 
     await interaction.editReply({
       content: mention || undefined,

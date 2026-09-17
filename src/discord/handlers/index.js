@@ -5,8 +5,10 @@ const { wrapEphemeral } = require("../permissions");
 const { handleAutocomplete } = require("./autocomplete");
 const {
   handleScriptButton,
+  handleTagPublish,
   handleTagRun,
   isScriptButton,
+  isTagPublish,
   isTagRun,
 } = require("./button");
 const { handleContextMenu } = require("./contextMenu");
@@ -43,6 +45,10 @@ function registerInteractionHandler() {
 
       if (isTagRun(interaction)) {
         return await handleTagRun(interaction);
+      }
+
+      if (isTagPublish(interaction)) {
+        return await handleTagPublish(interaction);
       }
 
       if (interaction.isAutocomplete()) {

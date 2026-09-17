@@ -29,6 +29,7 @@ const Inputs = {};
 const ScriptButtonCallbacks = new Map();
 
 const docCodeStore = {};
+const docPreviewStore = {};
 
 const DispatchedTasks = {};
 
@@ -224,6 +225,7 @@ module.exports = {
   Inputs,
   ScriptButtonCallbacks,
   docCodeStore,
+  docPreviewStore,
   ActiveRobloxTasks,
   DispatchedTasks,
   RobloxServers,

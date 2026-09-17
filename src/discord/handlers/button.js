@@ -3,11 +3,13 @@ const {
   Inputs,
   ScriptButtonCallbacks,
   docCodeStore,
+  docPreviewStore,
 } = require("../../state");
 const { generateUUID } = require("../../util");
 const { logBot } = require("../../log");
 const { SCRIPT_BUTTON_PREFIX } = require("../scriptButtons");
 const { sendCompileRequestToRoblox } = require("../tasks");
+const { TAG_PUBLISH_PREFIX, buildTagMessage } = require("../tagRender");
 
 const TAG_RUN_PREFIX = "tag_run:";
 const INPUT_TTL_MS = 30 * 1000;
@@ -93,9 +95,36 @@ async function handleTagRun(interaction) {
   );
 }
 
+function isTagPublish(interaction) {
+  return (
+    interaction.isButton() &&
+    interaction.customId.startsWith(TAG_PUBLISH_PREFIX)
+  );
+}
+
+/** Repost an ephemeral tag preview into the channel for everyone to see. */
+async function handleTagPublish(interaction) {
+  const uuid = interaction.customId.slice(TAG_PUBLISH_PREFIX.length);
+  const preview = docPreviewStore[uuid];
+  if (!preview) {
+    await interaction.reply({
+      content: "This preview has expired.",
+      ephemeral: true,
+    });
+    return;
+  }
+  const { embeds, components } = buildTagMessage(preview.text, {
+    displayName: preview.displayName,
+    url: preview.url,
+  });
+  await interaction.reply({ embeds, components });
+}
+
 module.exports = {
   isScriptButton,
   handleScriptButton,
   isTagRun,
   handleTagRun,
+  isTagPublish,
+  handleTagPublish,
 };

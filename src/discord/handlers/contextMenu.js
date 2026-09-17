@@ -1,8 +1,10 @@
+const { ButtonBuilder, ButtonStyle } = require("discord.js");
+
 const { MAX_DATA_TO_SEND } = require("../../config");
 const { encodeZstd } = require("../../chunks");
 const { log, logBot } = require("../../log");
 const { deliverLocalInput } = require("../../local/dispatch");
-const { Inputs } = require("../../state");
+const { Inputs, docPreviewStore } = require("../../state");
 const { generateUUID } = require("../../util");
 const { analyzeLuau, formatLuau, generateAST } = require("../../tools/luau");
 const {
@@ -14,12 +16,19 @@ const {
 const {
   getCodeFromContextMenu,
   getInputsFromContext,
+  getTagSourceFromContextMenu,
 } = require("../attachments");
 const { createByteModal, createCompileModal } = require("../modals");
 const { reply } = require("../reply");
 const { sendCompileRequestToRoblox } = require("../tasks");
+const {
+  TAG_PUBLISH_PREFIX,
+  buildTagMessage,
+  tagTitleFromSource,
+} = require("../tagRender");
 
 const INPUT_TTL_MS = 1000 * 30;
+const TAG_PREVIEW_TTL_MS = 1000 * 60 * 10;
 
 async function handleInputContext(interaction) {
   await interaction.deferReply();
@@ -70,6 +79,52 @@ async function handleInputContext(interaction) {
 }
 
 /**
+ * Render a message's markdown the way /tag would, so a tag can be checked
+ * before it is merged into the resources repo. Private to the caller: the
+ * source is unreviewed, and authors iterate several times per tag.
+ */
+async function handleTagPreview(interaction) {
+  await interaction.deferReply({ ephemeral: true });
+  const text = await getTagSourceFromContextMenu(interaction);
+
+  log(
+    interaction.user.id,
+    interaction.user.username,
+    interaction.commandName,
+    `Preview length: ${text.length} characters`,
+  );
+
+  if (!text.trim()) {
+    await interaction.editReply({
+      content:
+        "That message has no tag markdown. Put it in the message text, or attach it as a `.md`/`.txt` file.",
+    });
+    return;
+  }
+
+  const uid = generateUUID();
+  const displayName = tagTitleFromSource(text) || "Tag Preview";
+  const url = interaction.targetMessage.url;
+  docPreviewStore[uid] = { text, displayName, url };
+  setTimeout(() => {
+    delete docPreviewStore[uid];
+  }, TAG_PREVIEW_TTL_MS);
+
+  const { embeds, components } = buildTagMessage(text, {
+    displayName,
+    url,
+    extraButtons: [
+      new ButtonBuilder()
+        .setCustomId(`${TAG_PUBLISH_PREFIX}${uid}`)
+        .setLabel("Post publicly")
+        .setStyle(ButtonStyle.Secondary),
+    ],
+  });
+
+  await interaction.editReply({ embeds, components });
+}
+
+/**
  * Message context-menu commands
  *
  * @param {import('discord.js').MessageContextMenuCommandInteraction} interaction
@@ -77,6 +132,10 @@ async function handleInputContext(interaction) {
 async function handleContextMenu(interaction) {
   if (interaction.commandName === "input") {
     return handleInputContext(interaction);
+  }
+
+  if (interaction.commandName === "previewTag") {
+    return handleTagPreview(interaction);
   }
 
   const code = await getCodeFromContextMenu(interaction);

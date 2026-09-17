@@ -144,6 +144,12 @@ const commands = [
     contexts: [0, 1, 2],
     type: 3,
   },
+  {
+    name: "previewTag",
+    integration_types: [0, 1],
+    contexts: [0, 1, 2],
+    type: 3,
+  },
 ];
 
 function httpsRequest(options, body) {

@@ -6,6 +6,7 @@ const {
 } = require("../fetchFile");
 
 const TEXT_EXTENSIONS = [".txt", ".lua", ".luau", ".json"];
+const DOC_EXTENSIONS = [".md", ".markdown", ".txt"];
 
 /** Discord reports the size up front; reject before spending a request on it. */
 function isTooLarge(attachment) {
@@ -102,4 +103,29 @@ async function getCodeFromContextMenu(interaction) {
   return code;
 }
 
-module.exports = { getInputsFromContext, getCodeFromContextMenu };
+/**
+ * Read tag markdown off a targeted message. Unlike getCodeFromContextMenu this
+ * keeps the prose: an attached doc wins over the message body, which caps at
+ * 2000 characters.
+ *
+ * @param {import('discord.js').MessageContextMenuCommandInteraction} interaction
+ * @returns {Promise<string>}
+ */
+async function getTagSourceFromContextMenu(interaction) {
+  const message = interaction.targetMessage;
+  for (const attachment of message.attachments.values()) {
+    const name = attachment.name.toLowerCase();
+    if (!DOC_EXTENSIONS.some((ext) => name.endsWith(ext))) continue;
+    if (isTooLarge(attachment)) {
+      throw new Error(tooLargeMessage(attachment));
+    }
+    return await fetchFileContent(attachment.url);
+  }
+  return message.content;
+}
+
+module.exports = {
+  getInputsFromContext,
+  getCodeFromContextMenu,
+  getTagSourceFromContextMenu,
+};
