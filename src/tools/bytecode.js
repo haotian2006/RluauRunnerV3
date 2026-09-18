@@ -23,20 +23,26 @@ function getByteCodeOptions(code) {
   const oMatch = code.match("--!optimize (\\d+)");
   const dMatch = code.match("--!debug (\\d+)");
   const aMatch = code.match("--!architecture (\\S+)");
+  const tMatch = code.match("--!typeinfo (\\d+)");
   let options = {
     architecture: aMatch ? aMatch[1] : "x64",
     native: code.indexOf("--!native") !== -1,
+    asm: code.indexOf("--!asm") !== -1,
     binary: code.indexOf("--!binary") !== -1,
     remarks: code.indexOf("--!remarks") !== -1,
     constants: code.indexOf("--!dump-constants") !== -1,
     optimizeLevel: oMatch ? parseInt(oMatch[1]) : 2,
     debugLevel: dMatch ? parseInt(dMatch[1]) : 0,
+    typeLevel: tMatch ? parseInt(tMatch[1]) : 0,
   };
-  if (options.native || options.remarks) {
+  // Binary output is a whole-file encoding, so any mode that prints a listing
+  // wins over it.
+  if (options.native || options.asm || options.remarks) {
     options.binary = false;
   }
   options.optimizeLevel = Math.max(0, Math.min(2, options.optimizeLevel));
   options.debugLevel = Math.max(0, Math.min(2, options.debugLevel));
+  options.typeLevel = Math.max(0, Math.min(1, options.typeLevel));
   return options;
 }
 
@@ -45,12 +51,17 @@ function byteCodeOptionsToString(options) {
   if (options.remarks && !options.binary) {
     str += "Remarks: Enabled\n";
   }
-  if (options.native) {
-    str += "Native Codegen: Enabled\n";
+  if (options.native || options.asm) {
+    str += options.asm
+      ? "Native Assembly: Enabled\n"
+      : "Native Codegen: Enabled\n";
     str += `Architecture: ${options.architecture}\n`;
   }
   str += `OptimizeLevel: ${options.optimizeLevel}\n`;
   str += `DebugLevel: ${options.debugLevel}\n`;
+  if (options.typeLevel) {
+    str += `TypeInfoLevel: ${options.typeLevel}\n`;
+  }
   str += "-------------------\n";
   return str;
 }

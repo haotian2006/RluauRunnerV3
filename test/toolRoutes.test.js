@@ -198,3 +198,77 @@ test("the per-minute cap is 120 and each tool counts separately", async () => {
   // ast keeps its own budget.
   assert.equal(checkToolRate(key, "ast"), true);
 });
+
+test("typeLevel bakes register type info into the listing", async () => {
+  const res = responseForTest();
+  await routes.POST["/bytecode"](
+    {
+      method: "POST",
+      ip: ip(),
+      body: {
+        code: "local function add(a: number, b: number): number\n\treturn a + b\nend\nprint(add(1,2))",
+        options: { typeLevel: 1 },
+      },
+    },
+    res,
+  );
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.body.options.typeLevel, 1);
+  // -t1 annotates registers with their inferred types; -t0 does not.
+  assert.match(res.body.bytecode, /R0: number \[argument\]/);
+});
+
+test("typeLevel only goes up to 1", async () => {
+  const res = responseForTest();
+  await routes.POST["/bytecode"](
+    {
+      method: "POST",
+      ip: ip(),
+      body: { code: "print(1)", options: { typeLevel: 2 } },
+    },
+    res,
+  );
+  assert.equal(res.statusCode, 400);
+  assert.match(res.body.error, /typeLevel must be between 0 and 1/);
+});
+
+test("the asm output returns native assembly for the requested target", async () => {
+  for (const [output, arch] of [
+    ["asm-x64", "x64"],
+    ["asm-a64", "a64"],
+  ]) {
+    const res = responseForTest();
+    await routes.POST["/bytecode"](
+      {
+        method: "POST",
+        ip: ip(),
+        body: { code: "local x = 1 + 2\nprint(x)", options: { output } },
+      },
+      res,
+    );
+    assert.equal(res.statusCode, 200, `${output} should compile`);
+    assert.equal(res.body.options.asm, true);
+    assert.equal(res.body.options.native, false, "asm is its own mode");
+    assert.equal(res.body.options.architecture, arch);
+    // codegenasm interleaves real instructions with the VM opcodes.
+    assert.match(res.body.bytecode, /; function/);
+  }
+});
+
+test("the --!asm directive selects the asm mode from the source", async () => {
+  const res = responseForTest();
+  await routes.POST["/bytecode"](
+    { method: "POST", ip: ip(), body: { code: "--!asm\nprint(1)" } },
+    res,
+  );
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.body.options.asm, true);
+  assert.equal(res.body.options.binary, false, "a listing mode beats binary");
+});
+
+test("--!typeinfo is read from the source and clamped", () => {
+  const { getByteCodeOptions } = require("../src/tools/bytecode");
+  assert.equal(getByteCodeOptions("--!typeinfo 1\nprint(1)").typeLevel, 1);
+  assert.equal(getByteCodeOptions("--!typeinfo 7\nprint(1)").typeLevel, 1);
+  assert.equal(getByteCodeOptions("print(1)").typeLevel, 0);
+});

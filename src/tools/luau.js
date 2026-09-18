@@ -177,7 +177,9 @@ async function compileLuau(code, options) {
   const {
     optimizeLevel,
     debugLevel,
+    typeLevel,
     native,
+    asm,
     remarks,
     binary,
     architecture,
@@ -186,7 +188,10 @@ async function compileLuau(code, options) {
 
   const args = [];
 
-  if (native) {
+  if (asm) {
+    args.push("--codegenasm");
+    args.push(`--target=${architecture}`);
+  } else if (native) {
     args.push("--codegen");
     args.push(`--target=${architecture}`);
   } else if (remarks) {
@@ -198,6 +203,7 @@ async function compileLuau(code, options) {
   }
   args.push(`-g${debugLevel}`);
   args.push(`-O${optimizeLevel}`);
+  args.push(`-t${typeLevel || 0}`);
   args.push("--vector-lib=Vector3");
   args.push("--vector-ctor=new");
   args.push("--vector-type=Vector3");

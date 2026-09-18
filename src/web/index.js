@@ -134,26 +134,30 @@ function bytecodeOptionsForRequest(code, overrides) {
   const options = getByteCodeOptions(code);
   if (overrides === undefined) return options;
   if (!overrides || typeof overrides !== "object" || Array.isArray(overrides) ||
-      Object.keys(overrides).some((key) => !["optimizeLevel", "debugLevel", "output"].includes(key))) {
+      Object.keys(overrides).some((key) => !["optimizeLevel", "debugLevel", "typeLevel", "output"].includes(key))) {
     throw new InvalidBytecodeOptions("Invalid bytecode options");
   }
-  for (const level of ["optimizeLevel", "debugLevel"]) {
+  for (const level of ["optimizeLevel", "debugLevel", "typeLevel"]) {
     if (overrides[level] === undefined) continue;
-    if (!Number.isInteger(overrides[level]) || overrides[level] < 0 || overrides[level] > 2) {
-      throw new InvalidBytecodeOptions(`${level} must be between 0 and 2`);
+    const max = level === "typeLevel" ? 1 : 2;
+    if (!Number.isInteger(overrides[level]) || overrides[level] < 0 || overrides[level] > max) {
+      throw new InvalidBytecodeOptions(`${level} must be between 0 and ${max}`);
     }
     options[level] = overrides[level];
   }
   if (overrides.output !== undefined) {
     const output = overrides.output;
-    if (!["vm", "constants", "remarks", "binary", "native-x64", "native-a64"].includes(output)) {
+    if (!["vm", "constants", "remarks", "binary", "native-x64", "native-a64", "asm-x64", "asm-a64"].includes(output)) {
       throw new InvalidBytecodeOptions("Invalid bytecode output format");
     }
     options.native = output.startsWith("native-");
+    options.asm = output.startsWith("asm-");
     options.binary = output === "binary";
     options.remarks = output === "remarks";
     options.constants = output === "constants";
-    if (options.native) options.architecture = output === "native-a64" ? "a64" : "x64";
+    if (options.native || options.asm) {
+      options.architecture = output.endsWith("-a64") ? "a64" : "x64";
+    }
   }
   return options;
 }
