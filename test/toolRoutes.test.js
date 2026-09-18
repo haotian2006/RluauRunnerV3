@@ -127,3 +127,33 @@ test("back-to-back calls from one ip are debounced per tool", async () => {
   );
   assert.equal(other.statusCode, 200);
 });
+
+test("a source past the tool size cap is rejected before it reaches the compiler", async () => {
+  const res = responseForTest();
+  // Over 1MB, well under the 100MB upload limit that other endpoints allow.
+  const huge = "a".repeat(1024 * 1024 + 1);
+  await routes.POST["/bytecode"](
+    { method: "POST", ip: ip(), body: { code: huge } },
+    res,
+  );
+  assert.equal(res.statusCode, 400);
+  assert.match(res.body.error, /too large/i);
+});
+
+test("the per-minute cap is 120 and each tool counts separately", async () => {
+  const { TOOL_RATE_LIMIT } = require("../src/web/rateLimit");
+  assert.equal(TOOL_RATE_LIMIT, 120);
+
+  // A caller that never trips the debounce still stops at the per-minute cap.
+  // Drive the limiter directly so the test does not spawn 120 compilers.
+  const { checkToolRate } = require("../src/web/rateLimit");
+  const key = "roblox-cap-test";
+  let allowed = 0;
+  for (let i = 0; i < TOOL_RATE_LIMIT + 5; i++) {
+    if (checkToolRate(key, "bytecode")) allowed++;
+  }
+  assert.equal(allowed, TOOL_RATE_LIMIT);
+
+  // ast keeps its own budget.
+  assert.equal(checkToolRate(key, "ast"), true);
+});

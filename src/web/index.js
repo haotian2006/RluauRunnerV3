@@ -123,6 +123,11 @@ function endWebSession(token, reason) {
   }
 }
 
+// A compile or parse never needs the 100MB upload allowance; anything past this
+// is not a real script, and rejecting it early keeps a large-input flood from
+// tying up compiler processes.
+const MAX_TOOL_CODE_BYTES = 1024 * 1024;
+
 // Each entry owns the whole tool: how to run it, and what the JSON body calls
 // its output. The plain-text GET variant returns `output` on its own.
 const TOOLS = {
@@ -165,7 +170,12 @@ async function handleTool(req, res, name, { raw }) {
 
   record("web", name);
   if (code === null) return fail(400, "Missing code");
-  if (code.length > MAX_DATA_TO_SEND) return fail(400, "Code too large");
+  if (Buffer.byteLength(code, "utf8") > MAX_TOOL_CODE_BYTES) {
+    return fail(
+      400,
+      `Code too large (max ${MAX_TOOL_CODE_BYTES / 1024} KB)`,
+    );
+  }
 
   const caller = callerFor(req);
   if (!checkToolDebounce(caller.key, name)) {

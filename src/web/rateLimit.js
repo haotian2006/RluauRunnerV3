@@ -4,7 +4,10 @@ const RUN_RATE_LIMIT = 10;
 const RUN_RATE_WINDOW_MS = 60_000;
 const FORMAT_DEBOUNCE_MS = 500;
 const TOOL_DEBOUNCE_MS = 500;
-const TOOL_RATE_LIMIT = 20;
+// Matches the debounce ceiling (2/sec): the rate cap now governs sustained
+// throughput, and the debounce is what stops a burst. A compile is milliseconds
+// on a normal script, so the cost is the process spawn, not CPU.
+const TOOL_RATE_LIMIT = 120;
 const TOOL_RATE_WINDOW_MS = 60_000;
 const POLL_RATE_LIMIT = 120;
 const POLL_RATE_WINDOW_MS = 60_000;
