@@ -199,23 +199,35 @@ test("the per-minute cap is 120 and each tool counts separately", async () => {
   assert.equal(checkToolRate(key, "ast"), true);
 });
 
-test("typeLevel bakes register type info into the listing", async () => {
-  const res = responseForTest();
-  await routes.POST["/bytecode"](
-    {
-      method: "POST",
-      ip: ip(),
-      body: {
-        code: "local function add(a: number, b: number): number\n\treturn a + b\nend\nprint(add(1,2))",
-        options: { typeLevel: 1 },
-      },
-    },
-    res,
-  );
-  assert.equal(res.statusCode, 200);
-  assert.equal(res.body.options.typeLevel, 1);
-  // -t1 annotates registers with their inferred types; -t0 does not.
-  assert.match(res.body.bytecode, /R0: number \[argument\]/);
+// typeInfoLevel is not off/on: level 0 emits type info for `--!native` modules
+// only, level 1 emits it for every module. So the difference shows up on a
+// plain module - and the argument annotations in the listing are NOT the tell,
+// since those are printed at either level.
+test("typeLevel 1 emits type info for a module that is not native", async () => {
+  const code =
+    "local function add(a: number, b: number): number\n\treturn a + b\nend\nprint(add(1,2))";
+
+  async function compileAt(typeLevel) {
+    const res = responseForTest();
+    await routes.POST["/bytecode"](
+      { method: "POST", ip: ip(), body: { code, options: { typeLevel } } },
+      res,
+    );
+    assert.equal(res.statusCode, 200);
+    assert.equal(res.body.options.typeLevel, typeLevel);
+    return res.body.bytecode;
+  }
+
+  const off = await compileAt(0);
+  const on = await compileAt(1);
+
+  // The local's inferred type range is recorded only at level 1.
+  assert.match(on, /R0: any from \d+ to \d+/);
+  assert.doesNotMatch(off, /R0: any from \d+ to \d+/);
+
+  // Argument annotations print either way; asserting that keeps a future
+  // change from quietly turning the check above into a no-op.
+  assert.match(off, /R0: number \[argument\]/);
 });
 
 test("typeLevel only goes up to 1", async () => {
