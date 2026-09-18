@@ -128,13 +128,43 @@ function endWebSession(token, reason) {
 // tying up compiler processes.
 const MAX_TOOL_CODE_BYTES = 1024 * 1024;
 
+class InvalidBytecodeOptions extends Error {}
+
+function bytecodeOptionsForRequest(code, overrides) {
+  const options = getByteCodeOptions(code);
+  if (overrides === undefined) return options;
+  if (!overrides || typeof overrides !== "object" || Array.isArray(overrides) ||
+      Object.keys(overrides).some((key) => !["optimizeLevel", "debugLevel", "output"].includes(key))) {
+    throw new InvalidBytecodeOptions("Invalid bytecode options");
+  }
+  for (const level of ["optimizeLevel", "debugLevel"]) {
+    if (overrides[level] === undefined) continue;
+    if (!Number.isInteger(overrides[level]) || overrides[level] < 0 || overrides[level] > 2) {
+      throw new InvalidBytecodeOptions(`${level} must be between 0 and 2`);
+    }
+    options[level] = overrides[level];
+  }
+  if (overrides.output !== undefined) {
+    const output = overrides.output;
+    if (!["vm", "constants", "remarks", "binary", "native-x64", "native-a64"].includes(output)) {
+      throw new InvalidBytecodeOptions("Invalid bytecode output format");
+    }
+    options.native = output.startsWith("native-");
+    options.binary = output === "binary";
+    options.remarks = output === "remarks";
+    options.constants = output === "constants";
+    if (options.native) options.architecture = output === "native-a64" ? "a64" : "x64";
+  }
+  return options;
+}
+
 // Each entry owns the whole tool: how to run it, and what the JSON body calls
 // its output. The plain-text GET variant returns `output` on its own.
 const TOOLS = {
   bytecode: {
     field: "bytecode",
-    async run(code) {
-      const options = getByteCodeOptions(code);
+    async run(code, overrides) {
+      const options = bytecodeOptionsForRequest(code, overrides);
       const result = await compileLuau(code, options);
       return { ...result, extra: { options } };
     },
@@ -194,8 +224,9 @@ async function handleTool(req, res, name, { raw }) {
 
   let result;
   try {
-    result = await tool.run(code);
+    result = await tool.run(code, name === "bytecode" && !raw ? req.body?.options : undefined);
   } catch (err) {
+    if (err instanceof InvalidBytecodeOptions) return fail(400, err.message);
     return fail(500, safeMessage(err));
   }
 

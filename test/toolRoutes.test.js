@@ -65,6 +65,47 @@ test("POST /bytecode returns the compiler output and the options used", async ()
   assert.equal(res.body.options.optimizeLevel, 2);
 });
 
+test("POST /bytecode overrides source directives for the playground", async () => {
+  const res = responseForTest();
+  await routes.POST["/bytecode"](
+    {
+      method: "POST",
+      ip: ip(),
+      body: {
+        code: "--!native\n--!optimize 0\nprint('hi')",
+        options: { optimizeLevel: 2, debugLevel: 2, output: "vm" },
+      },
+    },
+    res,
+  );
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.body.options.optimizeLevel, 2);
+  assert.equal(res.body.options.debugLevel, 2);
+  assert.equal(res.body.options.native, false);
+  assert.match(res.body.bytecode, /\s+3: print\('hi'\)/);
+});
+
+test("POST /bytecode selects ARM64 native output", async () => {
+  const res = responseForTest();
+  await routes.POST["/bytecode"](
+    { method: "POST", ip: ip(), body: { code: "print(1)", options: { output: "native-a64" } } },
+    res,
+  );
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.body.options.architecture, "a64");
+  assert.match(res.body.bytecode, /bb_bytecode/);
+});
+
+test("POST /bytecode rejects unsupported options", async () => {
+  const res = responseForTest();
+  await routes.POST["/bytecode"](
+    { method: "POST", ip: ip(), body: { code: "print(1)", options: { output: "native-invalid" } } },
+    res,
+  );
+  assert.equal(res.statusCode, 400);
+  assert.equal(res.body.error, "Invalid bytecode output format");
+});
+
 test("GET /bytecode returns plain text", async () => {
   const res = responseForTest();
   await routes.GET["/bytecode"](
