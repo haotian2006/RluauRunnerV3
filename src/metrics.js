@@ -47,6 +47,30 @@ function countBy(kind, windowMs, now = Date.now()) {
   return { total, byName: totals };
 }
 
+/**
+ * Counts per bucket, oldest first, for the activity charts.
+ * @returns {{ at: number, count: number }[]}
+ */
+function histogram(kind, bucketMs, buckets, now = Date.now()) {
+  const series = [];
+  // The newest bucket ends now, so the last one is partial - that is the point.
+  const firstStart = now - bucketMs * buckets;
+  for (let index = 0; index < buckets; index++) {
+    series.push({ at: firstStart + index * bucketMs, count: 0 });
+  }
+  for (let index = events.length - 1; index >= 0; index--) {
+    const event = events[index];
+    if (event.at < firstStart) break;
+    if (event.kind !== kind) continue;
+    const bucket = Math.min(
+      buckets - 1,
+      Math.floor((event.at - firstStart) / bucketMs),
+    );
+    if (bucket >= 0) series[bucket].count += 1;
+  }
+  return series;
+}
+
 function windows(kind, now = Date.now()) {
   return {
     hour: countBy(kind, HOUR_MS, now),
@@ -59,6 +83,9 @@ function windows(kind, now = Date.now()) {
 // sampler has run twice. Until then the page shows them as unknown rather than
 // as zero, which would read as an idle box.
 let load = { systemPercent: null, processPercent: null };
+// Rolling CPU readings for the sparkline: 120 samples at 5s is the last 10min.
+const MAX_LOAD_HISTORY = 120;
+const loadHistory = [];
 let lastCpuTimes = null;
 let lastProcessCpu = null;
 let lastSampleAt = null;
@@ -102,6 +129,11 @@ function sampleLoad(now = Date.now()) {
     }
   }
 
+  if (load.systemPercent !== null) {
+    if (loadHistory.length >= MAX_LOAD_HISTORY) loadHistory.shift();
+    loadHistory.push({ at: now, system: load.systemPercent });
+  }
+
   lastCpuTimes = times;
   lastProcessCpu = processCpu;
   lastSampleAt = now;
@@ -109,7 +141,7 @@ function sampleLoad(now = Date.now()) {
 }
 
 function getLoad() {
-  return { ...load, cores: os.cpus().length };
+  return { ...load, cores: os.cpus().length, history: [...loadHistory] };
 }
 
 const loadTimer = setInterval(() => sampleLoad(), LOAD_SAMPLE_MS);
@@ -143,6 +175,7 @@ module.exports = {
   MAX_EVENTS,
   countBy,
   covers,
+  histogram,
   getLoad,
   sampleLoad,
   recentErrors,

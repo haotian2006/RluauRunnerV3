@@ -260,3 +260,96 @@ test("host load is reported once the sampler has two readings", () => {
   assert.ok(stats.host.cpuSystemPercent >= 0 && stats.host.cpuSystemPercent <= 100);
   assert.ok(stats.host.cpuProcessPercent >= 0);
 });
+
+test("the server list is rendered behind the login, never on /stats", () => {
+  auth.reset();
+  const { collect } = require("../src/http/routes/status");
+  const stats = collect();
+
+  // The bot client is not logged in under test, so the list degrades rather
+  // than throwing.
+  assert.ok(stats.discord === null || Array.isArray(stats.discord.guildList));
+
+  const login = responseForTest();
+  routes.POST["/status/login"](
+    {
+      ip: "203.0.113.20",
+      headers: {},
+      body: { password: "correct-horse-battery" },
+    },
+    login,
+  );
+  const res = responseForTest();
+  routes.GET["/status"]({ headers: { cookie: cookieFrom(login) }, query: {} }, res);
+  assert.match(res.body, /Servers/);
+});
+
+test("only the signed-in page carries the refresh, not the login screen", () => {
+  auth.reset();
+  const locked = responseForTest();
+  routes.GET["/status"]({ headers: {}, query: {} }, locked);
+  assert.doesNotMatch(locked.body, /http-equiv="refresh"/);
+
+  const login = responseForTest();
+  routes.POST["/status/login"](
+    {
+      ip: "203.0.113.21",
+      headers: {},
+      body: { password: "correct-horse-battery" },
+    },
+    login,
+  );
+  const res = responseForTest();
+  routes.GET["/status"]({ headers: { cookie: cookieFrom(login) }, query: {} }, res);
+  assert.match(res.body, /<meta http-equiv="refresh" content="1">/);
+});
+
+test("histogram buckets events by age", () => {
+  metrics.reset();
+  const now = Date.now();
+  metrics.record("run", "web:lune");
+  metrics.record("run", "web:lune");
+
+  const series = metrics.histogram("run", 60_000, 10, now);
+  assert.equal(series.length, 10);
+  assert.equal(series.at(-1).count, 2, "just-recorded events land in the newest");
+  assert.equal(series[0].count, 0);
+
+  // Five minutes on, the same events sit five buckets back - in the bucket
+  // that starts at the moment they were recorded.
+  const later = metrics.histogram("run", 60_000, 10, now + 5 * 60_000);
+  assert.equal(later.at(-1).count, 0);
+  assert.equal(later[5].count, 2);
+
+  // Past the window they fall out entirely.
+  const gone = metrics.histogram("run", 60_000, 10, now + 60 * 60_000);
+  assert.equal(
+    gone.reduce((sum, point) => sum + point.count, 0),
+    0,
+  );
+});
+
+test("the page draws charts as inline svg with no script", () => {
+  auth.reset();
+  metrics.reset();
+  metrics.record("run", "web:lune");
+
+  const login = responseForTest();
+  routes.POST["/status/login"](
+    {
+      ip: "203.0.113.30",
+      headers: {},
+      body: { password: "correct-horse-battery" },
+    },
+    login,
+  );
+  const res = responseForTest();
+  routes.GET["/status"]({ headers: { cookie: cookieFrom(login) }, query: {} }, res);
+
+  assert.match(res.body, /<svg viewBox="0 0 720 96"/);
+  assert.match(res.body, /Runs per hour/);
+  assert.match(res.body, /Web requests per hour/);
+  // Native SVG tooltips stand in for a hover layer, since no JS may run here.
+  assert.match(res.body, /<title>/);
+  assert.doesNotMatch(res.body, /<script/);
+});
