@@ -284,11 +284,11 @@ test("the server list is rendered behind the login, never on /stats", () => {
   assert.match(res.body, /Servers/);
 });
 
-test("only the signed-in page carries the refresh, not the login screen", () => {
+test("only the signed-in page carries the updater, not the login screen", () => {
   auth.reset();
   const locked = responseForTest();
   routes.GET["/status"]({ headers: {}, query: {} }, locked);
-  assert.doesNotMatch(locked.body, /http-equiv="refresh"/);
+  assert.doesNotMatch(locked.body, /<script/);
 
   const login = responseForTest();
   routes.POST["/status/login"](
@@ -301,7 +301,18 @@ test("only the signed-in page carries the refresh, not the login screen", () => 
   );
   const res = responseForTest();
   routes.GET["/status"]({ headers: { cookie: cookieFrom(login) }, query: {} }, res);
-  assert.match(res.body, /<meta http-equiv="refresh" content="1">/);
+
+  // The page updates in place; a whole-document reload only remains as the
+  // no-script fallback, which is what used to break copying.
+  assert.match(res.body, /<script nonce="/);
+  assert.match(res.body, /<noscript><meta http-equiv="refresh"/);
+  assert.doesNotMatch(res.body.replace(/<noscript>.*?<\/noscript>/s, ""), /http-equiv="refresh"/);
+
+  // The nonce in the markup is the one the header authorises, and nothing else
+  // may run.
+  const nonce = res.body.match(/<script nonce="([^"]+)"/)[1];
+  assert.ok(res.headers["Content-Security-Policy"].includes(`'nonce-${nonce}'`));
+  assert.doesNotMatch(res.headers["Content-Security-Policy"], /unsafe-inline'[^;]*script/);
 });
 
 test("histogram buckets events by age", () => {
@@ -349,7 +360,58 @@ test("the page draws charts as inline svg with no script", () => {
   assert.match(res.body, /<svg viewBox="0 0 720 96"/);
   assert.match(res.body, /Runs per hour/);
   assert.match(res.body, /Web requests per hour/);
-  // Native SVG tooltips stand in for a hover layer, since no JS may run here.
+  // Native SVG tooltips carry the hover layer - no charting library involved.
   assert.match(res.body, /<title>/);
-  assert.doesNotMatch(res.body, /<script/);
+  // Exactly one script: the nonce'd updater.
+  assert.equal((res.body.match(/<script/g) || []).length, 1);
+});
+
+test("the data endpoint feeds the page from the same values it rendered", () => {
+  auth.reset();
+  const login = responseForTest();
+  routes.POST["/status/login"](
+    {
+      ip: "203.0.113.31",
+      headers: {},
+      body: { password: "correct-horse-battery" },
+    },
+    login,
+  );
+  const cookie = cookieFrom(login);
+
+  const data = responseForTest();
+  routes.GET["/status/data"](
+    { headers: { cookie }, query: { charts: "1" } },
+    data,
+  );
+  assert.equal(data.statusCode, 200);
+  assert.ok(Object.keys(data.body.values).length > 5);
+  assert.ok(data.body.charts.includes("<svg"));
+
+  // The charts are the bulk of the payload, so most ticks leave them out.
+  const light = responseForTest();
+  routes.GET["/status/data"]({ headers: { cookie }, query: {} }, light);
+  assert.equal(light.body.charts, null);
+  assert.ok(
+    JSON.stringify(light.body).length < JSON.stringify(data.body).length / 2,
+  );
+
+  // Every key the updater sends addresses a cell that exists on the page.
+  const res = responseForTest();
+  routes.GET["/status"]({ headers: { cookie }, query: {} }, res);
+  for (const key of Object.keys(data.body.values)) {
+    if (key === "head") continue;
+    assert.ok(
+      res.body.includes(`data-k="${key}"`),
+      `page has no cell for ${key}`,
+    );
+  }
+});
+
+test("the data endpoint refuses a caller without a session", () => {
+  auth.reset();
+  const res = responseForTest();
+  routes.GET["/status/data"]({ headers: {}, query: {} }, res);
+  assert.equal(res.statusCode, 401);
+  assert.equal(res.body.values, undefined);
 });

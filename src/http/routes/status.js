@@ -1,3 +1,4 @@
+const crypto = require("crypto");
 const os = require("os");
 
 const { listActorBlocks } = require("../../abuse");
@@ -453,14 +454,16 @@ const STYLE = `
   }
 `;
 
-function page(title, body, refreshSeconds = null) {
-  const refresh = refreshSeconds
-    ? `<meta http-equiv="refresh" content="${refreshSeconds}">`
+function page(title, body, { noScriptRefresh = false } = {}) {
+  // Only for a browser with script off: a slow whole-page reload, which is the
+  // behaviour the in-place updater exists to avoid.
+  const fallback = noScriptRefresh
+    ? `<noscript><meta http-equiv="refresh" content="10"></noscript>`
     : "";
   return `<!doctype html>
 <html><head><meta charset="utf-8"><title>${escapeHtml(title)}</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="robots" content="noindex, nofollow">${refresh}
+<meta name="robots" content="noindex, nofollow">${fallback}
 <style>${STYLE}</style></head>
 <body>${body}</body></html>`;
 }
@@ -479,40 +482,113 @@ ${message ? `<p class="err">${escapeHtml(message)}</p>` : ""}
   );
 }
 
-function statusPage(stats) {
+/**
+ * Every live value on the page, addressed by a stable key. The page renders
+ * from this and the updater rewrites from it, so the two can never disagree
+ * about what a cell should say.
+ */
+function liveValues(stats) {
+  const values = {};
+  rows(stats).forEach(([heading, entries], section) => {
+    entries.forEach(([label, value], index) => {
+      values[`${section}.${index}`] = { label, value: String(value) };
+    });
+  });
+  values.head = {
+    label: "head",
+    value:
+      `${new Date(stats.now).toISOString()} · up ` +
+      `${formatDuration(stats.process.uptimeMs)}`,
+  };
+  return values;
+}
+
+function errorList(stats) {
+  if (!stats.recentErrors.length) return "";
+  return `<h2>Recent errors</h2><ul id="errors">${stats.recentErrors
+    .map(
+      (error) =>
+        `<li>${escapeHtml(new Date(error.at).toISOString())} ` +
+        `[${escapeHtml(error.name)}] ${escapeHtml(error.message)}</li>`,
+    )
+    .join("")}</ul>`;
+}
+
+// Patches only the cells whose text actually changed, so a selection anywhere
+// else on the page survives - which a whole-document reload cannot do.
+const UPDATE_SCRIPT = `
+(function () {
+  var timer = null;
+  function apply(data) {
+    for (var key in data.values) {
+      var cell = document.querySelector('[data-k="' + key + '"]');
+      if (!cell) continue;
+      var next = data.values[key].value;
+      if (cell.textContent !== next) cell.textContent = next;
+    }
+    var head = document.getElementById("head");
+    if (head && data.values.head && head.textContent !== data.values.head.value) {
+      head.textContent = data.values.head.value;
+    }
+    var charts = document.getElementById("charts");
+    if (charts && data.charts && charts.innerHTML !== data.charts) {
+      charts.innerHTML = data.charts;
+    }
+    var errors = document.getElementById("errors");
+    if (errors && data.errors !== null && errors.innerHTML !== data.errors) {
+      errors.innerHTML = data.errors;
+    }
+  }
+  var ticks = 0;
+  function tick() {
+    // The charts are most of the payload and move slowly, so they ride along
+    // once every five seconds rather than every second.
+    var wantCharts = ticks++ % 5 === 0;
+    fetch("/status/data" + (wantCharts ? "?charts=1" : ""), { credentials: "same-origin" })
+      .then(function (r) {
+        if (r.status === 401) { location.reload(); return null; }
+        return r.ok ? r.json() : null;
+      })
+      .then(function (data) { if (data) apply(data); })
+      .catch(function () {})
+      .then(function () { timer = setTimeout(tick, ${REFRESH_SECONDS * 1000}); });
+  }
+  // Nothing to update while the tab is in the background.
+  document.addEventListener("visibilitychange", function () {
+    if (document.hidden) { clearTimeout(timer); }
+    else if (!document.hidden) { clearTimeout(timer); tick(); }
+  });
+  tick();
+})();
+`;
+
+function statusPage(stats, nonce) {
+  const values = liveValues(stats);
   const sections = rows(stats)
-    .map(([heading, entries]) => {
+    .map(([heading, entries], section) => {
       const body = entries
-        .map(
-          ([key, value]) =>
-            `<tr><td class="k">${escapeHtml(key)}</td>` +
-            `<td class="v${String(value).length > 28 ? " wide" : ""}">${escapeHtml(value)}</td></tr>`,
-        )
+        .map(([label, value], index) => {
+          const key = `${section}.${index}`;
+          const wide = String(value).length > 28 ? " wide" : "";
+          return (
+            `<tr><td class="k">${escapeHtml(label)}</td>` +
+            `<td class="v${wide}" data-k="${key}">${escapeHtml(String(value))}</td></tr>`
+          );
+        })
         .join("");
       return `<h2>${escapeHtml(heading)}</h2><table>${body}</table>`;
     })
     .join("");
 
-  const errors = stats.recentErrors.length
-    ? `<h2>Recent errors</h2><ul>${stats.recentErrors
-        .map(
-          (error) =>
-            `<li>${escapeHtml(new Date(error.at).toISOString())} ` +
-            `[${escapeHtml(error.name)}] ${escapeHtml(error.message)}</li>`,
-        )
-        .join("")}</ul>`
-    : "";
-
   return page(
     "Status",
     `<h1>Status</h1>
-<p class="meta">${escapeHtml(new Date(stats.now).toISOString())} &middot;
- up ${escapeHtml(formatDuration(stats.process.uptimeMs))} &middot;
- refreshing every ${REFRESH_SECONDS}s &middot;
+<p class="meta"><span id="head">${escapeHtml(values.head.value)}</span> &middot;
  <a href="/status?format=json">json</a> &middot;
  <a href="/status/logout">sign out</a></p>
-${chartsFor(stats)}${sections}${errors}`,
-    REFRESH_SECONDS,
+<div id="charts">${chartsFor(stats)}</div>${sections}${errorList(stats)}
+<script nonce="${nonce}">${UPDATE_SCRIPT}</script>`,
+    { noScriptRefresh: true },
   );
 }
 
@@ -521,7 +597,9 @@ function registerStatusRoutes(app) {
 
   // The page is not for anyone else's origin, and must never be cached by
   // something in between.
-  function lockDown(res) {
+  // `nonce` is per response, so only the updater this server just wrote can
+  // run - an injected <script> still has nothing to quote.
+  function lockDown(res, nonce = null) {
     res.removeHeader("Access-Control-Allow-Origin");
     res.setHeader("Cache-Control", "private, no-store");
     res.setHeader("Referrer-Policy", "no-referrer");
@@ -529,7 +607,8 @@ function registerStatusRoutes(app) {
     res.setHeader("X-Frame-Options", "DENY");
     res.setHeader(
       "Content-Security-Policy",
-      "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'",
+      "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'" +
+        (nonce ? `; script-src 'nonce-${nonce}'; connect-src 'self'` : ""),
     );
   }
 
@@ -538,12 +617,30 @@ function registerStatusRoutes(app) {
   }
 
   app.get("/status", (req, res) => {
-    lockDown(res);
+    const nonce = crypto.randomBytes(16).toString("base64");
+    lockDown(res, nonce);
     if (!hasSession(req)) return sendHtml(res, 401, loginPage(null));
 
     const stats = collect();
     if (req.query?.format === "json") return res.json(stats);
-    sendHtml(res, 200, statusPage(stats));
+    sendHtml(res, 200, statusPage(stats, nonce));
+  });
+
+  // What the page polls: the same values it was rendered from, plus the
+  // freshly drawn charts. Session-gated like everything else here.
+  app.get("/status/data", (req, res) => {
+    lockDown(res);
+    if (!hasSession(req)) {
+      return res.status(401).json({ error: "Not signed in" });
+    }
+    const stats = collect();
+    res.json({
+      values: liveValues(stats),
+      charts: req.query?.charts ? chartsFor(stats) : null,
+      errors: errorList(stats)
+        ? errorList(stats).replace(/^[\s\S]*?<ul id="errors">|<\/ul>$/g, "")
+        : null,
+    });
   });
 
   app.post("/status/login", (req, res) => {
