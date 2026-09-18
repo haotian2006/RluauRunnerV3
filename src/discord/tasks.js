@@ -3,6 +3,7 @@ const { codeHash, getActorBlock } = require("../abuse");
 const { closeSession, getSession, openSession } = require("../core/sessions");
 const { selectRuntime, tryRunLocally } = require("../local/dispatch");
 const { logBot } = require("../log");
+const { record } = require("../metrics");
 const { createPendingResponseEmbed } = require("./embeds");
 const { createDiscordResponder } = require("./responder");
 const { CompilingTasks, ExecuteTasks } = require("../state");
@@ -24,6 +25,7 @@ async function sendCompileRequestToRoblox(
 ) {
   const baseActorKey = `discord:${interaction.user.id}`;
   const selection = await selectRuntime(code);
+  record("run", `discord:${selection.runtime}`);
 
   // Stored before dispatch so the pending embed already carries the link. The
   // local runtime rewrites the source and stores its own copy over this one.

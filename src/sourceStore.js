@@ -248,9 +248,19 @@ async function readSource(entry) {
   return zstd.decompress(await fs.promises.readFile(entry.filePath));
 }
 
+/** What the store is holding, for the status page. */
+function storeStats() {
+  return {
+    entries: entries.size,
+    bytes: totalBytes,
+    budgetBytes: COMPILE_SOURCE_TOTAL_BYTES,
+  };
+}
+
 module.exports = {
   STORE_DIR,
   enabled,
+  storeStats,
   getSource,
   purgeStaleFiles,
   readSource,

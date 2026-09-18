@@ -249,6 +249,21 @@ function checkInputRate(actorKey, kind = "input", now = Date.now()) {
   return { allowed: true, remainingMs: 0, limit };
 }
 
+/** Actors serving a block right now, worst first, for the status page. */
+function listActorBlocks(now = Date.now()) {
+  const blocked = [];
+  for (const [actorKey, entry] of actorIncidents) {
+    if (entry.blockedUntil > now) {
+      blocked.push({
+        actorKey,
+        remainingMs: entry.blockedUntil - now,
+        step: entry.blocks,
+      });
+    }
+  }
+  return blocked.sort((a, b) => b.remainingMs - a.remainingMs);
+}
+
 const sweep = setInterval(() => {
   const now = Date.now();
   for (const [actorKey, entry] of actorIncidents) {
@@ -285,6 +300,7 @@ module.exports = {
   getLocalAdmissionBlock,
   heartbeatLocalExecution,
   isPunishableLuneExit,
+  listActorBlocks,
   recordCrash,
   releaseLocalExecution,
   startLocalExecutionHealth,

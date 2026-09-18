@@ -146,6 +146,22 @@ const ENABLE_WEB = envFlag("ENABLE_WEB", false);
 
 const STORE_COMPILE_SOURCE = envFlag("STORE_COMPILE_SOURCE", false);
 
+// The status page is only served when this is set. There is deliberately no
+// default: an unset password leaves the page off rather than open.
+function loadStatsPassword() {
+  const raw = process.env.STATS_PASSWORD;
+  if (raw === undefined || raw.trim() === "") return null;
+  if (raw.length < 12) {
+    console.warn(
+      "Warning: STATS_PASSWORD is shorter than 12 characters. The status page " +
+        "is reachable by anyone who can reach the bot's host.",
+    );
+  }
+  return raw;
+}
+
+const STATS_PASSWORD = loadStatsPassword();
+
 function loadPlaygroundUrl() {
   const raw = process.env.PLAYGROUND_URL;
   if (raw === undefined) return DEFAULT_PLAYGROUND_URL;
@@ -273,6 +289,7 @@ module.exports = {
   // Keeps the exact source of each Discord compile on disk so the result embed
   // can link to it. Off by default: it is user code sitting on the host.
   STORE_COMPILE_SOURCE,
+  STATS_PASSWORD,
   PLAYGROUND_URL,
   // The link lives in a Discord message forever, so a short TTL means most
   // clicks 404. A day covers "why did my script break" without unbounded growth.

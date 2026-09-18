@@ -74,6 +74,7 @@ function createSseResponder(onClose, options = {}) {
 
   return {
     isWeb: true,
+    mode: requireStream ? "sse" : "poll",
     outputCharLimit: OUTPUT_CHAR_LIMIT,
 
     snapshot() {

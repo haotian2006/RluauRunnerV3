@@ -16,6 +16,7 @@ const {
 const { ROBLOX_KEY, limiterKey } = require("../origin");
 const { safeMessage } = require("../sanitize");
 const { log } = require("../log");
+const { record } = require("../metrics");
 const { ExecuteTasks, Inputs } = require("../state");
 const { getByteCodeOptions } = require("../tools/bytecode");
 const { compileLuau, formatLuau, generateAST } = require("../tools/luau");
@@ -162,17 +163,20 @@ async function handleTool(req, res, name, { raw }) {
       ? res.status(status).type("text/plain; charset=utf-8").send(message)
       : res.status(status).json({ error: message });
 
+  record("web", name);
   if (code === null) return fail(400, "Missing code");
   if (code.length > MAX_DATA_TO_SEND) return fail(400, "Code too large");
 
   const caller = callerFor(req);
   if (!checkToolDebounce(caller.key, name)) {
+    record("limited", name);
     return fail(
       429,
       `Rate limit: max 1 ${name} request per ${TOOL_DEBOUNCE_MS / 1000} seconds`,
     );
   }
   if (!checkToolRate(caller.key, name)) {
+    record("limited", name);
     return fail(429, `Rate limit: max ${TOOL_RATE_LIMIT} ${name} requests/min`);
   }
 
@@ -217,6 +221,7 @@ function registerWebRoutes(app) {
   app.set("trust proxy", TRUST_PROXY);
 
   app.post("/run", async (req, res) => {
+    record("web", "run");
     const { code, stream } = req.body;
     if (!code || typeof code !== "string") {
       return res.status(400).json({ error: "Missing code" });
@@ -226,12 +231,14 @@ function registerWebRoutes(app) {
 
     const { key: callerKey, label: anonIp } = callerFor(req);
     if (!checkRunRate(callerKey)) {
+      record("limited", "run");
       return res
         .status(429)
         .json({ error: `Rate limit: max ${RUN_RATE_LIMIT} runs/min` });
     }
 
     const selection = await selectRuntime(code);
+    record("run", `web:${selection.runtime}`);
     let actorKey = `web:${anonIp}:${selection.runtime}`;
     const block = getActorBlock(actorKey);
     if (block) {
@@ -323,12 +330,14 @@ function registerWebRoutes(app) {
   });
 
   app.post("/format", async (req, res) => {
+    record("web", "format");
     const { code } = req.body;
     if (typeof code !== "string") {
       return res.status(400).json({ error: "Missing code" });
     }
 
     if (!checkFormatDebounce(callerFor(req).key)) {
+      record("limited", "format");
       return res
         .status(429)
         .json({ error: "Rate limit: max 1 format request per 0.5 seconds" });
@@ -357,6 +366,7 @@ function registerWebRoutes(app) {
   }
 
   app.get("/stream/:token", (req, res) => {
+    record("web", "stream");
     const session = getSession(req.params.token);
     if (!session) {
       return res.status(404).json({ error: "Session not found or expired" });
@@ -374,7 +384,9 @@ function registerWebRoutes(app) {
   // Serves a live session from its responder and a finished one from the
   // retained snapshot, so a client that polls a moment late still gets output.
   app.get("/result/:token", (req, res) => {
+    record("web", "result");
     if (!checkPollRate(callerFor(req).key)) {
+      record("limited", "result");
       return res
         .status(429)
         .json({ error: `Rate limit: max ${POLL_RATE_LIMIT} polls/min` });
@@ -394,6 +406,7 @@ function registerWebRoutes(app) {
   });
 
   app.post("/stop/:token", (req, res) => {
+    record("web", "stop");
     const token = req.params.token;
 
     log(callerFor(req).label, "web", "stop", "User stopped execution");
@@ -406,6 +419,7 @@ function registerWebRoutes(app) {
   });
 
   app.post("/input/:token", (req, res) => {
+    record("web", "input");
     const { input, isFile, isFileChunk, uploadId, index, total } = req.body;
     const token = req.params.token;
     if (!getSession(token)) {
@@ -418,6 +432,7 @@ function registerWebRoutes(app) {
       isFileChunk ? "chunk" : "input",
     );
     if (!rate.allowed) {
+      record("limited", "input");
       return res.status(429).json({
         error: `Rate limit: max ${rate.limit} inputs per ${Math.round(INPUT_WINDOW_MS / 1000)}s. Try again in ${Math.ceil(rate.remainingMs / 1000)} seconds.`,
       });

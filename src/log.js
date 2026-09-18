@@ -1,5 +1,6 @@
 const axios = require("axios");
 const { FORM_ENTRIES, FORM_URL } = require("./config");
+const { record, recordError } = require("./metrics");
 
 const MAX_LOG_LENGTH = 20000 - 10;
 
@@ -38,8 +39,14 @@ function log(userid, name, commandName, data) {
 // Also goes to stdout: the Google Form is write-only from here, so without
 // this every diagnostic (router decisions, Discord retries, delivery failures)
 // is invisible in `journalctl -u luau-bot`.
+// Anything a category names as a failure is worth surfacing on the status page;
+// the rest is routine chatter and only counted.
+const FAILURE = /fail|error|crash|reject|lost|timed out|discard/i;
+
 function logBot(name, data) {
   console.log(`[${name}] ${data}`);
+  if (FAILURE.test(name)) recordError(name, String(data));
+  else record("bot", name);
   log("0", "BOT", name, data);
 }
 

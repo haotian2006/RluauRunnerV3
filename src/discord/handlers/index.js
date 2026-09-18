@@ -1,5 +1,6 @@
 const { safeMessage } = require("../../sanitize");
 const { logBot } = require("../../log");
+const { record } = require("../../metrics");
 const { client } = require("../client");
 const { wrapEphemeral } = require("../permissions");
 const { handleAutocomplete } = require("./autocomplete");
@@ -38,6 +39,9 @@ function registerInteractionHandler() {
   client.on("interactionCreate", async (interaction) => {
     try {
       wrapEphemeral(interaction);
+      if (!interaction.isAutocomplete?.()) {
+        record("command", interaction.commandName || interaction.customId?.split(":")[0] || "interaction");
+      }
 
       if (isScriptButton(interaction)) {
         return await handleScriptButton(interaction);

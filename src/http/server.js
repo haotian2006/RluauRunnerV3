@@ -5,6 +5,7 @@ const { registerButtonRoutes } = require("./routes/buttons");
 const { registerRespondRoutes } = require("./routes/respond");
 const { registerSessionRoutes } = require("./routes/session");
 const { registerSourceRoutes } = require("./routes/source");
+const { registerStatusRoutes } = require("./routes/status");
 const { registerWebRoutes } = require("../web");
 
 const app = express();
@@ -18,11 +19,15 @@ app.use((req, res, next) => {
 });
 
 app.use(express.json({ limit: BODY_LIMIT }));
+// Only the status login posts a form; keep it small so this cannot be used as
+// a way around the JSON limit.
+app.use(express.urlencoded({ extended: false, limit: "4kb" }));
 
 registerRespondRoutes(app);
 registerButtonRoutes(app);
 registerSessionRoutes(app);
 registerSourceRoutes(app);
+registerStatusRoutes(app);
 
 if (ENABLE_WEB) {
   registerWebRoutes(app);
