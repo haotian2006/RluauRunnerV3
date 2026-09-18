@@ -414,7 +414,11 @@ async function tryRunLocally(
     if (isPunishableLuneExit(result)) {
       const crash = recordCrash(actorKey, executionId, [codeHash(source)]);
       if (crash?.newlyBlocked) {
-        logBot("Lune Crash Attribution", `${actorKey}: blocked for 45s`);
+        logBot(
+          "Lune Crash Attribution",
+          `${actorKey}: blocked for ${Math.round(crash.durationMs / 1000)}s ` +
+            `(block #${crash.blocks})`,
+        );
       }
     }
 

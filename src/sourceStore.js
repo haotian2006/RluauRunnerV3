@@ -1,6 +1,7 @@
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const zstd = require("zstd-napi");
 
 const {
   CALLBACK_URL,
@@ -15,8 +16,14 @@ const { generateUUID } = require("./util");
 
 const STORE_DIR = path.join(os.tmpdir(), "rluau-sources");
 const SWEEP_INTERVAL_MS = 1000 * 60 * 5;
+const SOURCE_EXT = ".luau.zst";
+// Sources written before the store packed them. Nothing writes this shape any
+// more, and readSource cannot make sense of one, so any that survive a restart
+// are unreadable by definition.
+const LEGACY_EXT = ".luau";
+const COMPRESSION_LEVEL = 10;
 
-/** id -> { id, token, filePath, bytes, expiresAt } */
+/** id -> { id, token, filePath, bytes, rawBytes, expiresAt } */
 const entries = new Map();
 /** token -> id, so a live run can replace what it stored earlier. */
 const tokenIndex = new Map();
@@ -64,9 +71,64 @@ function evictUntilUnderBudget() {
   }
 }
 
+/**
+ * Drop files on disk that no live entry points at. Entries live in memory only,
+ * so a restart orphans every file it left behind; the periodic sweep can only
+ * see what this process stored. Age decides, because another process may be
+ * sharing the directory and its recent files are still somebody's link. Files
+ * in the pre-packed format go regardless: no version still serves them.
+ * @returns {{ removed: number, bytes: number }}
+ */
+function purgeStaleFiles(now = Date.now()) {
+  const result = { removed: 0, bytes: 0 };
+  let names;
+  try {
+    names = fs.readdirSync(STORE_DIR);
+  } catch {
+    return result;
+  }
+
+  const live = new Set();
+  for (const entry of entries.values()) live.add(entry.filePath);
+
+  for (const name of names) {
+    const filePath = path.join(STORE_DIR, name);
+    if (live.has(filePath)) continue;
+
+    let stat;
+    try {
+      stat = fs.statSync(filePath);
+    } catch {
+      continue;
+    }
+    if (!stat.isFile()) continue;
+
+    const legacy = name.endsWith(LEGACY_EXT) && !name.endsWith(SOURCE_EXT);
+    if (!legacy && now - stat.mtimeMs <= COMPILE_SOURCE_TTL_MS) continue;
+
+    try {
+      fs.unlinkSync(filePath);
+      result.removed += 1;
+      result.bytes += stat.size;
+    } catch {}
+  }
+
+  if (result.removed) {
+    logBot(
+      "Source Store",
+      `purged ${result.removed} stale file(s), ${result.bytes} bytes`,
+    );
+  }
+  return result;
+}
+
 function ensureSweeping() {
   if (sweepTimer) return;
-  sweepTimer = setInterval(sweep, SWEEP_INTERVAL_MS);
+  purgeStaleFiles();
+  sweepTimer = setInterval(() => {
+    sweep();
+    purgeStaleFiles();
+  }, SWEEP_INTERVAL_MS);
   sweepTimer.unref?.();
 }
 
@@ -96,8 +158,18 @@ function storeSource(token, source) {
   if (!enabled() || typeof source !== "string" || !token) return null;
 
   const buffer = Buffer.from(source, "utf8");
+  // The cap is on the source the user wrote, not on how well it happens to
+  // compress, so it is checked before the source is packed.
   if (buffer.length === 0 || buffer.length > COMPILE_SOURCE_MAX_BYTES) {
     releaseToken(token);
+    return null;
+  }
+
+  let packed;
+  try {
+    packed = zstd.compress(buffer, COMPRESSION_LEVEL);
+  } catch (err) {
+    logBot("Source Store", `failed to compress: ${err.message}`);
     return null;
   }
 
@@ -107,10 +179,10 @@ function storeSource(token, source) {
   releaseToken(token, { expired: false });
 
   const id = generateUUID();
-  const filePath = path.join(STORE_DIR, `${id}.luau`);
+  const filePath = path.join(STORE_DIR, `${id}${SOURCE_EXT}`);
   try {
     fs.mkdirSync(STORE_DIR, { recursive: true });
-    fs.writeFileSync(filePath, buffer);
+    fs.writeFileSync(filePath, packed);
   } catch (err) {
     logBot("Source Store", `failed to write ${id}: ${err.message}`);
     return null;
@@ -120,11 +192,13 @@ function storeSource(token, source) {
     id,
     token,
     filePath,
-    bytes: buffer.length,
+    // The budget guards the disk, so it counts what the disk actually holds.
+    bytes: packed.length,
+    rawBytes: buffer.length,
     expiresAt: Date.now() + COMPILE_SOURCE_TTL_MS,
   });
   tokenIndex.set(token, id);
-  totalBytes += buffer.length;
+  totalBytes += packed.length;
   evictUntilUnderBudget();
 
   return entries.has(id) ? sourceUrlFor(id) : null;
@@ -165,10 +239,21 @@ function getSource(id) {
   return entry;
 }
 
+/**
+ * The source behind an entry, unpacked. Callers never see the stored form.
+ * @param {{ filePath: string }} entry
+ * @returns {Promise<Buffer>}
+ */
+async function readSource(entry) {
+  return zstd.decompress(await fs.promises.readFile(entry.filePath));
+}
+
 module.exports = {
   STORE_DIR,
   enabled,
   getSource,
+  purgeStaleFiles,
+  readSource,
   getSourceUrl,
   playgroundUrlFor,
   rawUrlFor,

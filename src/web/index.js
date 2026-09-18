@@ -13,15 +13,23 @@ const {
   selectRuntime,
   tryRunLocally,
 } = require("../local/dispatch");
+const { ROBLOX_KEY, limiterKey } = require("../origin");
 const { safeMessage } = require("../sanitize");
 const { log } = require("../log");
 const { ExecuteTasks, Inputs } = require("../state");
-const { formatLuau } = require("../tools/luau");
+const { getByteCodeOptions } = require("../tools/bytecode");
+const { compileLuau, formatLuau, generateAST } = require("../tools/luau");
 const { generateUUID } = require("../util");
 const {
+  POLL_RATE_LIMIT,
   RUN_RATE_LIMIT,
+  TOOL_DEBOUNCE_MS,
+  TOOL_RATE_LIMIT,
   checkFormatDebounce,
+  checkPollRate,
   checkRunRate,
+  checkToolDebounce,
+  checkToolRate,
   describeSubmission,
   hashIp,
 } = require("./rateLimit");
@@ -33,10 +41,36 @@ const UPLOAD_CHUNK_TTL_MS = 1000 * 60 * 2;
 const MAX_UPLOAD_CHUNK_BASE64 = 1024 * 1024;
 const MAX_PARALLEL_UPLOADS_PER_SESSION = 5;
 const MAX_UPLOAD_CHUNKS = 1000;
+const POLL_GRACE_MS = 1000 * 30;
+const POLL_SWEEP_MS = 1000 * 10;
+const RESULT_TTL_MS = 1000 * 60 * 2;
+const MAX_STORED_RESULTS = 500;
 
 const PendingInputUploads = {};
 
 const WebTasks = new Map();
+
+// A polling client has no socket to hang up, so its last GET /result stands in
+// for one: stop asking and the run is torn down the way a closed tab tears down
+// an SSE run.
+const PollSessions = new Map();
+
+// The session is gone the moment a run finishes, so its last snapshot outlives
+// it here - long enough for the client's next poll to collect the result.
+const WebResults = new Map();
+
+function rememberResult(token, snapshot) {
+  const existing = WebResults.get(token);
+  if (existing) clearTimeout(existing.timeoutId);
+  else if (WebResults.size >= MAX_STORED_RESULTS) {
+    const oldest = WebResults.keys().next().value;
+    clearTimeout(WebResults.get(oldest).timeoutId);
+    WebResults.delete(oldest);
+  }
+  const timeoutId = setTimeout(() => WebResults.delete(token), RESULT_TTL_MS);
+  timeoutId.unref?.();
+  WebResults.set(token, { snapshot, timeoutId });
+}
 
 function clearPendingUpload(token, uploadId) {
   const tokenUploads = PendingInputUploads[token];
@@ -75,6 +109,7 @@ function releaseWebRun(token, timeoutId) {
     WebTasks.delete(token);
   }
   clearAllPendingUploads(token);
+  PollSessions.delete(token);
 }
 
 function endWebSession(token, reason) {
@@ -87,6 +122,93 @@ function endWebSession(token, reason) {
   }
 }
 
+// Each entry owns the whole tool: how to run it, and what the JSON body calls
+// its output. The plain-text GET variant returns `output` on its own.
+const TOOLS = {
+  bytecode: {
+    field: "bytecode",
+    async run(code) {
+      const options = getByteCodeOptions(code);
+      const result = await compileLuau(code, options);
+      return { ...result, extra: { options } };
+    },
+  },
+  ast: {
+    field: "ast",
+    run: (code) => generateAST(code),
+  },
+};
+
+// All of Roblox shares one identity: one script looping over /run from a game
+// server would otherwise arrive as an endless supply of fresh datacenter IPs.
+function callerFor(req) {
+  const key = limiterKey(req);
+  return { key, label: key === ROBLOX_KEY ? ROBLOX_KEY : hashIp(req.ip) };
+}
+
+function readToolCode(req) {
+  const value = req.method === "GET" ? req.query.code : req.body?.code;
+  return typeof value === "string" ? value : null;
+}
+
+// A tool run costs a compiler process, so it is limited the way /format is -
+// no back-to-back calls - plus a per-minute ceiling.
+async function handleTool(req, res, name, { raw }) {
+  const tool = TOOLS[name];
+  const code = readToolCode(req);
+
+  const fail = (status, message) =>
+    raw
+      ? res.status(status).type("text/plain; charset=utf-8").send(message)
+      : res.status(status).json({ error: message });
+
+  if (code === null) return fail(400, "Missing code");
+  if (code.length > MAX_DATA_TO_SEND) return fail(400, "Code too large");
+
+  const caller = callerFor(req);
+  if (!checkToolDebounce(caller.key, name)) {
+    return fail(
+      429,
+      `Rate limit: max 1 ${name} request per ${TOOL_DEBOUNCE_MS / 1000} seconds`,
+    );
+  }
+  if (!checkToolRate(caller.key, name)) {
+    return fail(429, `Rate limit: max ${TOOL_RATE_LIMIT} ${name} requests/min`);
+  }
+
+  log(caller.label, "web", name, describeSubmission(code));
+
+  let result;
+  try {
+    result = await tool.run(code);
+  } catch (err) {
+    return fail(500, safeMessage(err));
+  }
+
+  // -1 is the tool timeout; anything else non-zero is the tool rejecting the
+  // source, and its own message is the useful part of the answer.
+  if (result.code !== 0) {
+    return fail(result.code === -1 ? 504 : 400, result.output);
+  }
+
+  if (raw) {
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    return res.type("text/plain; charset=utf-8").send(result.output);
+  }
+  res.json({ [tool.field]: result.output, ...(result.extra || {}) });
+}
+
+function sweepPollSessions(now = Date.now()) {
+  for (const [token, lastPolledAt] of PollSessions) {
+    if (now - lastPolledAt > POLL_GRACE_MS) {
+      endWebSession(token, "Client stopped polling");
+    }
+  }
+}
+
+const pollSweep = setInterval(sweepPollSessions, POLL_SWEEP_MS);
+pollSweep.unref();
+
 const tooLarge = () => ({
   error: `File too large (max ${MAX_DATA_TO_SEND / 1024 / 1024}MB)`,
 });
@@ -95,13 +217,15 @@ function registerWebRoutes(app) {
   app.set("trust proxy", TRUST_PROXY);
 
   app.post("/run", async (req, res) => {
-    const { code } = req.body;
+    const { code, stream } = req.body;
     if (!code || typeof code !== "string") {
       return res.status(400).json({ error: "Missing code" });
     }
+    // Opt-in: the session runs with no SSE and the client reads GET /result.
+    const poll = stream === false;
 
-    const anonIp = hashIp(req.ip);
-    if (!checkRunRate(req.ip)) {
+    const { key: callerKey, label: anonIp } = callerFor(req);
+    if (!checkRunRate(callerKey)) {
       return res
         .status(429)
         .json({ error: `Rate limit: max ${RUN_RATE_LIMIT} runs/min` });
@@ -148,8 +272,15 @@ function registerWebRoutes(app) {
     };
 
     let timeoutId;
-    const responder = createSseResponder(() => releaseWebRun(token, timeoutId));
+    const responder = createSseResponder(
+      () => {
+        rememberResult(token, responder.snapshot());
+        releaseWebRun(token, timeoutId);
+      },
+      { requireStream: !poll },
+    );
     openSession(token, responder);
+    if (poll) PollSessions.set(token, Date.now());
     timeoutId = setTimeout(() => {
       endWebSession(token, "Session timed out");
     }, SESSION_TIMEOUT_MS);
@@ -197,7 +328,7 @@ function registerWebRoutes(app) {
       return res.status(400).json({ error: "Missing code" });
     }
 
-    if (!checkFormatDebounce(req.ip)) {
+    if (!checkFormatDebounce(callerFor(req).key)) {
       return res
         .status(429)
         .json({ error: "Rate limit: max 1 format request per 0.5 seconds" });
@@ -207,7 +338,7 @@ function registerWebRoutes(app) {
       return res.status(400).json({ error: "Code too large" });
     }
 
-    log(hashIp(req.ip), "web", "format", describeSubmission(code));
+    log(callerFor(req).label, "web", "format", describeSubmission(code));
 
     try {
       const result = await formatLuau(code);
@@ -219,6 +350,11 @@ function registerWebRoutes(app) {
       res.status(500).json({ error: safeMessage(err) });
     }
   });
+
+  for (const name of Object.keys(TOOLS)) {
+    app.post(`/${name}`, (req, res) => handleTool(req, res, name, { raw: false }));
+    app.get(`/${name}`, (req, res) => handleTool(req, res, name, { raw: true }));
+  }
 
   app.get("/stream/:token", (req, res) => {
     const session = getSession(req.params.token);
@@ -235,10 +371,32 @@ function registerWebRoutes(app) {
     session.responder.attach(res);
   });
 
+  // Serves a live session from its responder and a finished one from the
+  // retained snapshot, so a client that polls a moment late still gets output.
+  app.get("/result/:token", (req, res) => {
+    if (!checkPollRate(callerFor(req).key)) {
+      return res
+        .status(429)
+        .json({ error: `Rate limit: max ${POLL_RATE_LIMIT} polls/min` });
+    }
+
+    const token = req.params.token;
+    const session = getSession(token);
+    if (session) {
+      if (PollSessions.has(token)) PollSessions.set(token, Date.now());
+      return res.json({ token, ...session.responder.snapshot() });
+    }
+
+    const stored = WebResults.get(token);
+    if (stored) return res.json({ token, ...stored.snapshot });
+
+    res.status(404).json({ error: "Session not found or expired" });
+  });
+
   app.post("/stop/:token", (req, res) => {
     const token = req.params.token;
 
-    log(hashIp(req.ip), "web", "stop", "User stopped execution");
+    log(callerFor(req).label, "web", "stop", "User stopped execution");
 
     cancelLocalRun(token);
     queueInput(token, "STOP_ALL_SESSIONS_PLS");
@@ -254,7 +412,7 @@ function registerWebRoutes(app) {
       return res.status(404).json({ error: "Session not found" });
     }
 
-    const anonIp = hashIp(req.ip);
+    const anonIp = callerFor(req).label;
     const rate = checkInputRate(
       `web:${anonIp}`,
       isFileChunk ? "chunk" : "input",
@@ -368,4 +526,4 @@ function registerWebRoutes(app) {
   });
 }
 
-module.exports = { registerWebRoutes };
+module.exports = { POLL_GRACE_MS, registerWebRoutes, sweepPollSessions };

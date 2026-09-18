@@ -4,6 +4,8 @@ const assert = require("node:assert/strict");
 const {
   BLOCK_DURATION_MS,
   CRASHES_BEFORE_BLOCK,
+  ESCALATION_RESET_MS,
+  MAX_BLOCK_DURATION_MS,
   CRASH_WINDOW_MS,
   LOCAL_MAX_PER_ACTOR,
   LOCAL_STALE_AFTER_MS,
@@ -121,4 +123,62 @@ test("a heartbeat keeps one of two Lune runs from triggering admission block", (
 
   finishLocalExecutionHealth(actor, "first");
   finishLocalExecutionHealth(actor, "second");
+});
+
+test("a repeat offender's block doubles each time", () => {
+  const actor = "web:escalating";
+  const at = 10_000_000;
+
+  function blockOnce(start, tag) {
+    let result;
+    for (let index = 0; index < CRASHES_BEFORE_BLOCK; index++) {
+      result = recordCrash(actor, `${tag}:${index}`, [], start + index);
+    }
+    return result;
+  }
+
+  const first = blockOnce(at, "a");
+  assert.equal(first.durationMs, BLOCK_DURATION_MS);
+  assert.equal(first.blocks, 1);
+
+  // Far enough out that the earlier incidents have aged out of the window, so
+  // this is a second offence rather than the first one continuing.
+  const second = blockOnce(at + CRASH_WINDOW_MS * 2, "b");
+  assert.equal(second.durationMs, BLOCK_DURATION_MS * 2);
+  assert.equal(second.blocks, 2);
+
+  const third = blockOnce(at + CRASH_WINDOW_MS * 4, "c");
+  assert.equal(third.durationMs, BLOCK_DURATION_MS * 4);
+  assert.equal(third.blocks, 3);
+});
+
+test("the escalation stops at the ceiling", () => {
+  const actor = "web:ceiling";
+  let at = 20_000_000;
+  let result;
+  for (let round = 0; round < 12; round++) {
+    for (let index = 0; index < CRASHES_BEFORE_BLOCK; index++) {
+      result = recordCrash(actor, `r${round}:${index}`, [], at + index);
+    }
+    at += CRASH_WINDOW_MS * 2;
+  }
+  assert.equal(result.durationMs, MAX_BLOCK_DURATION_MS);
+});
+
+test("behaving for long enough clears the escalation", () => {
+  const actor = "web:forgiven";
+  const at = 30_000_000;
+  for (let index = 0; index < CRASHES_BEFORE_BLOCK; index++) {
+    recordCrash(actor, `first:${index}`, [], at + index);
+  }
+
+  const later = at + ESCALATION_RESET_MS + 1;
+  assert.equal(getActorBlock(actor, later), null);
+
+  let result;
+  for (let index = 0; index < CRASHES_BEFORE_BLOCK; index++) {
+    result = recordCrash(actor, `second:${index}`, [], later + index);
+  }
+  assert.equal(result.durationMs, BLOCK_DURATION_MS, "back to a first offence");
+  assert.equal(result.blocks, 1);
 });

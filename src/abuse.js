@@ -3,6 +3,11 @@ const crypto = require("crypto");
 const CRASH_WINDOW_MS = 2 * 60 * 1000;
 const CRASHES_BEFORE_BLOCK = 3;
 const BLOCK_DURATION_MS = 45 * 1000;
+// A first block is a warning; the same actor earning another one is a pattern,
+// so each block doubles the last. The ceiling keeps it a cooldown rather than a
+// ban, and a spell of good behaviour clears the escalation entirely.
+const MAX_BLOCK_DURATION_MS = 15 * 60 * 1000;
+const ESCALATION_RESET_MS = 30 * 60 * 1000;
 const LOCAL_MAX_PER_ACTOR = 10;
 const LOCAL_STALE_AFTER_MS = 3 * 1000;
 const LOCAL_STALE_LIMIT = 2;
@@ -30,6 +35,32 @@ function isPunishableLuneExit(result) {
   return Boolean(result?.abnormalExit && !result.timedOut);
 }
 
+/** Forgive the escalation once the actor has gone quiet for long enough. */
+function decayEscalation(entry, now) {
+  if (entry.blocks > 0 && now - entry.lastBlockAt > ESCALATION_RESET_MS) {
+    entry.blocks = 0;
+    entry.lastBlockAt = 0;
+  }
+}
+
+/** How long the next block lasts: 45s, 90s, 180s ... up to the ceiling. */
+function nextBlockDuration(entry) {
+  return Math.min(
+    BLOCK_DURATION_MS * 2 ** entry.blocks,
+    MAX_BLOCK_DURATION_MS,
+  );
+}
+
+// An entry is only worth keeping while it still says something: live incidents,
+// a block in force, or an escalation that has not yet decayed.
+function isEntryDead(entry, now) {
+  return (
+    entry.incidents.length === 0 &&
+    entry.blockedUntil <= now &&
+    (entry.blocks === 0 || now - entry.lastBlockAt > ESCALATION_RESET_MS)
+  );
+}
+
 function pruneIncidents(entry, now) {
   entry.incidents = entry.incidents.filter(
     (incident) => now - incident.at < CRASH_WINDOW_MS,
@@ -42,9 +73,10 @@ function getActorBlock(actorKey, now = Date.now()) {
   if (!entry) return null;
 
   pruneIncidents(entry, now);
+  decayEscalation(entry, now);
   if (entry.blockedUntil <= now) {
     entry.blockedUntil = 0;
-    if (entry.incidents.length === 0) actorIncidents.delete(actorKey);
+    if (isEntryDead(entry, now)) actorIncidents.delete(actorKey);
     return null;
   }
 
@@ -60,15 +92,18 @@ function recordCrash(actorKey, incidentId, hashes = [], now = Date.now()) {
 
   let entry = actorIncidents.get(actorKey);
   if (!entry) {
-    entry = { incidents: [], blockedUntil: 0 };
+    entry = { incidents: [], blockedUntil: 0, blocks: 0, lastBlockAt: 0 };
     actorIncidents.set(actorKey, entry);
   }
 
   pruneIncidents(entry, now);
+  decayEscalation(entry, now);
   if (entry.incidents.some((incident) => incident.id === incidentId)) {
     return {
       count: entry.incidents.length,
       blockedUntil: entry.blockedUntil,
+      durationMs: 0,
+      blocks: entry.blocks,
       duplicate: true,
     };
   }
@@ -79,15 +114,25 @@ function recordCrash(actorKey, incidentId, hashes = [], now = Date.now()) {
     hashes: [...new Set(hashes)],
   });
   let newlyBlocked = false;
+  let durationMs = 0;
   if (entry.incidents.length >= CRASHES_BEFORE_BLOCK) {
-    const nextBlock = now + BLOCK_DURATION_MS;
+    durationMs = nextBlockDuration(entry);
+    const nextBlock = now + durationMs;
     newlyBlocked = entry.blockedUntil < nextBlock;
-    entry.blockedUntil = Math.max(entry.blockedUntil, nextBlock);
+    if (newlyBlocked) {
+      entry.blockedUntil = nextBlock;
+      entry.blocks += 1;
+      entry.lastBlockAt = now;
+    } else {
+      durationMs = 0;
+    }
   }
 
   return {
     count: entry.incidents.length,
     blockedUntil: entry.blockedUntil,
+    durationMs,
+    blocks: entry.blocks,
     newlyBlocked,
     duplicate: false,
   };
@@ -208,9 +253,7 @@ const sweep = setInterval(() => {
   const now = Date.now();
   for (const [actorKey, entry] of actorIncidents) {
     pruneIncidents(entry, now);
-    if (entry.incidents.length === 0 && entry.blockedUntil <= now) {
-      actorIncidents.delete(actorKey);
-    }
+    if (isEntryDead(entry, now)) actorIncidents.delete(actorKey);
   }
   for (const [actorKey, blockedUntil] of localAdmissionBlocks) {
     if (blockedUntil <= now) localAdmissionBlocks.delete(actorKey);
@@ -225,6 +268,8 @@ module.exports = {
   BLOCK_DURATION_MS,
   CRASHES_BEFORE_BLOCK,
   CRASH_WINDOW_MS,
+  ESCALATION_RESET_MS,
+  MAX_BLOCK_DURATION_MS,
   LOCAL_MAX_PER_ACTOR,
   LOCAL_STALE_AFTER_MS,
   LOCAL_STALE_BLOCK_MS,

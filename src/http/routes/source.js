@@ -1,11 +1,11 @@
-const fs = require("fs");
-
 const { ENABLE_WEB, PLAYGROUND_URL } = require("../../config");
+const { logBot } = require("../../log");
 const {
   enabled,
   getSource,
   playgroundUrlFor,
   rawUrlFor,
+  readSource,
   wasExpired,
 } = require("../../sourceStore");
 
@@ -29,18 +29,23 @@ function playgroundActive() {
 
 function registerSourceRoutes(app) {
   // Served as plain text from our own origin, so pin the type and forbid
-  // anything the page might try to pull in.
-  function sendRaw(res, entry) {
+  // anything the page might try to pull in. The store holds the source packed,
+  // so it is unpacked here and the caller never sees the stored form.
+  async function sendRaw(res, entry, id) {
+    let source;
+    try {
+      source = await readSource(entry);
+    } catch (err) {
+      // The file was swept or truncated between the lookup and the read, which
+      // leaves the same hole in the editor an expired id does.
+      logBot("Source Store", `failed to read ${entry.id}: ${err.message}`);
+      return sendMiss(res, id);
+    }
     res.setHeader("Content-Type", "text/plain; charset=utf-8");
     res.setHeader("X-Content-Type-Options", "nosniff");
     res.setHeader("Content-Security-Policy", "default-src 'none'");
     res.setHeader("Content-Disposition", 'inline; filename="source.luau"');
-    fs.createReadStream(entry.filePath)
-      .on("error", () => {
-        if (!res.headersSent) gone(res);
-        else res.end();
-      })
-      .pipe(res);
+    res.send(source);
   }
 
   // The id is the only thing guarding the source, so keep it out of referrers
@@ -62,15 +67,15 @@ function registerSourceRoutes(app) {
     res.status(200).send(missBody(res, reason));
   }
 
-  app.get("/raw/:id", (req, res) => {
+  app.get("/raw/:id", async (req, res) => {
     lockDown(res, { cors: true });
     const { id } = req.params;
     const entry = enabled() && ID_PATTERN.test(id) ? getSource(id) : null;
     if (!entry) return sendMiss(res, id);
-    sendRaw(res, entry);
+    await sendRaw(res, entry, id);
   });
 
-  app.get("/source/:id", (req, res) => {
+  app.get("/source/:id", async (req, res) => {
     lockDown(res, { cors: false });
     const { id } = req.params;
 
@@ -82,7 +87,7 @@ function registerSourceRoutes(app) {
 
     const entry = enabled() && ID_PATTERN.test(id) ? getSource(id) : null;
     if (!entry) return sendMiss(res, id);
-    sendRaw(res, entry);
+    await sendRaw(res, entry, id);
   });
 }
 

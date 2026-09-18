@@ -2,6 +2,7 @@ process.env.STORE_COMPILE_SOURCE = "true";
 process.env.COMPILE_SOURCE_MAX_BYTES = "64";
 process.env.COMPILE_SOURCE_TOTAL_BYTES = "100";
 
+const crypto = require("crypto");
 const fs = require("fs");
 const { PassThrough } = require("stream");
 const test = require("node:test");
@@ -11,12 +12,16 @@ const { CALLBACK_URL } = require("../src/config");
 const { PLAYGROUND_URL } = require("../src/config");
 const {
   getSource,
+  purgeStaleFiles,
+  readSource,
   playgroundUrlFor,
   getSourceUrl,
   releaseToken,
   storeSource,
 } = require("../src/sourceStore");
+const { STORE_DIR } = require("../src/sourceStore");
 const { registerSourceRoutes } = require("../src/http/routes/source");
+const path = require("path");
 
 function idFromUrl(url) {
   return url.slice(url.lastIndexOf("/") + 1);
@@ -34,7 +39,6 @@ function routesForTest() {
   return routes;
 }
 
-// A stream, because the raw route pipes the file straight into it.
 function responseForTest() {
   return Object.assign(new PassThrough(), {
     statusCode: 200,
@@ -68,13 +72,16 @@ function responseForTest() {
   });
 }
 
-test("a stored source is reachable by its token and its id", () => {
+test("a stored source is reachable by its token and its id", async () => {
   const url = storeSource("token-a", "print('hi')");
   assert.ok(url.startsWith(`${CALLBACK_URL}/source/`));
   assert.equal(getSourceUrl("token-a"), url);
 
   const entry = getSource(idFromUrl(url));
-  assert.equal(fs.readFileSync(entry.filePath, "utf8"), "print('hi')");
+  assert.equal((await readSource(entry)).toString("utf8"), "print('hi')");
+  // Stored packed: the bytes on disk are not the source.
+  assert.notEqual(fs.readFileSync(entry.filePath, "utf8"), "print('hi')");
+  assert.equal(entry.rawBytes, "print('hi')".length);
   releaseToken("token-a");
 });
 
@@ -100,13 +107,22 @@ test("an oversized rerun clears the link the first run left behind", () => {
   assert.equal(getSourceUrl("token-d"), null);
 });
 
+// Random bytes, because the budget counts what the disk holds and a run of one
+// character packs down to nothing.
+function incompressible() {
+  return crypto.randomBytes(48).toString("base64").slice(0, 64);
+}
+
 test("the oldest sources are evicted once the total budget is passed", () => {
-  const oldest = storeSource("token-e", "a".repeat(60));
-  const newer = storeSource("token-f", "b".repeat(60));
+  const oldest = storeSource("token-e", incompressible());
+  let newest;
+  for (let i = 0; i < 4; i++) {
+    newest = storeSource(`token-f${i}`, incompressible());
+  }
 
   assert.equal(getSource(idFromUrl(oldest)), null);
-  assert.ok(getSource(idFromUrl(newer)));
-  releaseToken("token-f");
+  assert.ok(getSource(idFromUrl(newest)));
+  for (let i = 0; i < 4; i++) releaseToken(`token-f${i}`);
 });
 
 test("an expired source is gone from both indexes", () => {
@@ -124,11 +140,9 @@ test("the raw route serves the stored text as plain text", async () => {
   const res = responseForTest();
   res.setHeader("Access-Control-Allow-Origin", "*");
 
-  routesForTest()["/raw/:id"]({ params: { id } }, res);
+  await routesForTest()["/raw/:id"]({ params: { id } }, res);
 
-  const chunks = [];
-  for await (const chunk of res) chunks.push(chunk);
-  assert.equal(Buffer.concat(chunks).toString("utf8"), "print('raw')");
+  assert.equal(res.body.toString("utf8"), "print('raw')");
   assert.equal(res.headers["Content-Type"], "text/plain; charset=utf-8");
   assert.equal(res.headers["X-Content-Type-Options"], "nosniff");
   // The playground is on another origin and has to fetch this.
@@ -181,4 +195,24 @@ test("the playground link carries only the id, not this host address", () => {
   }
   assert.ok(link.endsWith("source=abc-123"));
   assert.ok(!link.includes(CALLBACK_URL));
+});
+
+test("a stale file left on disk is purged, and a live one is not", () => {
+  const url = storeSource("token-purge", "print('keep')");
+  const live = getSource(idFromUrl(url));
+
+  const legacy = path.join(STORE_DIR, "deadbeef.luau");
+  const old = path.join(STORE_DIR, "deadbeef2.luau.zst");
+  fs.writeFileSync(legacy, "print('old format')");
+  fs.writeFileSync(old, Buffer.from([1, 2, 3]));
+  const longAgo = new Date(Date.now() - 1000 * 60 * 60 * 48);
+  fs.utimesSync(old, longAgo, longAgo);
+
+  const result = purgeStaleFiles();
+
+  assert.equal(fs.existsSync(legacy), false, "the old format always goes");
+  assert.equal(fs.existsSync(old), false, "and so does anything past the TTL");
+  assert.ok(result.removed >= 2);
+  assert.equal(fs.existsSync(live.filePath), true, "a tracked file stays");
+  releaseToken("token-purge");
 });

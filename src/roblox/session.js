@@ -297,7 +297,9 @@ function recordServerOutage(serverId, lastPing) {
     logBot(
       "Roblox Crash Attribution",
       `${actorKey}: ${result.count} crash(es) in window` +
-        (result.newlyBlocked ? ", blocked for 45s" : ""),
+        (result.newlyBlocked
+          ? `, blocked for ${Math.round(result.durationMs / 1000)}s (block #${result.blocks})`
+          : ""),
     );
   }
 
