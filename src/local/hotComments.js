@@ -5,6 +5,7 @@ function parseHotComments(source) {
     optimizationLevel: DEFAULT_OPTIMIZATION_LEVEL,
     native: false,
     lune: false,
+    nosandbox: false,
   };
 
   for (const rawLine of source.split(/\r?\n/)) {
@@ -19,6 +20,8 @@ function parseHotComments(source) {
       result.native = true;
     } else if (/^--!lune\s*$/.test(line)) {
       result.lune = true;
+    } else if (/^--!nosandbox\s*$/.test(line)) {
+      result.nosandbox = true;
     }
   }
 

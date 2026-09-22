@@ -15,6 +15,7 @@ const {
   Inputs,
   RobloxServers,
   getDispatchedTask,
+  nextTaskFor,
   registerRobloxServer,
   reserveNextTask,
   retireRobloxServer,
@@ -27,7 +28,7 @@ const SERVER_NUMBER_MODULO = 256;
 
 async function reserveNextAllowedTask(serverId) {
   while (true) {
-    const taskId = Object.keys(ExecuteTasks)[0];
+    const taskId = nextTaskFor(serverId);
     if (!taskId) return null;
 
     const task = ExecuteTasks[taskId];

@@ -19,6 +19,7 @@ const {
   getUnfinishedTasksForServer,
   state,
   takeUnfinishedTasksForServer,
+  taskMode,
   unregisterRobloxServer,
 } = require("../state");
 const { wait } = require("../util");
@@ -306,11 +307,24 @@ function recordServerOutage(serverId, lastPing) {
   return { actors: actors.size, unfinished: unfinished.length };
 }
 
-function needsAdditionalWorker(workers, queuedTasks, pendingWorkers) {
-  const responsiveWorkers = workers.filter(
+// `queued` is a count, or the queued tasks themselves so --!nosandbox work,
+// which never shares a server with sandboxed work, is sized separately.
+function needsAdditionalWorker(workers, queued, pendingWorkers) {
+  const responsive = workers.filter(
     (server) => server.healthy && !server.retiring,
-  ).length;
-  return queuedTasks > responsiveWorkers + pendingWorkers;
+  );
+  if (typeof queued === "number") {
+    return queued > responsive.length + pendingWorkers;
+  }
+  for (const mode of ["sandbox", "nosandbox"]) {
+    const waiting = queued.filter((task) => taskMode(task) === mode).length;
+    if (waiting === 0) continue;
+    const able = responsive.filter(
+      (server) => !server.mode || server.mode === mode,
+    ).length;
+    if (waiting > able + pendingWorkers) return true;
+  }
+  return false;
 }
 
 async function checkRobloxServer() {
@@ -368,7 +382,6 @@ async function checkRobloxServer() {
     }
 
     const workers = Object.values(RobloxServers);
-    const queuedTasks = Object.keys(ExecuteTasks).length;
     const pendingWorkers = state.PendingRobloxStarts.length;
     const lastCreationDebounce =
       now - state.LastServerCreation > creationDebounce();
@@ -376,7 +389,7 @@ async function checkRobloxServer() {
     const belowWorkerCap = workers.length + pendingWorkers < maxWorkers;
     const needsWorker = needsAdditionalWorker(
       workers,
-      queuedTasks,
+      Object.values(ExecuteTasks),
       pendingWorkers,
     );
 

@@ -6,6 +6,7 @@ const {
 } = require("../abuse");
 const { MAX_DATA_TO_SEND, TRUST_PROXY } = require("../config");
 const { encodeZstd } = require("../chunks");
+const { parseHotComments } = require("../local/hotComments");
 const { closeSession, getSession, openSession } = require("../core/sessions");
 const {
   cancelLocalRun,
@@ -321,6 +322,7 @@ function registerWebRoutes(app) {
       codeHash: codeHash(code),
       isCommand: false,
       isWeb: true,
+      nosandbox: parseHotComments(code).nosandbox,
     };
 
     let timeoutId;
