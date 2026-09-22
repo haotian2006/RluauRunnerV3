@@ -220,10 +220,10 @@ end)
 toucher.TouchEnded:Connect(function(hit)
 	endedBy = hit
 end)
-firetouchinterest(toucher, touchedPart, 0)
-firetouchinterest(toucher, touchedPart, 1)
+firesignal(toucher.Touched, touchedPart)
+firesignal(toucher.TouchEnded, touchedPart)
 task.wait()
-check("firetouchinterest", touchedBy == touchedPart and endedBy == touchedPart)
+check("firesignal Touched/TouchEnded", touchedBy == touchedPart and endedBy == touchedPart)
 local firedProp
 toucher.Changed:Connect(function(prop)
 	firedProp = prop

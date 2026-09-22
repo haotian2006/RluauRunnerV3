@@ -129,7 +129,6 @@ const BOT_GLOBALS = new Set([
   // roblox/Sandbox.luau
   "firesignal",
   "fireevent",
-  "firetouchinterest",
   // roblox/LoadEnv.luau (--!nosandbox only)
   "BOOT_RESET",
 ]);

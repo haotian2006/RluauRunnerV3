@@ -929,6 +929,15 @@ local function runCode(compCode, data)
 	if not l_sus then
 		table.insert(thread.output, createText(`Error loading environment: {l_err}`, 3) .. "\n")
 	end
+	if hooks.sandboxExpected and not hooks.sandboxApplied then
+		local reason = if l_sus then "" else `: {cleanChunkNames(tostring(l_err))}`
+		respondToInteraction(data.token, `The sandbox failed to load, so the code was not run{reason}`, nil, nil, nil, true)
+		for _, fn in hooks.onCleanup do
+			pcall(fn)
+		end
+		hooks.module:Destroy()
+		return false
+	end
 	-- env.error = function(msg, context)
 	-- 	local time = os.clock() - start
 	-- 	local noTimeStamp = (env :: any).TIMESTAMP == false

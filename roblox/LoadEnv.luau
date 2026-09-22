@@ -102,6 +102,9 @@ local bootReset = table.concat(changes, ", ")
 local Sandbox = sandboxModule and require(sandboxModule)
 
 return function(thread, env, hooks)
+	if Sandbox and hooks and hooks.sandbox ~= false then
+		hooks.sandboxExpected = true
+	end
 	-- you can add custom environment variables here
 	-- these will be global variables thats loaded into the environment (imported as module globals)
 	env.GLOBAL = {}
