@@ -5,18 +5,37 @@ if sandboxModule then
 	sandboxModule = sandboxModule:Clone()
 end
 
-local RECREATED = { Camera = true }
+-- The engine creates these on every fresh server; destroying them would make each boot look dirty.
+local ENGINE_CREATED = {
+	Camera = true,
+	StarterPlayerScripts = true,
+	StarterCharacterScripts = true,
+	ChatWindowConfiguration = true,
+	ChatInputBarConfiguration = true,
+	ChannelTabsConfiguration = true,
+	BubbleChatConfiguration = true,
+	ScreenshotHud = true,
+	StatsItem = true,
+}
 
 local changes = {}
 local function resetName(inst)
-	local old = inst.Name
+	local name, class = inst.Name, inst.ClassName
 	if inst == game then
-		inst.Name = "Game"
-	elseif not pcall(inst.ResetPropertyToDefault, inst, "Name") or inst.Name == "Instance" then
-		inst.Name = inst.ClassName
+		if name ~= "Game" then
+			inst.Name = "Game"
+			table.insert(changes, "DataModel.Name")
+		end
+		return
 	end
-	if inst.Name ~= old then
-		table.insert(changes, `{inst.ClassName}.Name`)
+	-- names a fresh server uses: "RunService", "Run Service", or "Instance" for a few services
+	if class == "NetworkServer" or name == class or name == class:gsub("(%l)(%u)", "%1 %2") or name == "Instance" then
+		return
+	end
+	if pcall(function()
+		inst.Name = class
+	end) then
+		table.insert(changes, `{class}.Name`)
 	end
 end
 
@@ -40,8 +59,12 @@ for service in services do
 end
 
 for i, v in game:GetDescendants() do
-	if v.Parent ~= nil and pcall(v.Destroy, v) and not RECREATED[v.ClassName] then
-		table.insert(changes, v.ClassName)
+	-- non-archivable instances can't come from a saved place, so they're the engine's
+	if v.Parent ~= nil and v.Archivable and not ENGINE_CREATED[v.ClassName] then
+		local label = `{v:GetFullName()}({v.ClassName})`
+		if pcall(v.Destroy, v) then
+			table.insert(changes, label)
+		end
 	end
 	if i % 100 == 0 then
 		task.wait()
@@ -75,6 +98,7 @@ if #changes > 0 then
 	end
 end
 
+local bootReset = table.concat(changes, ", ")
 local Sandbox = sandboxModule and require(sandboxModule)
 
 return function(thread, env, hooks)
@@ -87,6 +111,7 @@ return function(thread, env, hooks)
 			Sandbox.getWorld(env.user.UserId):newContext(hooks, env):apply(env)
 		else
 			Sandbox.disabled(env, env.user.UserId)
+			env.BOOT_RESET = bootReset
 		end
 	end
 end

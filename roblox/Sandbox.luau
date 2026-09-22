@@ -2410,6 +2410,9 @@ function Sandbox.getWorld(userId)
 	w.root.Name = "__sbx_" .. key
 	w.ws = realInstance.new("WorldModel")
 	w.ws.Name = "__ws_" .. key
+	-- never persisted if a --!nosandbox run calls SavePlaceAsync
+	w.root.Archivable = false
+	w.ws.Archivable = false
 	rootWorld[w.root] = w
 	rootWorld[w.ws] = w
 	shadowInfo[w.ws] = { world = w, shared = realWorkspace }
@@ -2540,6 +2543,23 @@ function Context:apply(env)
 			return res[2]
 		end
 		return copyWrap(world, realRequire(unwrapArg(world, target)))
+	end
+	-- LoadEnv libraries that inspect values with the real typeof need real Instances
+	for _, key in { "PacketSizeCounter" } do
+		local lib = env[key]
+		if type(lib) == "table" then
+			local bounded = {}
+			for name, v in lib do
+				if type(v) == "function" then
+					bounded[name] = function(...)
+						return v(unwrapN(world, ...))
+					end
+				else
+					bounded[name] = v
+				end
+			end
+			env[key] = table.freeze(bounded)
+		end
 	end
 	local rawExecute = env._execute
 	if type(rawExecute) == "function" then

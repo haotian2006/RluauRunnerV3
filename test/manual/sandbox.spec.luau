@@ -203,6 +203,9 @@ if thread then
 		m.Parent = holder
 	end) and m.Parent == holder)
 	check("_execute runs", fx() == 5)
+	if PacketSizeCounter then
+		check("PacketSizeCounter sees Instance", PacketSizeCounter.GetDataByteSize(p) == 5, PacketSizeCounter.GetDataByteSize(p))
+	end
 	local fn = loadstring("return game, ...")
 	check("loadstring game", fn and select(1, fn(1)) == game)
 	check("loadstring varargs", fn and select(2, fn(7)) == 7)
