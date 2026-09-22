@@ -38,6 +38,7 @@ local ScriptContext = game:GetService("ScriptContext")
 local ServerId = Https:GenerateGUID()
 local Closed = false
 local Processes = {}
+local ProcessHooks = {} -- not reachable from user code, unlike thread
 local ProcessesByUser = {}
 local UserGlobals = {}
 
@@ -973,6 +974,7 @@ local function runCode(compCode, data)
 	task.wait(0.1)
 
 	Processes[processID] = thread
+	ProcessHooks[processID] = hooks
 
 	thread.start = os.clock()
 	start = thread.start
@@ -1059,6 +1061,9 @@ local function runCode(compCode, data)
 			else
 				errorMessage = cleanChunkNames(errorMessage)
 				table.insert(thread.output, createText(str .. errorMessage, 3))
+				if hooks.onError then
+					pcall(hooks.onError, errorMessage, "")
+				end
 			end
 		elseif (env :: any).TIMESTAMP ~= false then
 			table.insert(
@@ -1133,6 +1138,7 @@ local function runCode(compCode, data)
 		respondToInteraction(data.token, truncated, log or "", nil, log and "log.ansi", time, thread.followUp)
 
 		Processes[processID] = nil
+		ProcessHooks[processID] = nil
 		ProcessesByUser[userid][processID] = nil
 		WebTokens[data.token] = nil
 		--// ![AFAIK] theres no way to fully cleanup a thread (this included sub-threads). If this was in a live environment I could execute it from a script and destroy it later but
@@ -1247,6 +1253,10 @@ ScriptContext.Error:Connect(function(err, stackTrace)
 	local process = stackTrace:match("RluauRunnerV3|PROCESS|([%w%-]+)|")
 	if process then
 		sendMessageTo(process, `{msg}`)
+		local h = ProcessHooks[process]
+		if h and h.onError then
+			pcall(h.onError, msg, cleanChunkNames(stackTrace))
+		end
 	end
 end)
 

@@ -340,6 +340,7 @@ end
 
 local ownedMethods, sharedMethods, ownedGetters, sharedGetters = {}, {}, {}, {}
 local serviceMethods = {}
+local serviceGetters = {}
 local MOCKED = { DataStoreService = true, MemoryStoreService = true, MessagingService = true }
 local methodCache = {}
 local wsMethodCache = {}
@@ -749,9 +750,16 @@ local function makeProxy(world, real, kind)
 	else
 		st.ov = ovFor(world, real)
 		local svc = serviceMethods[real.ClassName]
+		local sgets = serviceGetters[real.ClassName]
 		local mocked = MOCKED[real.ClassName]
 		local isWs = real == realWorkspace
 		mt.__index = function(_, k)
+			if sgets then
+				local g = sgets[k]
+				if g then
+					return g(st)
+				end
+			end
 			if svc then
 				local m = svc[k]
 				if m then
@@ -2383,6 +2391,77 @@ serviceMethods.MessagingService = {
 	end,
 }
 
+--// Virtual LogService / ScriptContext (per world; real ones would show other runs)
+
+local MAX_LOG = 1000
+
+local function logState(world)
+	local l = world.log
+	if not l then
+		l = { entries = {}, out = newLocal(), err = newLocal(), silent = newLocal() }
+		world.log = l
+	end
+	return l
+end
+
+local function emitLog(world, message, messageType)
+	local l = logState(world)
+	table.insert(l.entries, { message = message, messageType = messageType, timestamp = os.time() })
+	if #l.entries > MAX_LOG then
+		table.remove(l.entries, 1)
+	end
+	localFire(l.out, message, messageType)
+end
+
+local function localSignal(name, pick)
+	return function(st)
+		return signalFor(st, name, function()
+			return makeSignal(st.world, {}, pick(logState(st.world)), nil, name)
+		end)
+	end
+end
+
+serviceGetters.LogService = {
+	MessageOut = localSignal("MessageOut", function(l)
+		return l.out
+	end),
+	HttpResultOut = localSignal("HttpResultOut", function(l)
+		return l.silent
+	end),
+	OnHttpResultApproved = localSignal("OnHttpResultApproved", function(l)
+		return l.silent
+	end),
+	ServerMessageOut = localSignal("ServerMessageOut", function(l)
+		return l.silent
+	end),
+}
+serviceMethods.LogService = {
+	GetLogHistory = function(self)
+		local world = selfState(self, "GetLogHistory").world
+		local out = {}
+		for i, e in logState(world).entries do
+			out[i] = table.clone(e)
+		end
+		return out
+	end,
+	ClearOutput = function(self)
+		table.clear(logState(selfState(self, "ClearOutput").world).entries)
+	end,
+}
+serviceGetters.ScriptContext = {
+	Error = localSignal("Error", function(l)
+		return l.err
+	end),
+}
+
+local function joinArgs(...)
+	local t = table.pack(...)
+	for i = 1, t.n do
+		t[i] = tostring(t[i])
+	end
+	return table.concat(t, " ", 1, t.n)
+end
+
 --// Context
 
 local Context = {}
@@ -2470,6 +2549,23 @@ function Context:apply(env)
 	local hooks = self.hooks
 	local g = wrap(world, realGame)
 	local ws = wrap(world, realWorkspace)
+	local rawPrint, rawWarn = env.print, env.warn
+	if type(rawPrint) == "function" then
+		env.print = function(...)
+			rawPrint(...)
+			emitLog(world, joinArgs(...), Enum.MessageType.MessageOutput)
+		end
+	end
+	if type(rawWarn) == "function" then
+		env.warn = function(...)
+			rawWarn(...)
+			emitLog(world, joinArgs(...), Enum.MessageType.MessageWarning)
+		end
+	end
+	hooks.onError = function(message, trace)
+		emitLog(world, message, Enum.MessageType.MessageError)
+		localFire(logState(world).err, message, trace, env.script)
+	end
 	world.warn = env.warn
 	env.game = g
 	env.Game = g

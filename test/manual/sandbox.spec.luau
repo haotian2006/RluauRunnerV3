@@ -195,6 +195,31 @@ game:GetService("MessagingService"):PublishAsync("spec", { hi = true })
 task.wait(0.1)
 check("messaging", type(received) == "table" and received.hi == true)
 
+local LS = game:GetService("LogService")
+local logged = {}
+local logConn = LS.MessageOut:Connect(function(message, messageType)
+	table.insert(logged, { message, messageType })
+end)
+print("spec-log", 1)
+warn("spec-warn")
+task.wait()
+logConn:Disconnect()
+check("MessageOut print", logged[1] and logged[1][1] == "spec-log 1" and logged[1][2] == Enum.MessageType.MessageOutput, logged[1] and logged[1][1])
+check("MessageOut warn", logged[2] and logged[2][1] == "spec-warn" and logged[2][2] == Enum.MessageType.MessageWarning)
+local history = LS:GetLogHistory()
+check("GetLogHistory", #history >= 2 and history[#history].message == "spec-warn")
+if thread then
+	local scriptError
+	game:GetService("ScriptContext").Error:Connect(function(message)
+		scriptError = message
+	end)
+	task.spawn(function()
+		error("spec background error")
+	end)
+	task.wait(0.5)
+	check("ScriptContext.Error", type(scriptError) == "string" and scriptError:find("spec background error", 1, true) ~= nil, scriptError)
+end
+
 if thread then
 	local fx, m = _execute("return 5", "specmod")
 	check("_execute module is a proxy", typeof(m) == "Instance" and m:IsA("ModuleScript"))
