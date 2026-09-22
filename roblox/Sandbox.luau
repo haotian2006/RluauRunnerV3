@@ -2467,6 +2467,25 @@ end
 local Context = {}
 Context.__index = Context
 
+-- Worlds must be inside the DataModel for spatial queries, but anything in it is reachable from a
+-- --!nosandbox run, so a world is only parented while its owner is running and no such run is active.
+local nosandboxRuns = 0
+
+local function placeWorld(w)
+	local parent = if w.live > 0 and nosandboxRuns == 0 then realWorkspace else nil
+	if w.ws.Parent ~= parent then
+		pcall(function()
+			w.ws.Parent = parent
+		end)
+	end
+end
+
+local function placeAll()
+	for _, w in worlds do
+		placeWorld(w)
+	end
+end
+
 function Sandbox.getWorld(userId)
 	local key = tostring(userId)
 	local w = worlds[key]
@@ -2496,8 +2515,8 @@ function Sandbox.getWorld(userId)
 	rootWorld[w.ws] = w
 	shadowInfo[w.ws] = { world = w, shared = realWorkspace }
 	w.shadows[realWorkspace] = w.ws
-	w.ws.Parent = realWorkspace
-	addRewrite(w, w.ws:GetFullName(), "Workspace")
+	addRewrite(w, "Workspace." .. w.ws.Name, "Workspace")
+	addRewrite(w, w.ws.Name, "Workspace")
 	worlds[key] = w
 	return w
 end
@@ -2514,6 +2533,7 @@ end
 
 function World:newContext(hooks, env)
 	self.live += 1
+	placeWorld(self)
 	local ctx = setmetatable({ world = self, hooks = hooks, env = env, modules = {} }, Context)
 	if hooks.onCleanup then
 		table.insert(hooks.onCleanup, function()
@@ -2534,6 +2554,7 @@ function Context:destroy()
 		world.live = 0
 		world:idle()
 	end
+	placeWorld(world)
 end
 
 function Context:wrap(v)
@@ -2690,8 +2711,20 @@ function Context:apply(env)
 	end
 end
 
-function Sandbox.disabled(env, userId)
+function Sandbox.disabled(env, userId, hooks)
 	env.shared = Sandbox.getWorld(userId).shared
+	nosandboxRuns += 1
+	placeAll()
+	local done = false
+	if hooks and hooks.onCleanup then
+		table.insert(hooks.onCleanup, function()
+			if not done then
+				done = true
+				nosandboxRuns -= 1
+				placeAll()
+			end
+		end)
+	end
 	if env.warn then
 		env.warn("[WARNING] Sandbox disabled: changes are visible to other users")
 	end

@@ -110,7 +110,7 @@ return function(thread, env, hooks)
 		if hooks.sandbox ~= false then
 			Sandbox.getWorld(env.user.UserId):newContext(hooks, env):apply(env)
 		else
-			Sandbox.disabled(env, env.user.UserId)
+			Sandbox.disabled(env, env.user.UserId, hooks)
 			env.BOOT_RESET = bootReset
 		end
 	end
