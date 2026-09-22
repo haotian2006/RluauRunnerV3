@@ -2541,6 +2541,17 @@ function Context:apply(env)
 		end
 		return copyWrap(world, realRequire(unwrapArg(world, target)))
 	end
+	local rawExecute = env._execute
+	if type(rawExecute) == "function" then
+		env._execute = function(...)
+			local fx, m = rawExecute(...)
+			if fx and realTypeof(m) == "Instance" then
+				pin(world, m)
+				m = wrap(world, m)
+			end
+			return fx, m
+		end
+	end
 	local thread = env.thread
 	if type(thread) == "table" then
 		local script = env.script

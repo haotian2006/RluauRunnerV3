@@ -196,6 +196,13 @@ task.wait(0.1)
 check("messaging", type(received) == "table" and received.hi == true)
 
 if thread then
+	local fx, m = _execute("return 5", "specmod")
+	check("_execute module is a proxy", typeof(m) == "Instance" and m:IsA("ModuleScript"))
+	local holder = Instance.new("ModuleScript", script)
+	check("_execute module parent", pcall(function()
+		m.Parent = holder
+	end) and m.Parent == holder)
+	check("_execute runs", fx() == 5)
 	local fn = loadstring("return game, ...")
 	check("loadstring game", fn and select(1, fn(1)) == game)
 	check("loadstring varargs", fn and select(2, fn(7)) == 7)
