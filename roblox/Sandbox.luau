@@ -553,7 +553,13 @@ function wrapOut(world, v)
 	elseif tv == "table" then
 		return wrapTable(world, v)
 	elseif tv == "RBXScriptSignal" then
-		return makeSignal(world, { v })
+		local cache = world.signalCache
+		local p = cache[v]
+		if not p then
+			p = makeSignal(world, { v })
+			cache[v] = p
+		end
+		return p
 	elseif tv == "RaycastResult" then
 		return wrapRaycastResult(world, v)
 	end
@@ -1009,6 +1015,7 @@ local function connect(s, fn, once)
 	if s.loc then
 		table.insert(conn.reals, localConnect(s.loc, fire))
 	end
+	table.insert(conn.reals, localConnect(s.fire, fire))
 	world.conns[conn] = true
 	return makeConnection(conn)
 end
@@ -1053,7 +1060,7 @@ function makeSignal(world, sources, loc, filter, name)
 	local p = newproxy(true)
 	local mt = getmetatable(p)
 	proxyKind[p] = "RBXScriptSignal"
-	sigStates[p] = { world = world, sources = sources, loc = loc, filter = filter }
+	sigStates[p] = { world = world, sources = sources, loc = loc, filter = filter, fire = newLocal() }
 	mt.__index = function(_, k)
 		local f = signalMethods[k]
 		if f then
@@ -1154,6 +1161,21 @@ local function ownedClone(self)
 	pin(st.world, c)
 	return wrap(st.world, c)
 end
+-- the engine hands out a new signal object per call; one proxy per name keeps firesignal working
+local function ownedSignalGetter(k, prefix)
+	return function(self, name)
+		local st = selfState(self, k)
+		local ok, real = pcall(st.real[k], st.real, name)
+		if not ok then
+			error(rewrite(st.world, real), 0)
+		end
+		return signalFor(st, prefix .. tostring(name), function()
+			return makeSignal(st.world, { real })
+		end)
+	end
+end
+ownedMethods.GetPropertyChangedSignal = ownedSignalGetter("GetPropertyChangedSignal", "prop:")
+ownedMethods.GetAttributeChangedSignal = ownedSignalGetter("GetAttributeChangedSignal", "attr:")
 ownedMethods.Clone = ownedClone
 ownedMethods.clone = ownedClone
 
@@ -2462,6 +2484,42 @@ local function joinArgs(...)
 	return table.concat(t, " ", 1, t.n)
 end
 
+--// Demo helpers: nothing simulates physics here, so events can be fired by hand
+
+local function firesignal(signal, ...)
+	local s = sigStates[signal]
+	if not s then
+		error(`invalid argument #1 to 'firesignal' (RBXScriptSignal expected, got {typeName(signal)})`, 2)
+	end
+	localFire(s.fire, ...)
+end
+
+local function fireevent(instance, name, ...)
+	if not states[instance] and not virtualStates[instance] then
+		error(`invalid argument #1 to 'fireevent' (Instance expected, got {typeName(instance)})`, 2)
+	end
+	if type(name) ~= "string" then
+		error(`invalid argument #2 to 'fireevent' (string expected, got {typeName(name)})`, 2)
+	end
+	local signal = instance[name]
+	if typeName(signal) ~= "RBXScriptSignal" then
+		error(`{name} is not an event of {instance.ClassName}`, 2)
+	end
+	firesignal(signal, ...)
+end
+
+local function firetouchinterest(a, b, toggle)
+	for i, part in { a, b } do
+		local st = states[part]
+		if not st or not st.real:IsA("BasePart") then
+			error(`invalid argument #{i} to 'firetouchinterest' (BasePart expected, got {typeName(part)})`, 2)
+		end
+	end
+	local event = if toggle == 1 or toggle == true then "TouchEnded" else "Touched"
+	firesignal(a[event], b)
+	firesignal(b[event], a)
+end
+
 --// Context
 
 local Context = {}
@@ -2495,6 +2553,7 @@ function Sandbox.getWorld(userId)
 	w = setmetatable({
 		id = key,
 		proxies = setmetatable({}, { __mode = "kv" }),
+		signalCache = setmetatable({}, { __mode = "kv" }),
 		overlay = {},
 		shadows = {},
 		shadowCount = 0,
@@ -2596,6 +2655,9 @@ function Context:apply(env)
 		env.script = wrap(world, hooks.module)
 	end
 	env.typeof = sandboxTypeof
+	env.firesignal = firesignal
+	env.fireevent = fireevent
+	env.firetouchinterest = firetouchinterest
 	env.shared = world.shared
 	env.Instance = table.freeze({
 		new = function(className, parent)

@@ -195,6 +195,41 @@ game:GetService("MessagingService"):PublishAsync("spec", { hi = true })
 task.wait(0.1)
 check("messaging", type(received) == "table" and received.hi == true)
 
+local toucher, touchedPart = Instance.new("Part", workspace), Instance.new("Part", workspace)
+local touchedBy, endedBy
+toucher.Touched:Connect(function(hit)
+	touchedBy = hit
+end)
+toucher.TouchEnded:Connect(function(hit)
+	endedBy = hit
+end)
+firetouchinterest(toucher, touchedPart, 0)
+firetouchinterest(toucher, touchedPart, 1)
+task.wait()
+check("firetouchinterest", touchedBy == touchedPart and endedBy == touchedPart)
+local firedProp
+toucher.Changed:Connect(function(prop)
+	firedProp = prop
+end)
+fireevent(toucher, "Changed", "Fake")
+task.wait()
+check("fireevent", firedProp == "Fake")
+check("fireevent bad name", has(err(fireevent, toucher, "Nope"), "Nope"))
+local payload, received = {}, nil
+toucher.Touched:Connect(function(x)
+	received = x
+end)
+firesignal(toucher.Touched, payload)
+task.wait()
+check("firesignal keeps identity", received == payload)
+local nameFired = false
+toucher:GetPropertyChangedSignal("Name"):Connect(function()
+	nameFired = true
+end)
+firesignal(toucher:GetPropertyChangedSignal("Name"))
+task.wait()
+check("firesignal method-returned signal", nameFired)
+
 local LS = game:GetService("LogService")
 local logged = {}
 local logConn = LS.MessageOut:Connect(function(message, messageType)
