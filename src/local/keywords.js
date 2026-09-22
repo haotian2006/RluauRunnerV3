@@ -102,7 +102,7 @@ const ROBLOX_GLOBALS = new Set([
 ]);
 
 const BOT_GLOBALS = new Set([
-  // LuauBot.luau
+  // roblox/LuauBot.luau
   "discord",
   "log",
   "colorstring",

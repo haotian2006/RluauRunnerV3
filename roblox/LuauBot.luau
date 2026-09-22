@@ -315,14 +315,16 @@ if smt then
 	smt:Destroy()
 end
 
-local function executeCode(id, code, env, thread, delay)
-	local m = Instance.new("ModuleScript")
+local function executeCode(id, code, env, thread, delay, m, asFunction)
+	m = m or Instance.new("ModuleScript")
 	local imports = ""
-	local updates = ""
 	local checks = ""
+	local usesTypeof = code:find("typeof", 1, true) ~= nil
 	for k in env do
+		if k == "typeof" and not usesTypeof then
+			continue
+		end
 		imports ..= `{k} = imports.{k};`
-		updates ..= `imports.{k} = {k};`
 		checks ..= `if _c.{k} ~= {k} then imports.{k} = {k}; end; {k} = imports.{k} _c.{k} = {k};`
 	end
 	local fs = {}
@@ -340,11 +342,11 @@ local function executeCode(id, code, env, thread, delay)
 	end
 	env.optimize = optimize or 2
 
-	updates =
-		`local _ = coroutine.running();task.spawn(function()local _c = {"{}"}local _=_ while coroutine.status(_) ~= 'dead' do {checks} task.wait();end;end);`
+	local updates = `local _c = {"{}"} __rluauSync(function() {checks} end, coroutine.running());`
 	local header = #fs == 0 and "" or (table.concat(fs, "\n") .. "\n")
-	local src =
-		`{header}return function(imports){imports}{updates}return function() return (function (...) --[[START OF CODE]] {code}\n--[[END OF CODE]]\nend)()\n\n\t\t\n\n\tend\nend`
+	local src = if asFunction
+		then `{header}return function(imports, __rluauSync){imports}{updates}return function(...) --[[START OF CODE]] {code}\n--[[END OF CODE]]\nend\nend`
+		else `{header}return function(imports, __rluauSync){imports}{updates}return function() return (function (...) --[[START OF CODE]] {code}\n--[[END OF CODE]]\nend)()\n\n\t\t\n\n\tend\nend`
 
 	local pass, fx = pcall(function()
 		m.Source = src
@@ -434,6 +436,21 @@ local function normalizeQuotes(str)
 	return table.concat(out)
 end
 
+local function hasHotComment(code, name)
+	for line in code:gmatch("[^\r\n]*") do
+		line = line:match("^%s*(.-)%s*$")
+		if line ~= "" then
+			if line:sub(1, 2) ~= "--" then
+				return false
+			end
+			if line == "--!" .. name then
+				return true
+			end
+		end
+	end
+	return false
+end
+
 local function runCode(compCode, data)
 	local decodePass, code = decodeZstd(compCode)
 	if not decodePass then
@@ -455,7 +472,37 @@ local function runCode(compCode, data)
 		foundSignalUsage = true
 	end
 	local processID = game:GetService("HttpService"):GenerateGUID(false)
+	local id = "RluauRunnerV3|PROCESS|" .. processID .. "|"
 	local env = {}
+	local hooks = {
+		processId = processID,
+		onCleanup = {},
+		sandbox = not hasHotComment(code, "nosandbox"),
+		module = Instance.new("ModuleScript"),
+	}
+	local syncs = {}
+	local syncRunning = false
+	local function registerSync(fn, th)
+		table.insert(syncs, { fn, th })
+		if syncRunning then
+			return
+		end
+		syncRunning = true
+		task.spawn(function()
+			while #syncs > 0 do
+				for i = #syncs, 1, -1 do
+					local s = syncs[i]
+					if coroutine.status(s[2]) == "dead" then
+						table.remove(syncs, i)
+					else
+						s[1]()
+					end
+				end
+				task.wait()
+			end
+			syncRunning = false
+		end)
+	end
 	local lastOutput = ""
 	local start = os.clock() + 3
 	local thread = {}
@@ -622,14 +669,39 @@ local function runCode(compCode, data)
 			table.clear(output)
 		end,
 	}
-	env.loadstring = function(...)
-		local f, e = loadstring(...)
-		if f then
-			local meta = setmetatable(env, { __index = getfenv() })
-			setfenv(f, meta)
+	local loadCache = {}
+	local loadModules = {}
+	env.loadstring = function(src, chunkname)
+		if type(src) ~= "string" then
+			return loadstring(src, chunkname)
 		end
-		return f, e
+		local chunk = id
+		if chunkname ~= nil then
+			local cleaned = tostring(chunkname):gsub("[^%w%-_]", "")
+			if cleaned ~= "" then
+				chunk ..= cleaned .. "|"
+			end
+		end
+		local key = chunk .. "\0" .. src
+		local cached = loadCache[key]
+		if cached then
+			return cached
+		end
+		local f, e = loadstring(src, chunk)
+		if not f then
+			return nil, cleanChunkNames(e)
+		end
+		local factory, m = executeCode(chunk, src, env, thread, 0, nil, true)
+		table.insert(loadModules, m)
+		f = factory(env, registerSync)
+		loadCache[key] = f
+		return f
 	end
+	table.insert(hooks.onCleanup, function()
+		for _, m in loadModules do
+			m:Destroy()
+		end
+	end)
 
 	env.colorstring = function(text, color)
 		color = color or ""
@@ -689,7 +761,6 @@ local function runCode(compCode, data)
 			noTimeStamp and createText(text, 2) .. "\n" or createText(string.format(`[%.3f] %s\n`, time, text), 2)
 		)
 	end
-	local id = "RluauRunnerV3|PROCESS|" .. processID .. "|"
 
 	local function requestButton(action, buttonId, changes)
 		local body = {
@@ -825,16 +896,32 @@ local function runCode(compCode, data)
 		local m
 		fx, m = executeCode(chunk, code, env, thread, 0)
 		return function()
-			fx = fx(env)
+			fx = fx(env, registerSync)
 			return fx()
 		end, m
+	end
+	hooks.execute = function(name, source, moduleEnv)
+		local chunk = id
+		local cleaned = tostring(name):gsub("[^%w%-_]", "")
+		if cleaned ~= "" then
+			chunk ..= cleaned .. "|"
+		end
+		local fx, err = loadstring(source, chunk)
+		if not fx then
+			return false, err
+		end
+		local factory, m = executeCode(chunk, source, moduleEnv, thread, 0)
+		table.insert(loadModules, m)
+		return function()
+			return factory(moduleEnv, registerSync)()
+		end
 	end
 
 	env.TIMEOUT = DEFAULT_TIMEOUT
 
 	local l_sus, l_err = pcall(function()
 		if loadEnv then
-			loadEnv(thread, env)
+			loadEnv(thread, env, hooks)
 		end
 	end)
 
@@ -866,10 +953,14 @@ local function runCode(compCode, data)
 				"Detected code block in command ['``lua {CODE} ``']. Remove code block or use an application command instead.\n"
 		end
 		respondToInteraction(data.token, warning .. err:match(":(%d+: .+)"), nil, nil, nil, true)
+		for _, fn in hooks.onCleanup do
+			pcall(fn)
+		end
+		hooks.module:Destroy()
 		return false
 	end
 	local module
-	fx, module = executeCode(id, code, env, thread)
+	fx, module = executeCode(id, code, env, thread, nil, hooks.module)
 	thread.module = module
 
 	if isCommand and code:find("%-%-") then
@@ -887,7 +978,7 @@ local function runCode(compCode, data)
 	start = thread.start
 	local sus, msg = true, nil
 	thread.running = task.defer(function()
-		sus, msg = pcall(fx, env)
+		sus, msg = pcall(fx, env, registerSync)
 		if sus then
 			sus, msg = pcall(msg)
 			task.wait(EXECUTION_SETTLE_DELAY)
@@ -1047,6 +1138,9 @@ local function runCode(compCode, data)
 		--// ![AFAIK] theres no way to fully cleanup a thread (this included sub-threads). If this was in a live environment I could execute it from a script and destroy it later but
 		--// for now we just have to keep the sub-threads running. Either way, this session only runs for a max of 5 mins.
 		--// 10/30/25, wrapped tasks and coroutine creations to be tracked and closed on script end.
+		for _, fn in hooks.onCleanup do
+			pcall(fn)
+		end
 		module:Destroy()
 	end)
 

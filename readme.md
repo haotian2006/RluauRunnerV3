@@ -13,12 +13,13 @@ The bot ships its own code to each execution session as a base64-encoded rbxm,
 so the target place needs nothing installed in it. **The bot will not start
 without `luauBot.b64` in the project root.**
 
-Copy `LuauBot.luau` into `workspace` as a module script:
+Copy the files in `roblox/` into `workspace` as module scripts:
 
 ```
 workspace
-    - LuauBot
-      - LoadEnv
+    - LuauBot        (roblox/LuauBot.luau)
+      - LoadEnv      (roblox/LoadEnv.luau)
+        - Sandbox    (roblox/Sandbox.luau)
 ```
 
 Then run this in Studio and save the output into `luauBot.b64`:
@@ -38,7 +39,7 @@ game:GetService("ScriptEditorService"):UpdateSourceAsync(workspace.Output,
 	function() return encodedString end )
 ```
 
-Re-generate it whenever `LuauBot.luau` changes.
+Re-generate it whenever `roblox/LuauBot.luau` changes.
 
 ### 2. Execution profiles
 
