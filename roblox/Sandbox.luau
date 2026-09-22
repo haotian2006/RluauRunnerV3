@@ -340,6 +340,7 @@ end
 
 local ownedMethods, sharedMethods, ownedGetters, sharedGetters = {}, {}, {}, {}
 local serviceMethods = {}
+local MOCKED = { DataStoreService = true, MemoryStoreService = true, MessagingService = true }
 local methodCache = {}
 local wsMethodCache = {}
 
@@ -748,12 +749,16 @@ local function makeProxy(world, real, kind)
 	else
 		st.ov = ovFor(world, real)
 		local svc = serviceMethods[real.ClassName]
+		local mocked = MOCKED[real.ClassName]
 		local isWs = real == realWorkspace
 		mt.__index = function(_, k)
 			if svc then
 				local m = svc[k]
 				if m then
 					return m
+				end
+				if mocked and methods[k] then
+					error(`{k} is not available in the sandbox`, 0)
 				end
 			end
 			local m = sharedMethods[k]
@@ -1596,6 +1601,820 @@ serviceMethods.CollectionService = {
 	end,
 }
 
+--// Mock stores (sandbox only; data lives for this server session)
+
+local HttpService = realGame:GetService("HttpService")
+local virtualStates = setmetatable({}, { __mode = "k" })
+local MAX_EXPIRATION = 3888000
+local MAX_VALUE = 4 * 1024 * 1024
+local STORE_NOTE =
+	"[INFO] Sandbox DataStores are temporary: data lasts only for this server session; later runs may land on another server."
+
+local function vstate(self, k)
+	local vs = virtualStates[self]
+	if not vs then
+		error(`Expected ':' not '.' calling member function {k}`, 0)
+	end
+	return vs
+end
+
+local function virtualIsA(self, class)
+	return vstate(self, "IsA").classes[class] == true
+end
+
+local function makeVirtual(world, className, name, members, props, bases)
+	local p = newproxy(true)
+	local mt = getmetatable(p)
+	local classes = { Instance = true, [className] = true }
+	for _, b in bases or {} do
+		classes[b] = true
+	end
+	props = props or {}
+	virtualStates[p] = { world = world, classes = classes }
+	proxyKind[p] = "Instance"
+	mt.__index = function(_, k)
+		if k == "ClassName" then
+			return className
+		elseif k == "Name" then
+			return name
+		elseif k == "Parent" then
+			return nil
+		elseif k == "IsA" or k == "isA" then
+			return virtualIsA
+		end
+		local m = members[k]
+		if m ~= nil then
+			return m
+		end
+		local v = props[k]
+		if type(v) == "function" then
+			return v()
+		elseif v ~= nil then
+			return v
+		end
+		error(`{k} is not a valid member of {className} "{name}"`, 0)
+	end
+	mt.__newindex = function(_, k)
+		error(`Unable to assign property {k}. Property is read only`, 0)
+	end
+	mt.__tostring = function()
+		return name
+	end
+	setOps(mt)
+	return p
+end
+
+local function method(k, fn)
+	return function(self, ...)
+		vstate(self, k)
+		return fn(...)
+	end
+end
+
+local function deepCopy(v)
+	if type(v) ~= "table" then
+		return v
+	end
+	local out = {}
+	for k, x in v do
+		out[k] = deepCopy(x)
+	end
+	return out
+end
+
+local function checkStorable(v, seen)
+	local t = typeName(v)
+	if t == "nil" or t == "boolean" or t == "buffer" then
+		return
+	elseif t == "string" then
+		if not utf8.len(v) then
+			error("104: Cannot store string in data store. Data stores can only accept valid UTF-8 characters.", 0)
+		end
+		return
+	elseif t == "number" then
+		if v ~= v or v == math.huge or v == -math.huge then
+			error("104: Cannot store NaN or infinite numbers in data store.", 0)
+		end
+		return
+	elseif t == "table" then
+		if seen[v] then
+			error("104: Cannot store tables with cyclic references in data store.", 0)
+		end
+		seen[v] = true
+		local n, count = #v, 0
+		for k, x in v do
+			count += 1
+			local tk = type(k)
+			if tk == "number" then
+				if k ~= math.floor(k) or k < 1 or k > n then
+					error("104: Cannot store Array with non-sequential indices in data store.", 0)
+				end
+			elseif tk ~= "string" then
+				error(`104: Cannot store table with {tk} keys in data store.`, 0)
+			end
+			checkStorable(x, seen)
+		end
+		if n > 0 and count ~= n then
+			error("104: Cannot store mixed tables in data store.", 0)
+		end
+		seen[v] = nil
+		return
+	end
+	error(`104: Cannot store {t} in data store. Data stores can only accept valid UTF-8 characters.`, 0)
+end
+
+local function storable(v, limit)
+	checkStorable(v, {})
+	local ok, encoded = pcall(HttpService.JSONEncode, HttpService, v)
+	if ok and #encoded > limit then
+		error(`105: Serialized value exceeds {math.floor(limit / 1024)} KB limit.`, 0)
+	end
+	return deepCopy(v)
+end
+
+local function checkKey(key, what)
+	if key == nil then
+		error("Argument 1 missing or nil", 0)
+	end
+	key = tostring(key)
+	if #key == 0 then
+		error(`101: {what} can't be empty.`, 0)
+	elseif #key > 50 then
+		error(`101: {what} exceeds the 50 character limit.`, 0)
+	end
+	return key
+end
+
+local function note(world)
+	if not world.storeNoted and world.print then
+		world.storeNoted = true
+		world.print(STORE_NOTE)
+	end
+end
+
+local function storeRoot(world)
+	local s = world.stores
+	if not s then
+		s = { data = {}, hash = {}, sorted = {}, queues = {}, topics = {}, version = 0 }
+		world.stores = s
+	end
+	return s
+end
+
+local function paginate(items, pageSize)
+	local pages, cur = {}, {}
+	for _, it in items do
+		table.insert(cur, it)
+		if #cur >= pageSize then
+			table.insert(pages, cur)
+			cur = {}
+		end
+	end
+	if #cur > 0 or #pages == 0 then
+		table.insert(pages, cur)
+	end
+	return pages
+end
+
+local function makePages(world, className, pages)
+	local i = 1
+	return makeVirtual(world, className, className, {
+		GetCurrentPage = method("GetCurrentPage", function()
+			return table.clone(pages[i] or {})
+		end),
+		AdvanceToNextPageAsync = method("AdvanceToNextPageAsync", function()
+			task.wait()
+			if i < #pages then
+				i += 1
+			end
+		end),
+	}, {
+		IsFinished = function()
+			return i >= #pages
+		end,
+	}, { "Pages" })
+end
+
+local function nowMs()
+	return DateTime.now().UnixTimestampMillis
+end
+
+local function keyInfo(world, e, version)
+	return makeVirtual(world, "DataStoreKeyInfo", "DataStoreKeyInfo", {
+		GetUserIds = method("GetUserIds", function()
+			return table.clone(e.userIds or {})
+		end),
+		GetMetadata = method("GetMetadata", function()
+			return deepCopy(e.metadata or {})
+		end),
+	}, { Version = version or e.version, CreatedTime = e.created, UpdatedTime = e.updated })
+end
+
+local function optionMetadata(options)
+	if options == nil then
+		return nil
+	end
+	local ok, md = pcall(function()
+		return options:GetMetadata()
+	end)
+	return ok and md or nil
+end
+
+local function makeDataStore(world, name, ordered)
+	local root = storeRoot(world)
+	local data = {}
+	local function nextVersion()
+		root.version += 1
+		return string.format("%016X", root.version)
+	end
+	local function write(key, value, userIds, metadata)
+		local now = nowMs()
+		local e = data[key]
+		if not e then
+			e = { created = now, versions = {} }
+			data[key] = e
+		end
+		e.value, e.version, e.updated, e.deleted = value, nextVersion(), now, false
+		e.userIds = userIds and table.clone(userIds) or nil
+		e.metadata = metadata and deepCopy(metadata) or nil
+		table.insert(e.versions, { version = e.version, created = now, value = value, deleted = false })
+		return e
+	end
+	local function value(v)
+		if ordered then
+			if type(v) ~= "number" or v ~= math.floor(v) then
+				error("OrderedDataStore can only store integers.", 0)
+			end
+			return v
+		end
+		return storable(v, MAX_VALUE)
+	end
+	local function live(key)
+		local e = data[key]
+		if e and not e.deleted then
+			return e
+		end
+		return nil
+	end
+	local function info(e)
+		if ordered or e == nil then
+			return nil
+		end
+		return keyInfo(world, e)
+	end
+
+	local members = {}
+	members.GetAsync = method("GetAsync", function(key)
+		note(world)
+		key = checkKey(key, "Key name")
+		task.wait()
+		local e = live(key)
+		if not e then
+			return nil, nil
+		end
+		return deepCopy(e.value), info(e)
+	end)
+	members.SetAsync = method("SetAsync", function(key, v, userIds, options)
+		note(world)
+		key = checkKey(key, "Key name")
+		v = value(v)
+		task.wait()
+		return write(key, v, userIds, optionMetadata(options)).version
+	end)
+	members.UpdateAsync = method("UpdateAsync", function(key, fn)
+		note(world)
+		key = checkKey(key, "Key name")
+		if type(fn) ~= "function" then
+			error("Argument 2 missing or nil", 0)
+		end
+		task.wait()
+		local e = live(key)
+		local new, userIds, metadata = fn(e and deepCopy(e.value), info(e))
+		if new == nil then
+			return nil
+		end
+		local ne = write(key, value(new), userIds, metadata)
+		return deepCopy(ne.value), info(ne)
+	end)
+	members.IncrementAsync = method("IncrementAsync", function(key, delta, userIds)
+		note(world)
+		key = checkKey(key, "Key name")
+		delta = if delta == nil then 1 else tonumber(delta)
+		if not delta then
+			error("Unable to cast value to int", 0)
+		end
+		task.wait()
+		local e = live(key)
+		local cur = e and e.value or 0
+		if type(cur) ~= "number" then
+			error("102: Cannot increment a non-numeric value.", 0)
+		end
+		local ne = write(key, cur + math.floor(delta), userIds, e and e.metadata)
+		return ne.value, info(ne)
+	end)
+	members.RemoveAsync = method("RemoveAsync", function(key)
+		note(world)
+		key = checkKey(key, "Key name")
+		task.wait()
+		local e = live(key)
+		if not e then
+			return nil, nil
+		end
+		local old, oldInfo = deepCopy(e.value), info(e)
+		e.deleted = true
+		table.insert(e.versions, { version = nextVersion(), created = nowMs(), deleted = true })
+		return old, oldInfo
+	end)
+	if ordered then
+		members.GetSortedAsync = method("GetSortedAsync", function(ascending, pageSize, minValue, maxValue)
+			note(world)
+			pageSize = tonumber(pageSize)
+			if not pageSize or pageSize < 1 or pageSize > 100 then
+				error("PageSize must be within a predefined range of 1 to 100.", 0)
+			end
+			task.wait()
+			local items = {}
+			for k, e in data do
+				if
+					not e.deleted
+					and (minValue == nil or e.value >= minValue)
+					and (maxValue == nil or e.value <= maxValue)
+				then
+					table.insert(items, { key = k, value = e.value })
+				end
+			end
+			table.sort(items, function(a, b)
+				if a.value == b.value then
+					return a.key < b.key
+				end
+				if ascending then
+					return a.value < b.value
+				end
+				return a.value > b.value
+			end)
+			return makePages(world, "DataStorePages", paginate(items, pageSize))
+		end)
+	else
+		members.ListKeysAsync = method("ListKeysAsync", function(prefix, pageSize, _, excludeDeleted)
+			note(world)
+			task.wait()
+			local keys = {}
+			for k, e in data do
+				if (prefix == nil or k:sub(1, #prefix) == prefix) and not (excludeDeleted and e.deleted) then
+					table.insert(keys, k)
+				end
+			end
+			table.sort(keys)
+			local items = {}
+			for _, k in keys do
+				table.insert(items, makeVirtual(world, "DataStoreKey", "DataStoreKey", {}, { KeyName = k }))
+			end
+			return makePages(world, "DataStoreKeyPages", paginate(items, tonumber(pageSize) or 50))
+		end)
+		members.GetVersionAsync = method("GetVersionAsync", function(key, version)
+			note(world)
+			key = checkKey(key, "Key name")
+			task.wait()
+			local e = data[key]
+			for _, v in e and e.versions or {} do
+				if v.version == version then
+					if v.deleted then
+						return nil, nil
+					end
+					return deepCopy(v.value), keyInfo(world, e, v.version)
+				end
+			end
+			return nil, nil
+		end)
+		members.ListVersionsAsync = method("ListVersionsAsync", function(key, sortDirection, minDate, maxDate, pageSize)
+			note(world)
+			key = checkKey(key, "Key name")
+			task.wait()
+			local e = data[key]
+			local items = {}
+			for _, v in e and e.versions or {} do
+				local afterMin = minDate == nil or minDate == 0 or v.created >= minDate
+				local beforeMax = maxDate == nil or maxDate == 0 or v.created <= maxDate
+				if afterMin and beforeMax then
+					table.insert(
+						items,
+						makeVirtual(world, "DataStoreObjectVersionInfo", "DataStoreObjectVersionInfo", {}, {
+							Version = v.version,
+							CreatedTime = v.created,
+							IsDeleted = v.deleted,
+						})
+					)
+				end
+			end
+			if sortDirection == Enum.SortDirection.Descending then
+				local reversed = {}
+				for i = #items, 1, -1 do
+					table.insert(reversed, items[i])
+				end
+				items = reversed
+			end
+			return makePages(world, "DataStoreVersionPages", paginate(items, tonumber(pageSize) or 1))
+		end)
+	end
+	return makeVirtual(world, ordered and "OrderedDataStore" or "DataStore", name, members, {}, { "GlobalDataStore" })
+end
+
+local function getStore(self, k, name, scope, ordered)
+	local world = selfState(self, k).world
+	local root = storeRoot(world)
+	name = checkKey(name, "DataStore name")
+	scope = if scope == nil then "global" else tostring(scope)
+	local id = (ordered and "o\0" or "d\0") .. name .. "\0" .. scope
+	local s = root.data[id]
+	if not s then
+		s = { proxy = makeDataStore(world, name, ordered), name = name, ordered = ordered, created = nowMs() }
+		root.data[id] = s
+	end
+	return s.proxy
+end
+
+serviceMethods.DataStoreService = {
+	GetDataStore = function(self, name, scope)
+		return getStore(self, "GetDataStore", name, scope, false)
+	end,
+	GetGlobalDataStore = function(self)
+		return getStore(self, "GetGlobalDataStore", "GlobalDataStore", "global", false)
+	end,
+	GetOrderedDataStore = function(self, name, scope)
+		return getStore(self, "GetOrderedDataStore", name, scope, true)
+	end,
+	GetRequestBudgetForRequestType = function(self)
+		selfState(self, "GetRequestBudgetForRequestType")
+		return 60000
+	end,
+	ListDataStoresAsync = function(self, prefix, pageSize)
+		local world = selfState(self, "ListDataStoresAsync").world
+		task.wait()
+		local created = {}
+		for _, s in storeRoot(world).data do
+			if not s.ordered and (prefix == nil or s.name:sub(1, #prefix) == prefix) then
+				created[s.name] = created[s.name] or s.created
+			end
+		end
+		local names = {}
+		for n in created do
+			table.insert(names, n)
+		end
+		table.sort(names)
+		local items = {}
+		for _, n in names do
+			table.insert(
+				items,
+				makeVirtual(world, "DataStoreInfo", "DataStoreInfo", {}, {
+					DataStoreName = n,
+					CreatedTime = created[n],
+					UpdatedTime = created[n],
+				})
+			)
+		end
+		return makePages(world, "DataStoreListingPages", paginate(items, tonumber(pageSize) or 32))
+	end,
+}
+
+local function expiry(exp, arg)
+	exp = tonumber(exp)
+	if exp == nil then
+		error(`Argument {arg} missing or nil`, 0)
+	elseif exp <= 0 or exp > MAX_EXPIRATION then
+		error(`Expiration must be between 0 and {MAX_EXPIRATION} seconds.`, 0)
+	end
+	return os.clock() + exp
+end
+
+local function memValue(v)
+	return storable(v, 32 * 1024)
+end
+
+local function expiringItems()
+	local items = {}
+	local function live(key)
+		local e = items[key]
+		if e and e.expires > os.clock() then
+			return e
+		end
+		items[key] = nil
+		return nil
+	end
+	return items, live
+end
+
+local function makeHashMap(world, name)
+	local items, live = expiringItems()
+	return makeVirtual(world, "MemoryStoreHashMap", name, {
+		GetAsync = method("GetAsync", function(key)
+			note(world)
+			key = checkKey(key, "Key")
+			task.wait()
+			local e = live(key)
+			return e and deepCopy(e.value)
+		end),
+		SetAsync = method("SetAsync", function(key, v, exp)
+			note(world)
+			key = checkKey(key, "Key")
+			v = memValue(v)
+			local expires = expiry(exp, 3)
+			task.wait()
+			items[key] = { value = v, expires = expires }
+			return true
+		end),
+		UpdateAsync = method("UpdateAsync", function(key, fn, exp)
+			note(world)
+			key = checkKey(key, "Key")
+			local expires = expiry(exp, 3)
+			task.wait()
+			local e = live(key)
+			local new = fn(e and deepCopy(e.value))
+			if new == nil then
+				return nil
+			end
+			new = memValue(new)
+			items[key] = { value = new, expires = expires }
+			return deepCopy(new)
+		end),
+		RemoveAsync = method("RemoveAsync", function(key)
+			note(world)
+			key = checkKey(key, "Key")
+			task.wait()
+			items[key] = nil
+		end),
+		ListItemsAsync = method("ListItemsAsync", function(count)
+			note(world)
+			task.wait()
+			local keys = {}
+			for k in items do
+				if live(k) then
+					table.insert(keys, k)
+				end
+			end
+			table.sort(keys)
+			local list = {}
+			for _, k in keys do
+				table.insert(list, { key = k, value = deepCopy(items[k].value) })
+			end
+			return makePages(world, "MemoryStoreHashMapPages", paginate(list, tonumber(count) or 10))
+		end),
+	})
+end
+
+local function sortKeyLess(a, b)
+	if a == b then
+		return false
+	elseif a == nil then
+		return true
+	elseif b == nil then
+		return false
+	end
+	local ta, tb = type(a), type(b)
+	if ta ~= tb then
+		return ta == "number"
+	end
+	return a < b
+end
+
+local function entryLess(a, b)
+	if a.sortKey ~= b.sortKey then
+		return sortKeyLess(a.sortKey, b.sortKey)
+	end
+	return a.key < b.key
+end
+
+local function makeSortedMap(world, name)
+	local items, live = expiringItems()
+	return makeVirtual(world, "MemoryStoreSortedMap", name, {
+		GetAsync = method("GetAsync", function(key)
+			note(world)
+			key = checkKey(key, "Key")
+			task.wait()
+			local e = live(key)
+			if not e then
+				return nil
+			end
+			return deepCopy(e.value), e.sortKey
+		end),
+		SetAsync = method("SetAsync", function(key, v, exp, sortKey)
+			note(world)
+			key = checkKey(key, "Key")
+			v = memValue(v)
+			local expires = expiry(exp, 3)
+			task.wait()
+			local isNew = live(key) == nil
+			items[key] = { key = key, value = v, expires = expires, sortKey = sortKey }
+			return isNew
+		end),
+		UpdateAsync = method("UpdateAsync", function(key, fn, exp)
+			note(world)
+			key = checkKey(key, "Key")
+			local expires = expiry(exp, 3)
+			task.wait()
+			local e = live(key)
+			local new, sortKey = fn(e and deepCopy(e.value), e and e.sortKey)
+			if new == nil then
+				return nil
+			end
+			new = memValue(new)
+			items[key] = { key = key, value = new, expires = expires, sortKey = sortKey }
+			return deepCopy(new), sortKey
+		end),
+		RemoveAsync = method("RemoveAsync", function(key)
+			note(world)
+			key = checkKey(key, "Key")
+			task.wait()
+			items[key] = nil
+		end),
+		GetRangeAsync = method("GetRangeAsync", function(direction, count, lower, upper)
+			note(world)
+			count = tonumber(count)
+			if not count or count < 1 or count > 200 then
+				error("Count must be between 1 and 200.", 0)
+			end
+			task.wait()
+			local list = {}
+			for k in items do
+				local e = live(k)
+				if e then
+					local after = lower == nil or entryLess({ key = lower.key or "", sortKey = lower.sortKey }, e)
+					local before = upper == nil or entryLess(e, { key = upper.key or "\255", sortKey = upper.sortKey })
+					if after and before then
+						table.insert(list, e)
+					end
+				end
+			end
+			table.sort(list, entryLess)
+			if direction == Enum.SortDirection.Descending then
+				local reversed = {}
+				for i = #list, 1, -1 do
+					table.insert(reversed, list[i])
+				end
+				list = reversed
+			end
+			local out = {}
+			for i = 1, math.min(count, #list) do
+				table.insert(out, { key = list[i].key, value = deepCopy(list[i].value), sortKey = list[i].sortKey })
+			end
+			return out
+		end),
+	})
+end
+
+local function makeQueue(world, name, invisibility)
+	invisibility = tonumber(invisibility) or 30
+	local items, reads = {}, {}
+	local readId, order = 0, 0
+	local function prune()
+		local now = os.clock()
+		for i = #items, 1, -1 do
+			if items[i].expires <= now then
+				table.remove(items, i)
+			end
+		end
+	end
+	local function visible()
+		prune()
+		local now = os.clock()
+		local out = {}
+		for _, it in items do
+			if it.hiddenUntil <= now then
+				table.insert(out, it)
+			end
+		end
+		table.sort(out, function(a, b)
+			if a.priority ~= b.priority then
+				return a.priority > b.priority
+			end
+			return a.order < b.order
+		end)
+		return out
+	end
+	return makeVirtual(world, "MemoryStoreQueue", name, {
+		AddAsync = method("AddAsync", function(v, exp, priority)
+			note(world)
+			v = memValue(v)
+			local expires = expiry(exp, 2)
+			task.wait()
+			order += 1
+			table.insert(items, {
+				value = v,
+				expires = expires,
+				priority = tonumber(priority) or 0,
+				order = order,
+				hiddenUntil = 0,
+			})
+		end),
+		ReadAsync = method("ReadAsync", function(count, allOrNothing, waitTimeout)
+			note(world)
+			count = tonumber(count) or 1
+			waitTimeout = tonumber(waitTimeout) or -1
+			local deadline = if waitTimeout >= 0 then os.clock() + waitTimeout else math.huge
+			task.wait()
+			while true do
+				local vis = visible()
+				local enough = #vis >= count or (not allOrNothing and #vis > 0)
+				if enough or os.clock() >= deadline then
+					if #vis == 0 or (allOrNothing and #vis < count) then
+						return {}, nil
+					end
+					local out, taken = {}, {}
+					for i = 1, math.min(count, #vis) do
+						vis[i].hiddenUntil = os.clock() + invisibility
+						table.insert(out, deepCopy(vis[i].value))
+						table.insert(taken, vis[i])
+					end
+					readId += 1
+					local id = tostring(readId)
+					reads[id] = taken
+					return out, id
+				end
+				task.wait(0.1)
+			end
+		end),
+		RemoveAsync = method("RemoveAsync", function(id)
+			note(world)
+			task.wait()
+			for _, it in reads[id] or {} do
+				local i = table.find(items, it)
+				if i then
+					table.remove(items, i)
+				end
+			end
+			reads[id] = nil
+		end),
+		GetSizeAsync = method("GetSizeAsync", function(excludeInvisible)
+			note(world)
+			task.wait()
+			if excludeInvisible then
+				return #visible()
+			end
+			prune()
+			return #items
+		end),
+	})
+end
+
+local function memoryGetter(kind, bucketName, make)
+	return function(self, name, extra)
+		local world = selfState(self, "Get" .. kind).world
+		name = checkKey(name, kind .. " name")
+		local bucket = storeRoot(world)[bucketName]
+		local s = bucket[name]
+		if not s then
+			s = make(world, name, extra)
+			bucket[name] = s
+		end
+		return s
+	end
+end
+
+serviceMethods.MemoryStoreService = {
+	GetHashMap = memoryGetter("HashMap", "hash", makeHashMap),
+	GetSortedMap = memoryGetter("SortedMap", "sorted", makeSortedMap),
+	GetQueue = memoryGetter("Queue", "queues", makeQueue),
+}
+
+serviceMethods.MessagingService = {
+	PublishAsync = function(self, topic, message)
+		local world = selfState(self, "PublishAsync").world
+		topic = tostring(topic)
+		if #topic > 80 then
+			error("Topic name exceeds the 80 character limit.", 0)
+		end
+		local data = storable(message, 1024)
+		task.wait()
+		for _, sub in storeRoot(world).topics[topic] or {} do
+			if sub.connected then
+				task.defer(sub.fn, { Data = deepCopy(data), Sent = os.time() })
+			end
+		end
+	end,
+	SubscribeAsync = function(self, topic, callback)
+		local world = selfState(self, "SubscribeAsync").world
+		checkFn(callback)
+		topic = tostring(topic)
+		task.wait()
+		local topics = storeRoot(world).topics
+		topics[topic] = topics[topic] or {}
+		local entry = { fn = callback, connected = true }
+		table.insert(topics[topic], entry)
+		local conn = {
+			connected = true,
+			world = world,
+			reals = {
+				{
+					Disconnect = function()
+						entry.connected = false
+					end,
+				},
+			},
+		}
+		world.conns[conn] = true
+		return makeConnection(conn)
+	end,
+}
+
 --// Context
 
 local Context = {}
@@ -1681,6 +2500,8 @@ function Context:apply(env)
 	local g = wrap(world, realGame)
 	local ws = wrap(world, realWorkspace)
 	world.warn = env.warn
+	world.print = env.print
+	world.storeNoted = false
 	env.game = g
 	env.Game = g
 	env.workspace = ws

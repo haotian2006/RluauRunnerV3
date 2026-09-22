@@ -153,6 +153,48 @@ if okSrc then
 	check("require owned module", okR and type(res) == "table" and res.g == game, res)
 end
 
+local DSS = game:GetService("DataStoreService")
+local ds = DSS:GetDataStore("spec")
+check("datastore typeof", typeof(ds) == "Instance" and ds.ClassName == "DataStore" and ds:IsA("GlobalDataStore"))
+check("datastore same object", DSS:GetDataStore("spec") == ds)
+local original = { 1, { x = 2 } }
+ds:SetAsync("k", original)
+local got, keyInfo = ds:GetAsync("k")
+check("datastore roundtrip", type(got) == "table" and got[1] == 1 and got[2].x == 2 and got ~= original)
+check("datastore keyinfo", typeof(keyInfo) == "Instance" and type(keyInfo.Version) == "string")
+check("datastore rejects Instance", has(err(ds.SetAsync, ds, "bad", Instance.new("Part")), "Cannot store"))
+check("datastore update", ds:UpdateAsync("n", function(old)
+	return (old or 0) + 5
+end) == 5)
+check("datastore increment", ds:IncrementAsync("n", 2) == 7)
+check("datastore remove", ds:RemoveAsync("n") == 7 and ds:GetAsync("n") == nil)
+check("datastore key limit", has(err(ds.GetAsync, ds, string.rep("a", 51)), "50 character"))
+local pages = ds:ListKeysAsync()
+check("datastore listkeys", #pages:GetCurrentPage() >= 1 and pages:GetCurrentPage()[1].KeyName == "k")
+local ods = DSS:GetOrderedDataStore("board")
+ods:SetAsync("a", 3)
+ods:SetAsync("b", 9)
+local top = ods:GetSortedAsync(false, 10):GetCurrentPage()
+check("ordered sorted", top[1] and top[1].key == "b" and top[1].value == 9)
+local MSS = game:GetService("MemoryStoreService")
+check("AI_CONTEXT unreachable", MSS:GetHashMap("AI_CONTEXT"):GetAsync("1") == nil)
+local hm = MSS:GetHashMap("spec")
+hm:SetAsync("k", "v", 60)
+check("hashmap", hm:GetAsync("k") == "v")
+local q = MSS:GetQueue("spec")
+q:AddAsync("job", 60)
+local items, readId = q:ReadAsync(1, false, 0)
+check("queue read", items[1] == "job" and readId ~= nil)
+q:RemoveAsync(readId)
+check("queue empty", q:GetSizeAsync() == 0)
+local received
+game:GetService("MessagingService"):SubscribeAsync("spec", function(msg)
+	received = msg.Data
+end)
+game:GetService("MessagingService"):PublishAsync("spec", { hi = true })
+task.wait(0.1)
+check("messaging", type(received) == "table" and received.hi == true)
+
 if thread then
 	local fn = loadstring("return game, ...")
 	check("loadstring game", fn and select(1, fn(1)) == game)
