@@ -126,6 +126,23 @@ local r = workspace:Raycast(Vector3.new(100, 10, 0), Vector3.new(0, -20, 0))
 check("raycast hit", r ~= nil and r.Instance == floor, r and r.Instance)
 check("raycast typeof", typeof(r) == "RaycastResult", typeof(r))
 check("bounds query", table.find(workspace:GetPartBoundsInBox(CFrame.new(100, 0, 0), Vector3.new(20, 20, 20)), floor) ~= nil)
+check("Stats alias", Stats() == stats())
+local excludeFloor = RaycastParams.new()
+excludeFloor.FilterType = Enum.RaycastFilterType.Exclude
+excludeFloor.FilterDescendantsInstances = { floor }
+check("RaycastParams typeof", typeof(excludeFloor) == "RaycastParams")
+check("RaycastParams filter roundtrip", excludeFloor.FilterDescendantsInstances[1] == floor)
+check("raycast exclude filter", workspace:Raycast(Vector3.new(100, 10, 0), Vector3.new(0, -20, 0), excludeFloor) == nil)
+local includeFloor = RaycastParams.new()
+includeFloor.FilterType = Enum.RaycastFilterType.Include
+includeFloor:AddToFilter(floor)
+local included = workspace:Raycast(Vector3.new(100, 10, 0), Vector3.new(0, -20, 0), includeFloor)
+check("raycast include filter", included ~= nil and included.Instance == floor)
+local overlap = OverlapParams.new()
+overlap.FilterType = Enum.RaycastFilterType.Include
+overlap.FilterDescendantsInstances = { floor }
+local inBox = workspace:GetPartBoundsInBox(CFrame.new(100, 0, 0), Vector3.new(20, 20, 20), overlap)
+check("OverlapParams filter", #inBox == 1 and inBox[1] == floor)
 
 task.delay(0.1, function()
 	Instance.new("Folder", workspace).Name = "Later"
