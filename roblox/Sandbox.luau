@@ -3043,9 +3043,6 @@ function Sandbox.disabled(env, userId, hooks)
 			end
 		end)
 	end
-	if env.warn then
-		env.warn("[WARNING] Sandbox disabled: changes are visible to other users")
-	end
 end
 
 Sandbox.typeof = sandboxTypeof
