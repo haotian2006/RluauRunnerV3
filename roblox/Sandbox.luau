@@ -1607,8 +1607,6 @@ local HttpService = realGame:GetService("HttpService")
 local virtualStates = setmetatable({}, { __mode = "k" })
 local MAX_EXPIRATION = 3888000
 local MAX_VALUE = 4 * 1024 * 1024
-local STORE_NOTE =
-	"[INFO] Sandbox DataStores are temporary: data lasts only for this server session; later runs may land on another server."
 
 local function vstate(self, k)
 	local vs = virtualStates[self]
@@ -1745,13 +1743,6 @@ local function checkKey(key, what)
 	return key
 end
 
-local function note(world)
-	if not world.storeNoted and world.print then
-		world.storeNoted = true
-		world.print(STORE_NOTE)
-	end
-end
-
 local function storeRoot(world)
 	local s = world.stores
 	if not s then
@@ -1865,7 +1856,6 @@ local function makeDataStore(world, name, ordered)
 
 	local members = {}
 	members.GetAsync = method("GetAsync", function(key)
-		note(world)
 		key = checkKey(key, "Key name")
 		task.wait()
 		local e = live(key)
@@ -1875,14 +1865,12 @@ local function makeDataStore(world, name, ordered)
 		return deepCopy(e.value), info(e)
 	end)
 	members.SetAsync = method("SetAsync", function(key, v, userIds, options)
-		note(world)
 		key = checkKey(key, "Key name")
 		v = value(v)
 		task.wait()
 		return write(key, v, userIds, optionMetadata(options)).version
 	end)
 	members.UpdateAsync = method("UpdateAsync", function(key, fn)
-		note(world)
 		key = checkKey(key, "Key name")
 		if type(fn) ~= "function" then
 			error("Argument 2 missing or nil", 0)
@@ -1897,7 +1885,6 @@ local function makeDataStore(world, name, ordered)
 		return deepCopy(ne.value), info(ne)
 	end)
 	members.IncrementAsync = method("IncrementAsync", function(key, delta, userIds)
-		note(world)
 		key = checkKey(key, "Key name")
 		delta = if delta == nil then 1 else tonumber(delta)
 		if not delta then
@@ -1913,7 +1900,6 @@ local function makeDataStore(world, name, ordered)
 		return ne.value, info(ne)
 	end)
 	members.RemoveAsync = method("RemoveAsync", function(key)
-		note(world)
 		key = checkKey(key, "Key name")
 		task.wait()
 		local e = live(key)
@@ -1927,7 +1913,6 @@ local function makeDataStore(world, name, ordered)
 	end)
 	if ordered then
 		members.GetSortedAsync = method("GetSortedAsync", function(ascending, pageSize, minValue, maxValue)
-			note(world)
 			pageSize = tonumber(pageSize)
 			if not pageSize or pageSize < 1 or pageSize > 100 then
 				error("PageSize must be within a predefined range of 1 to 100.", 0)
@@ -1956,7 +1941,6 @@ local function makeDataStore(world, name, ordered)
 		end)
 	else
 		members.ListKeysAsync = method("ListKeysAsync", function(prefix, pageSize, _, excludeDeleted)
-			note(world)
 			task.wait()
 			local keys = {}
 			for k, e in data do
@@ -1972,7 +1956,6 @@ local function makeDataStore(world, name, ordered)
 			return makePages(world, "DataStoreKeyPages", paginate(items, tonumber(pageSize) or 50))
 		end)
 		members.GetVersionAsync = method("GetVersionAsync", function(key, version)
-			note(world)
 			key = checkKey(key, "Key name")
 			task.wait()
 			local e = data[key]
@@ -1987,7 +1970,6 @@ local function makeDataStore(world, name, ordered)
 			return nil, nil
 		end)
 		members.ListVersionsAsync = method("ListVersionsAsync", function(key, sortDirection, minDate, maxDate, pageSize)
-			note(world)
 			key = checkKey(key, "Key name")
 			task.wait()
 			local e = data[key]
@@ -2107,14 +2089,12 @@ local function makeHashMap(world, name)
 	local items, live = expiringItems()
 	return makeVirtual(world, "MemoryStoreHashMap", name, {
 		GetAsync = method("GetAsync", function(key)
-			note(world)
 			key = checkKey(key, "Key")
 			task.wait()
 			local e = live(key)
 			return e and deepCopy(e.value)
 		end),
 		SetAsync = method("SetAsync", function(key, v, exp)
-			note(world)
 			key = checkKey(key, "Key")
 			v = memValue(v)
 			local expires = expiry(exp, 3)
@@ -2123,7 +2103,6 @@ local function makeHashMap(world, name)
 			return true
 		end),
 		UpdateAsync = method("UpdateAsync", function(key, fn, exp)
-			note(world)
 			key = checkKey(key, "Key")
 			local expires = expiry(exp, 3)
 			task.wait()
@@ -2137,13 +2116,11 @@ local function makeHashMap(world, name)
 			return deepCopy(new)
 		end),
 		RemoveAsync = method("RemoveAsync", function(key)
-			note(world)
 			key = checkKey(key, "Key")
 			task.wait()
 			items[key] = nil
 		end),
 		ListItemsAsync = method("ListItemsAsync", function(count)
-			note(world)
 			task.wait()
 			local keys = {}
 			for k in items do
@@ -2187,7 +2164,6 @@ local function makeSortedMap(world, name)
 	local items, live = expiringItems()
 	return makeVirtual(world, "MemoryStoreSortedMap", name, {
 		GetAsync = method("GetAsync", function(key)
-			note(world)
 			key = checkKey(key, "Key")
 			task.wait()
 			local e = live(key)
@@ -2197,7 +2173,6 @@ local function makeSortedMap(world, name)
 			return deepCopy(e.value), e.sortKey
 		end),
 		SetAsync = method("SetAsync", function(key, v, exp, sortKey)
-			note(world)
 			key = checkKey(key, "Key")
 			v = memValue(v)
 			local expires = expiry(exp, 3)
@@ -2207,7 +2182,6 @@ local function makeSortedMap(world, name)
 			return isNew
 		end),
 		UpdateAsync = method("UpdateAsync", function(key, fn, exp)
-			note(world)
 			key = checkKey(key, "Key")
 			local expires = expiry(exp, 3)
 			task.wait()
@@ -2221,13 +2195,11 @@ local function makeSortedMap(world, name)
 			return deepCopy(new), sortKey
 		end),
 		RemoveAsync = method("RemoveAsync", function(key)
-			note(world)
 			key = checkKey(key, "Key")
 			task.wait()
 			items[key] = nil
 		end),
 		GetRangeAsync = method("GetRangeAsync", function(direction, count, lower, upper)
-			note(world)
 			count = tonumber(count)
 			if not count or count < 1 or count > 200 then
 				error("Count must be between 1 and 200.", 0)
@@ -2292,7 +2264,6 @@ local function makeQueue(world, name, invisibility)
 	end
 	return makeVirtual(world, "MemoryStoreQueue", name, {
 		AddAsync = method("AddAsync", function(v, exp, priority)
-			note(world)
 			v = memValue(v)
 			local expires = expiry(exp, 2)
 			task.wait()
@@ -2306,7 +2277,6 @@ local function makeQueue(world, name, invisibility)
 			})
 		end),
 		ReadAsync = method("ReadAsync", function(count, allOrNothing, waitTimeout)
-			note(world)
 			count = tonumber(count) or 1
 			waitTimeout = tonumber(waitTimeout) or -1
 			local deadline = if waitTimeout >= 0 then os.clock() + waitTimeout else math.huge
@@ -2333,7 +2303,6 @@ local function makeQueue(world, name, invisibility)
 			end
 		end),
 		RemoveAsync = method("RemoveAsync", function(id)
-			note(world)
 			task.wait()
 			for _, it in reads[id] or {} do
 				local i = table.find(items, it)
@@ -2344,7 +2313,6 @@ local function makeQueue(world, name, invisibility)
 			reads[id] = nil
 		end),
 		GetSizeAsync = method("GetSizeAsync", function(excludeInvisible)
-			note(world)
 			task.wait()
 			if excludeInvisible then
 				return #visible()
@@ -2500,8 +2468,6 @@ function Context:apply(env)
 	local g = wrap(world, realGame)
 	local ws = wrap(world, realWorkspace)
 	world.warn = env.warn
-	world.print = env.print
-	world.storeNoted = false
 	env.game = g
 	env.Game = g
 	env.workspace = ws
