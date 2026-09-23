@@ -247,6 +247,18 @@ firesignal(toucher:GetPropertyChangedSignal("Name"))
 task.wait()
 check("firesignal method-returned signal", nameFired)
 
+local doomed = Instance.new("Part")
+local doomedFired = false
+local doomedConn = doomed.Touched:Connect(function()
+	doomedFired = true
+end)
+check("connected before Destroy", doomedConn.Connected == true)
+doomed:Destroy()
+check("Destroy disconnects", doomedConn.Connected == false)
+firesignal(doomed.Touched)
+task.wait()
+check("destroyed connection doesn't fire", doomedFired == false)
+
 local LS = game:GetService("LogService")
 local logged = {}
 local logConn = LS.MessageOut:Connect(function(message, messageType)

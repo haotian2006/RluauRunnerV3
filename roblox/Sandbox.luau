@@ -959,6 +959,27 @@ local function disconnect(conn)
 	conn.world.conns[conn] = nil
 end
 
+-- the engine disconnects real connections on Destroy; follow it
+local function isConnected(conn)
+	if not conn.connected then
+		return false
+	end
+	local hasReal = false
+	for _, r in conn.reals do
+		if realTypeof(r) == "RBXScriptConnection" then
+			if r.Connected then
+				return true
+			end
+			hasReal = true
+		end
+	end
+	if hasReal then
+		disconnect(conn)
+		return false
+	end
+	return true
+end
+
 local function makeConnection(conn)
 	local p = newproxy(true)
 	local mt = getmetatable(p)
@@ -968,7 +989,7 @@ local function makeConnection(conn)
 	end
 	mt.__index = function(_, k)
 		if k == "Connected" then
-			return conn.connected
+			return isConnected(conn)
 		elseif k == "Disconnect" or k == "disconnect" then
 			return dc
 		end
@@ -995,7 +1016,7 @@ local function connect(s, fn, once)
 	local world = s.world
 	local conn = { connected = true, reals = {}, world = world }
 	local function fire(...)
-		if not conn.connected then
+		if not isConnected(conn) then
 			return
 		end
 		if once then
