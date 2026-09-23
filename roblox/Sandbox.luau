@@ -530,6 +530,9 @@ local function copyWrap(world, v, seen)
 			out[k] = nx
 		end
 	end
+	if out and table.isfrozen(v) then
+		table.freeze(out)
+	end
 	return out or v
 end
 
@@ -2778,7 +2781,7 @@ for name, kind in GLOBALS do
 	end
 end
 
---// RaycastParams / OverlapParams: the engine only accepts real Instances in their filter
+--// RaycastParams / OverlapParams: the engine only accepts real Instances
 
 local function makeParamsLib(world, realLib, kind)
 	local function wrapParams(real)
@@ -2786,54 +2789,32 @@ local function makeParamsLib(world, realLib, kind)
 		local mt = getmetatable(p)
 		proxyKind[p] = kind
 		dtReal[p] = real
-		local filter = {}
-		local function setFilter(list)
-			if type(list) ~= "table" then
-				error(`Unable to assign property FilterDescendantsInstances. Array expected, got {typeName(list)}`, 3)
-			end
-			local reals = {}
-			for i, x in list do
-				reals[i] = unwrapArg(world, x)
-			end
-			local ok, err = pcall(setIndex, real, "FilterDescendantsInstances", reals)
-			if not ok then
-				error(err, 3)
-			end
-			filter = table.clone(list)
-		end
-		local function addToFilter(self, value)
-			if self ~= p then
-				error("Expected ':' not '.' calling member function AddToFilter", 2)
-			end
-			local list = table.clone(filter)
-			if type(value) == "table" then
-				for _, x in value do
-					table.insert(list, x)
-				end
-			else
-				table.insert(list, value)
-			end
-			setFilter(list)
-		end
+		local methods = {}
 		mt.__index = function(_, k)
-			if k == "FilterDescendantsInstances" then
-				return table.clone(filter)
-			elseif k == "AddToFilter" then
-				return addToFilter
-			end
 			local ok, v = pcall(index, real, k)
 			if not ok then
-				error(v, 2)
+				error(v, 0)
 			end
-			return v
+			if type(v) ~= "function" then
+				return copyWrap(world, v)
+			end
+			local m = methods[k]
+			if not m then
+				m = function(self, ...)
+					local r = table.pack(pcall(v, if self == p then real else unwrapArg(world, self), unwrapN(world, ...)))
+					if not r[1] then
+						error(string.gsub(tostring(r[2]), "^.-:%d+: ", ""), 2)
+					end
+					return wrapN(world, table.unpack(r, 2, r.n))
+				end
+				methods[k] = m
+			end
+			return m
 		end
 		mt.__newindex = function(_, k, v)
-			if k == "FilterDescendantsInstances" then
-				return setFilter(v)
-			end
-			local ok, err = pcall(setIndex, real, k, v)
+			local ok, err = pcall(setIndex, real, k, unwrapArg(world, v))
 			if not ok then
-				error(err, 2)
+				error(err, 0)
 			end
 		end
 		mt.__tostring = function()

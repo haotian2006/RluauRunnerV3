@@ -17,6 +17,13 @@ local function try(k, f)
 	end
 end
 
+local before = {}
+for _, root in { workspace, game } do
+	for _, c in root:GetChildren() do
+		before[c] = true
+	end
+end
+
 -- typeof / tostring / identity
 local p = Instance.new("Part")
 p.Parent = workspace
@@ -478,6 +485,47 @@ end)
 try("guid format", function()
 	return #game:GetService("HttpService"):GenerateGUID(false)
 end)
+
+-- RaycastParams / OverlapParams instance arrays
+local rp = RaycastParams.new()
+try("params exclude", function()
+	rp.ExcludeInstances = { p }
+	local e = rp.ExcludeInstances
+	return #e, e[1] == p, table.isfrozen(e)
+end)
+try("params exclude write", function()
+	rp.ExcludeInstances[2] = p
+end)
+try("params include", function()
+	rp.IncludeInstances = { p }
+	return #rp.IncludeInstances, rp.IncludeInstances[1] == p
+end)
+try("params fdi", function()
+	rp.FilterDescendantsInstances = { p }
+	rp:AddToFilter(Instance.new("Folder"))
+	local f = rp.FilterDescendantsInstances
+	return #f, f[1] == p, typeof(f[2]), table.isfrozen(f)
+end)
+try("params dot call", function()
+	rp.AddToFilter(nil, p)
+end)
+try("params bad type", function()
+	rp.FilterDescendantsInstances = 5
+end)
+try("overlap fdi", function()
+	local op = OverlapParams.new()
+	op.FilterDescendantsInstances = { p }
+	return typeof(op), op.FilterDescendantsInstances[1] == p
+end)
+
+-- --!nosandbox runs share a server, so leave nothing behind for the next one
+for _, root in { workspace, game } do
+	for _, c in root:GetChildren() do
+		if not before[c] then
+			pcall(c.Destroy, c)
+		end
+	end
+end
 
 print(table.concat(out, "\n"))
 print("PARITY END")
