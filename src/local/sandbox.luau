@@ -50,6 +50,8 @@ end
 local eventQueue: { string } = {}
 local draining = false
 local flushScheduled = false
+-- A yield inside a user coroutine would return to the user's resume instead of the scheduler.
+local userCoroutines: { [thread]: boolean } = setmetatable({}, { __mode = "k" }) :: any
 
 local function drainEvents()
 	if draining then
@@ -81,7 +83,7 @@ local function writeEvent(event)
 		encoded = serde.encode("json", { t = event.t, v = scrub(tostring(event.v)) })
 	end
 	table.insert(eventQueue, encoded .. "\n")
-	if coroutine.isyieldable() then
+	if coroutine.isyieldable() and not userCoroutines[coroutine.running()] then
 		drainEvents()
 	else
 		scheduleFlush()
@@ -293,6 +295,25 @@ local function hasTrackedThreads(): boolean
 	return active
 end
 
+local function markUserCoroutine(fn)
+	if type(fn) ~= "function" then
+		return fn
+	end
+	return function(...)
+		userCoroutines[coroutine.running()] = true
+		return fn(...)
+	end
+end
+
+local sandboxCoroutine = table.clone(coroutine)
+sandboxCoroutine.create = function(fn)
+	return coroutine.create(markUserCoroutine(fn))
+end
+sandboxCoroutine.wrap = function(fn)
+	return coroutine.wrap(markUserCoroutine(fn))
+end
+sandboxCoroutine = table.freeze(sandboxCoroutine)
+
 local environment: { [string]: any } = {
 	assert = assert,
 	error = error,
@@ -316,7 +337,7 @@ local environment: { [string]: any } = {
 	string = copyFrozen(string),
 	table = copyFrozen(table),
 	math = copyFrozen(math),
-	coroutine = copyFrozen(coroutine),
+	coroutine = sandboxCoroutine,
 	utf8 = copyFrozen(utf8),
 	bit32 = copyFrozen(bit32),
 	debug = copyFrozen(debug),
