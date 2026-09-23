@@ -722,6 +722,69 @@ local function setParent(st, v)
 	end
 end
 
+-- Writes to a shared instance run against the real one with this world's overlay applied, then the
+-- real values are restored. The engine does linked properties (ClockTime/TimeOfDay) and validation,
+-- and nothing can observe the real instance in between because none of this yields.
+local CAPTURE_METHODS = { Lighting = true }
+
+local function readWritable(real, class)
+	local values = {}
+	for name, info in class.props do
+		if info.write and name ~= "Parent" then
+			local ok, v = pcall(index, real, name)
+			if ok then
+				values[name] = box(v)
+			end
+		end
+	end
+	return values
+end
+
+local function withVirtual(st, fn, ...)
+	local real, class, ov = st.real, st.class, st.ov
+	local original = readWritable(real, class)
+	for name, v in ov.props do
+		pcall(setIndex, real, name, unbox(v))
+	end
+	local before = readWritable(real, class)
+	local result = table.pack(pcall(fn, real, ...))
+	local after = readWritable(real, class)
+	for name, v in original do
+		pcall(setIndex, real, name, unbox(v))
+	end
+	if not result[1] then
+		error(rewrite(st.world, result[2]), 0)
+	end
+	for name, v in after do
+		if v ~= before[name] then
+			ov.props[name] = v
+			localFire(ov.changed, name)
+			local ps = ov.propSignals[name]
+			if ps then
+				localFire(ps)
+			end
+		end
+	end
+	return table.unpack(result, 2, result.n)
+end
+
+local captureCache = {}
+local function captureMethodWrapper(k)
+	local m = captureCache[k]
+	if m then
+		return m
+	end
+	m = function(self, ...)
+		local st = selfState(self, k)
+		local world = st.world
+		return wrapN(world, withVirtual(st, function(real, ...)
+			return real[k](real, ...)
+		end, unwrapN(world, ...)))
+	end
+	captureCache[k] = m
+	return m
+end
+
 local function makeProxy(world, real, kind)
 	local p = newproxy(true)
 	local mt = getmetatable(p)
@@ -812,6 +875,9 @@ local function makeProxy(world, real, kind)
 				return wsMethodWrapper(k)
 			end
 			if methods[k] then
+				if CAPTURE_METHODS[real.ClassName] and not string.find(k, "Async$") then
+					return captureMethodWrapper(k)
+				end
 				return methodWrapper(k)
 			end
 			if st.class.events[k] then
@@ -845,13 +911,10 @@ local function makeProxy(world, real, kind)
 			if not info.write then
 				error(`Unable to assign property {k}. Property is read only`, 0)
 			end
-			local value = Sandbox.coerce(info, v, k, world)
-			st.ov.props[k] = box(value)
-			localFire(st.ov.changed, k)
-			local ps = st.ov.propSignals[k]
-			if ps then
-				localFire(ps)
-			end
+			local value = unwrapArg(world, v)
+			withVirtual(st, function(r)
+				r[k] = value
+			end)
 		end
 	end
 	mt.__tostring = function()
@@ -1015,14 +1078,21 @@ end
 local function connect(s, fn, once)
 	local world = s.world
 	local conn = { connected = true, reals = {}, world = world }
-	local function fire(...)
-		if not isConnected(conn) then
+	-- engine deliveries only honour an explicit Disconnect: deferred events like Destroying
+	-- arrive after the engine has already dropped the real connection
+	local function deliver(...)
+		if not conn.connected then
 			return
 		end
 		if once then
 			disconnect(conn)
 		end
 		fn(...)
+	end
+	local function fire(...)
+		if isConnected(conn) then
+			deliver(...)
+		end
 	end
 	for _, rs in s.sources do
 		table.insert(
@@ -1037,7 +1107,7 @@ local function connect(s, fn, once)
 				if s.filter and not s.filter(...) then
 					return
 				end
-				fire(wrapN(world, ...))
+				deliver(wrapN(world, ...))
 			end)
 		)
 	end
@@ -1063,16 +1133,25 @@ local function checkFn(fn)
 	end
 end
 
+-- the engine accepts any value and hands back an already-disconnected connection
+local function deadConnection(s)
+	return makeConnection({ connected = false, reals = {}, world = s.world })
+end
+
 signalMethods.Connect = function(self, fn)
 	local s = sigState(self, "Connect")
-	checkFn(fn)
+	if type(fn) ~= "function" then
+		return deadConnection(s)
+	end
 	return connect(s, fn, false)
 end
 signalMethods.connect = signalMethods.Connect
 signalMethods.ConnectParallel = signalMethods.Connect
 signalMethods.Once = function(self, fn)
 	local s = sigState(self, "Once")
-	checkFn(fn)
+	if type(fn) ~= "function" then
+		return deadConnection(s)
+	end
 	return connect(s, fn, true)
 end
 signalMethods.Wait = function(self)
@@ -1433,11 +1512,7 @@ end
 local function sharedDestroy(self)
 	local st = selfState(self, "Destroy")
 	if st.real == realGame or isService(st.real) or st.real:IsA("Terrain") then
-		local parent = virtualParent(st)
-		error(
-			`The Parent property of {nameOf(st)} is locked, current parent: {parent and nameOf(states[parent]) or "NULL"}, new parent NULL`,
-			0
-		)
+		error(`The Parent property of {nameOf(st)} is locked`, 0)
 	end
 	st.ov.destroyed = true
 end
