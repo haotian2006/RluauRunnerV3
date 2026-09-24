@@ -321,8 +321,12 @@ local function executeCode(id, code, env, thread, delay, m, asFunction)
 	local imports = ""
 	local checks = ""
 	local usesTypeof = code:find("typeof", 1, true) ~= nil
+	local usesFenv = code:find("getfenv", 1, true) ~= nil
 	for k in env do
 		if k == "typeof" and not usesTypeof then
+			continue
+		end
+		if k == "getfenv" and not usesFenv then
 			continue
 		end
 		imports ..= `{k} = imports.{k};`
@@ -938,7 +942,14 @@ local function runCode(compCode, data)
 	end
 	if hooks.sandboxExpected and not hooks.sandboxApplied then
 		local reason = if l_sus then "" else `: {cleanChunkNames(tostring(l_err))}`
-		respondToInteraction(data.token, `The sandbox failed to load, so the code was not run{reason}`, nil, nil, nil, true)
+		respondToInteraction(
+			data.token,
+			`The sandbox failed to load, so the code was not run{reason}`,
+			nil,
+			nil,
+			nil,
+			true
+		)
 		for _, fn in hooks.onCleanup do
 			pcall(fn)
 		end

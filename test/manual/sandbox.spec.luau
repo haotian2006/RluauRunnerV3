@@ -302,6 +302,17 @@ if thread then
 	check("loadstring trailing comment", fn2 and fn2() == 1)
 end
 
+check("getfenv self is sandbox", getfenv().game == game)
+check("getfenv on foreign fn is sandboxed", getfenv(typeof).game == game, getfenv(typeof).game.PlaceId)
+check("getfenv on C fn is sandboxed", getfenv(print).game == game)
+check("getfenv cannot reach real game", getfenv(typeof).game.PlaceId == 0)
+check("getfenv on C fn cannot reach real game", getfenv(print).game.PlaceId == 0)
+do
+	local custom = { marker = "mine" }
+	local function uf() end
+	setfenv(uf, custom)
+	check("getfenv returns a setfenv'd custom env", getfenv(uf) == custom)
+end
 check("PlaceId masked", game.PlaceId == 0, game.PlaceId)
 check("GameId masked", game.GameId == 0, game.GameId)
 check("CreatorId masked", game.CreatorId == -1, game.CreatorId)

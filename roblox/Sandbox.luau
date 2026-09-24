@@ -13,6 +13,8 @@ local realUserSettings = UserSettings
 local realPluginManager = PluginManager
 local realRaycastParams = RaycastParams
 local realOverlapParams = OverlapParams
+-- Referencing this drops inlining in this module only, never in user code (accepted).
+local realGetfenv = getfenv
 
 local LOCKED = "The metatable is locked"
 local NIL = newproxy(false)
@@ -2977,6 +2979,38 @@ function Context:_apply(env)
 		env.script = wrap(world, hooks.module)
 	end
 	env.typeof = sandboxTypeof
+	-- Return the real env only when it is this world's (its game is our proxy); a foreign or real
+	-- script env would leak the real game, so fall back to the sandbox env. A miscounted level then
+	-- degrades to the sandbox env instead of leaking. LuauBot imports this only when a run names it.
+	env.getfenv = function(target)
+		local t = type(target)
+		local e
+		if target == nil then
+			e = realGetfenv(2)
+		elseif t == "number" then
+			e = realGetfenv(if target == 0 then 0 else target + 1)
+		elseif t == "function" then
+			e = realGetfenv(target)
+		else
+			error(`invalid argument #1 to 'getfenv' (number expected, got {typeName(target)})`, 2)
+		end
+		if type(e) ~= "table" then
+			return env
+		end
+		-- A real or foreign script env resolves game/workspace to the real ones; hand those back as
+		-- the sandbox env. A user's own env (their chunk, or one they setfenv'd) can't hold the real
+		-- instances, so it passes through untouched.
+		local ok1, eg = pcall(function()
+			return e.game
+		end)
+		local ok2, ew = pcall(function()
+			return e.workspace
+		end)
+		if (ok1 and eg == realGame) or (ok2 and ew == realWorkspace) then
+			return env
+		end
+		return e
+	end
 	env.firesignal = firesignal
 	env.fireevent = fireevent
 	env.shared = world.shared
