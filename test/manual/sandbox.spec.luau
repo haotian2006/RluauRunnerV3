@@ -302,4 +302,29 @@ if thread then
 	check("loadstring trailing comment", fn2 and fn2() == 1)
 end
 
+check("PlaceId masked", game.PlaceId == 0, game.PlaceId)
+check("GameId masked", game.GameId == 0, game.GameId)
+check("CreatorId masked", game.CreatorId == -1, game.CreatorId)
+check("JobId is a guid", type(game.JobId) == "string" and #game.JobId == 36, game.JobId)
+check("PrivateServerId masked", game.PrivateServerId == "", game.PrivateServerId)
+check("identity is read only", not pcall(function()
+	game.PlaceId = 5
+end))
+do
+	local order = {}
+	local w = coroutine.wrap(function()
+		table.insert(order, "a")
+		coroutine.yield(1)
+		table.insert(order, "b")
+		return 2
+	end)
+	check("coroutine.wrap first", w() == 1)
+	check("coroutine.wrap second", w() == 2)
+	check("coroutine.wrap order", table.concat(order) == "ab")
+	local err = coroutine.wrap(function()
+		error("boom")
+	end)
+	check("coroutine.wrap reraises", not pcall(err))
+end
+
 print(#fails == 0 and `PASS {total}/{total}` or (`FAIL {#fails}/{total}\n` .. table.concat(fails, "\n")))

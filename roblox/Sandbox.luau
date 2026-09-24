@@ -2890,6 +2890,14 @@ function Sandbox.getWorld(userId)
 	w.shadows[realWorkspace] = w.ws
 	addRewrite(w, "Workspace." .. w.ws.Name, "Workspace")
 	addRewrite(w, w.ws.Name, "Workspace")
+	-- Mask the real place/creator so a run can't tell which game it is running in.
+	local gov = ovFor(w, realGame)
+	gov.props.PlaceId = box(0)
+	gov.props.GameId = box(0)
+	gov.props.CreatorId = box(-1)
+	gov.props.PrivateServerId = box("")
+	gov.props.PrivateServerOwnerId = box(0)
+	gov.props.JobId = box(HttpService:GenerateGUID(false):lower())
 	worlds[key] = w
 	return w
 end
