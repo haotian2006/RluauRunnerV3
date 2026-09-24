@@ -586,8 +586,15 @@ local function runCode(compCode, data)
 	env.coroutine = setmetatable({
 		create = wrapThread(coroutine.create),
 		wrap = function(fx)
-			fx = coroutine.wrap(fx)
-			return wrapThread(fx)
+			local co = coroutine.create(fx)
+			table.insert(runningThreads, co)
+			return function(...)
+				local res = table.pack(coroutine.resume(co, ...))
+				if not res[1] then
+					error(res[2], 2)
+				end
+				return table.unpack(res, 2, res.n)
+			end
 		end,
 	}, { __index = coroutine })
 	env._G = userGlobal
