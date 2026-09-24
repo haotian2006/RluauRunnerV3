@@ -300,6 +300,16 @@ if thread then
 	check("loadstring varargs", fn and select(2, fn(7)) == 7)
 	local fn2 = loadstring("return 1 -- trailing comment")
 	check("loadstring trailing comment", fn2 and fn2() == 1)
+
+	local rm = Instance.new("ModuleScript")
+	rm.Source = "return function() return game end"
+	local rf = require(rm)
+	check("require module is sandboxed", type(rf) == "function" and rf() == game)
+	check("require caches per module", require(rm) == rf)
+	local okId, errId = pcall(function()
+		require(1055656097)
+	end)
+	check("require asset id looks for MainModule", not okId and tostring(errId):find("MainModule") ~= nil, errId)
 end
 
 check("getfenv self is sandbox", getfenv().game == game)

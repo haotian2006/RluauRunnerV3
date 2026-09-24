@@ -1743,6 +1743,7 @@ serviceMethods.CollectionService = {
 --// Mock stores (sandbox only; data lives for this server session)
 
 local HttpService = realGame:GetService("HttpService")
+local InsertService = realGame:GetService("InsertService")
 local virtualStates = setmetatable({}, { __mode = "k" })
 local MAX_EXPIRATION = 3888000
 local MAX_VALUE = 4 * 1024 * 1024
@@ -3060,35 +3061,62 @@ function Context:_apply(env)
 		return wrap(world, realUserSettings())
 	end
 	local modules = self.modules
+	local assetModules = {}
+	-- Run a ModuleScript's source in this world instead of the real engine, so its functions see the
+	-- sandbox game and can't leak the real one. Covers owned, shared and asset-loaded modules.
+	local function requireSource(real, scriptProxy)
+		local cached = modules[real]
+		if cached == NIL then
+			error("Requested module was required recursively", 0)
+		elseif cached ~= nil then
+			return unbox(cached)
+		end
+		modules[real] = NIL
+		local modEnv = table.clone(env)
+		modEnv.script = scriptProxy or wrap(world, real)
+		local fx = hooks.execute(real.Name, real.Source, modEnv)
+		if not fx then
+			modules[real] = nil
+			error("Requested module experienced an error while loading", 0)
+		end
+		local res = table.pack(pcall(fx))
+		if not res[1] then
+			modules[real] = nil
+			error(res[2], 0)
+		end
+		if res.n ~= 2 then
+			modules[real] = nil
+			error("Module code did not return exactly one value", 0)
+		end
+		modules[real] = box(res[2])
+		return res[2]
+	end
 	env.require = function(target)
 		local st = states[target]
-		if st and st.kind == "owned" and st.real:IsA("ModuleScript") and hooks.execute then
-			local real = st.real
-			local cached = modules[real]
-			if cached == NIL then
-				error("Requested module was required recursively", 0)
-			elseif cached ~= nil then
+		if st and st.real:IsA("ModuleScript") and hooks.execute then
+			return requireSource(st.real, target)
+		end
+		-- require(assetId): load the asset and run its ModuleScript sandboxed, like require(id).
+		local id = if type(target) == "number" then target else tonumber(target)
+		if id and hooks.execute then
+			local cached = assetModules[id]
+			if cached ~= nil then
 				return unbox(cached)
 			end
-			modules[real] = NIL
-			local modEnv = table.clone(env)
-			modEnv.script = target
-			local fx, err = hooks.execute(real.Name, real.Source, modEnv)
-			if not fx then
-				modules[real] = nil
-				error("Requested module experienced an error while loading", 0)
+			local ok, container = pcall(InsertService.LoadAsset, InsertService, id)
+			if not ok then
+				error(rewrite(world, container), 0)
 			end
-			local res = table.pack(pcall(fx))
-			if not res[1] then
-				modules[real] = nil
-				error(res[2], 0)
+			-- Real require(id) runs the direct child ModuleScript named MainModule.
+			local mod = if container:IsA("ModuleScript") and container.Name == "MainModule"
+				then container
+				else container:FindFirstChild("MainModule")
+			if not mod or not mod:IsA("ModuleScript") then
+				error(`Unable to find module for asset id {id}. Does the asset have a ModuleScript named 'MainModule'?`, 0)
 			end
-			if res.n ~= 2 then
-				modules[real] = nil
-				error("Module code did not return exactly one value", 0)
-			end
-			modules[real] = box(res[2])
-			return res[2]
+			local res = requireSource(mod)
+			assetModules[id] = box(res)
+			return res
 		end
 		return copyWrap(world, realRequire(unwrapArg(world, target)))
 	end
