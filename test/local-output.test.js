@@ -245,11 +245,11 @@ test(
 );
 
 test(
-  "Lune discord buttons reject web runs",
+  "Lune discord buttons work on web runs",
   { skip: !fs.existsSync(PATH_TO_LUNE), timeout: 10_000 },
   async () => {
     const events = [];
-    const result = await runLocal('discord.button("No")', {
+    const result = await runLocal('discord.button("Yes")', {
       isWeb: true,
       timeoutMs: 5_000,
       onEvent(event) {
@@ -257,8 +257,10 @@ test(
       },
     });
 
-    assert.equal(result.scriptErrored, true);
-    assert.match(events[0].v, /only available for runs started from Discord/);
+    assert.equal(result.ok, true);
+    assert.equal(events[0].t, "button");
+    assert.equal(events[0].action, "create");
+    assert.equal(events[0].label, "Yes");
   },
 );
 

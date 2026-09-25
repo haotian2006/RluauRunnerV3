@@ -713,9 +713,6 @@ end
 local discord = { isWeb = job.isWeb == true }
 
 discord.button = function(options)
-	if discord.isWeb then
-		error("discord.button is only available for runs started from Discord", 2)
-	end
 	if type(options) == "string" then
 		options = { Label = options }
 	elseif type(options) ~= "table" then

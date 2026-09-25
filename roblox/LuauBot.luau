@@ -817,9 +817,6 @@ local function runCode(compCode, data)
 	discord.isWeb = isweb
 
 	discord.button = function(options)
-		if isweb then
-			error("discord.button is only available for runs started from Discord", 2)
-		end
 		if type(options) == "string" then
 			options = { Label = options }
 		elseif type(options) ~= "table" then

@@ -1,4 +1,11 @@
 const { safeMessage } = require("../sanitize");
+const {
+  ButtonValidationError,
+  MAX_BUTTONS,
+  createButtonDefinition,
+  updateButtonDefinition,
+  validateId,
+} = require("../discord/scriptButtons");
 
 const PING_INTERVAL_MS = 20000;
 
@@ -39,8 +46,24 @@ function createSseResponder(onClose, options = {}) {
     serverNum: null,
     file: null,
     error: null,
+    buttons: [],
     updatedAt: Date.now(),
   };
+
+  // discord.button on the web: the page draws these and posts clicks back.
+  const buttons = new Map();
+  const clickHandlers = new Map();
+
+  function publishButtons() {
+    const list = [...buttons.values()].map(({ id, label, style, disabled }) => ({
+      id,
+      label,
+      style,
+      disabled,
+    }));
+    touch({ buttons: list });
+    sendSSE(stream, "buttons", { buttons: list });
+  }
 
   function touch(fields) {
     Object.assign(snapshot, fields, { updatedAt: Date.now() });
@@ -84,6 +107,7 @@ function createSseResponder(onClose, options = {}) {
     attach(res) {
       stream = res;
       settleReady(true);
+      if (buttons.size > 0) publishButtons();
       ping = setInterval(() => {
         if (res.writableEnded) {
           clearInterval(ping);
@@ -106,6 +130,46 @@ function createSseResponder(onClose, options = {}) {
         attachTimer.unref?.();
       }
       return ready;
+    },
+
+    async updateButton(body, onClick = null) {
+      if (!["create", "update", "delete"].includes(body.action)) {
+        throw new ButtonValidationError("Unknown button action");
+      }
+      const buttonId = validateId(body.buttonId, "buttonId");
+      const existing = buttons.get(buttonId);
+      if (body.action === "create") {
+        if (existing) throw new ButtonValidationError("Button already exists");
+        if (buttons.size >= MAX_BUTTONS) {
+          throw new ButtonValidationError(
+            `A response can contain at most ${MAX_BUTTONS} buttons`,
+          );
+        }
+        const definition = createButtonDefinition(body, null);
+        buttons.set(buttonId, definition);
+        clickHandlers.set(buttonId, { processId: definition.processId, onClick });
+      } else {
+        if (!existing) throw new ButtonValidationError("Button does not exist");
+        if (body.action === "update") {
+          buttons.set(buttonId, updateButtonDefinition(existing, body));
+          if (onClick) clickHandlers.get(buttonId).onClick = onClick;
+        } else {
+          validateId(body.processId, "processId");
+          if (body.processId !== existing.processId) {
+            throw new ButtonValidationError("Button belongs to a different process");
+          }
+          buttons.delete(buttonId);
+          clickHandlers.delete(buttonId);
+        }
+      }
+      publishButtons();
+    },
+
+    /** The click target for an enabled button, or null if it is gone or disabled. */
+    clickButton(buttonId) {
+      const definition = buttons.get(buttonId);
+      if (!definition || definition.disabled) return null;
+      return clickHandlers.get(buttonId);
     },
 
     async deliver({
@@ -133,6 +197,12 @@ function createSseResponder(onClose, options = {}) {
         serverNum,
         ...(file ? { file } : {}),
       });
+      // Discord drops a response's buttons when the run ends; do the same.
+      if (isLast && buttons.size > 0) {
+        buttons.clear();
+        clickHandlers.clear();
+        publishButtons();
+      }
 
       if (!stream) {
         // Nothing left to push the run along once it is over, so a polling
