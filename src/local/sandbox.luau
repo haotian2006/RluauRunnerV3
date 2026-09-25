@@ -342,10 +342,6 @@ local environment: { [string]: any } = {
 	bit32 = copyFrozen(bit32),
 	debug = copyFrozen(debug),
 
-	-- setfenv can't reach outside the function/thread it's given (verified:
-	-- setfenv(2, ...) errors "cannot change environment of given object"),
-	-- so it can't climb back out to this trusted script's own environment.
-	setfenv = setfenv,
 	newproxy = newproxy,
 	collectgarbage = collectgarbage,
 
@@ -807,8 +803,59 @@ environment.require = function(name)
 	return module
 end
 
-environment.getfenv = function(_target)
-	return environment
+-- An env under lune is the host script's own table (globals arrive through its metatable), so a
+-- resolved level can never be handed back raw. Only envs the user installed through setfenv below
+-- are theirs to see; everything else degrades to the sandbox env, as it does in Studio.
+local realGetfenv, realSetfenv = getfenv, setfenv
+local userEnvs = setmetatable({}, { __mode = "k" })
+
+-- The wrapper and its pcall each cost a stack frame, so a user level counts two frames deeper.
+local LEVEL_SHIFT = 2
+
+-- Raise as the caller so the wrapper's own path never reaches the user.
+local function rethrow(err)
+	error((tostring(err):gsub("^.-:%d+: ", "")), 3)
+end
+
+-- setfenv can't reach outside the function/thread it's given (verified:
+-- setfenv(2, ...) errors "cannot change environment of given object"),
+-- so it can't climb back out to this trusted script's own environment.
+environment.setfenv = function(target, env)
+	local t = type(target)
+	if t ~= "number" and t ~= "function" then
+		error(`invalid argument #1 to 'setfenv' (number expected, got {typeof(target)})`, 2)
+	end
+	if type(env) ~= "table" then
+		error(`invalid argument #2 to 'setfenv' (table expected, got {typeof(env)})`, 2)
+	end
+	local level = if t == "function" or target == 0 then target else target + LEVEL_SHIFT
+	local ok, result = pcall(realSetfenv, level, env)
+	if not ok then
+		rethrow(result)
+	end
+	userEnvs[env] = true
+	return result
+end
+
+environment.getfenv = function(target)
+	local t = type(target)
+	local ok, e
+	if target == nil then
+		ok, e = pcall(realGetfenv, 1 + LEVEL_SHIFT)
+	elseif t == "number" then
+		ok, e = pcall(realGetfenv, if target == 0 then 0 else target + LEVEL_SHIFT)
+	elseif t == "function" then
+		ok, e = pcall(realGetfenv, target)
+	else
+		error(`invalid argument #1 to 'getfenv' (number expected, got {typeof(target)})`, 2)
+	end
+	if not ok then
+		rethrow(e)
+	end
+	if type(e) ~= "table" or not userEnvs[e] then
+		return environment
+	end
+	return e
 end
 
 environment.loadstring = function(source, chunkName)
