@@ -26,6 +26,30 @@ const CompilingTasks = {};
 
 const Inputs = {};
 
+// Roblox holds /getInputs open until something is queued; these wake it.
+const inputWaiters = new Set();
+
+function putInput(entry) {
+  Inputs[entry.uid] = entry;
+  for (const wake of inputWaiters) wake();
+  inputWaiters.clear();
+}
+
+/** Resolves on the next putInput, after `ms`, or when `signal` aborts. */
+function waitForInput(ms, signal) {
+  return new Promise((resolve) => {
+    const done = () => {
+      clearTimeout(timer);
+      inputWaiters.delete(done);
+      signal?.removeEventListener("abort", done);
+      resolve();
+    };
+    const timer = setTimeout(done, ms);
+    inputWaiters.add(done);
+    signal?.addEventListener("abort", done);
+  });
+}
+
 const ScriptButtonCallbacks = new Map();
 
 const docCodeStore = {};
@@ -248,6 +272,8 @@ module.exports = {
   ExecuteTasks,
   CompilingTasks,
   Inputs,
+  putInput,
+  waitForInput,
   ScriptButtonCallbacks,
   docCodeStore,
   docPreviewStore,

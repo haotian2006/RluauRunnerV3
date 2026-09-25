@@ -2,6 +2,7 @@ const {
   CompilingTasks,
   Inputs,
   ScriptButtonCallbacks,
+  putInput,
   docCodeStore,
   docPreviewStore,
 } = require("../../state");
@@ -52,7 +53,7 @@ async function handleScriptButton(interaction) {
     return;
   }
   const uid = generateUUID();
-  Inputs[uid] = {
+  putInput({
     uid,
     id: callback.ownerUserId,
     input: "",
@@ -60,7 +61,7 @@ async function handleScriptButton(interaction) {
     targetProcessId: callback.processId,
     clickUserId: interaction.user.id,
     clickUsername: interaction.user.username,
-  };
+  });
   setTimeout(() => delete Inputs[uid], INPUT_TTL_MS);
 }
 

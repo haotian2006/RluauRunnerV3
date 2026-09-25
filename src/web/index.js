@@ -18,7 +18,7 @@ const { ROBLOX_KEY, limiterKey } = require("../origin");
 const { safeMessage } = require("../sanitize");
 const { log } = require("../log");
 const { record } = require("../metrics");
-const { ExecuteTasks, Inputs } = require("../state");
+const { ExecuteTasks, Inputs, putInput } = require("../state");
 const { getByteCodeOptions } = require("../tools/bytecode");
 const { compileLuau, formatLuau, generateAST } = require("../tools/luau");
 const { generateUUID } = require("../util");
@@ -94,7 +94,7 @@ function clearAllPendingUploads(token) {
 function queueInput(token, value) {
   deliverLocalInputToToken(token, value);
   const uid = generateUUID();
-  Inputs[uid] = { uid, id: token, input: value };
+  putInput({ uid, id: token, input: value });
   setTimeout(() => delete Inputs[uid], INPUT_TTL_MS);
 }
 
@@ -495,7 +495,7 @@ function registerWebRoutes(app) {
       target.onClick(click);
     } else {
       const uid = generateUUID();
-      Inputs[uid] = {
+      putInput({
         uid,
         id: token,
         input: "",
@@ -503,7 +503,7 @@ function registerWebRoutes(app) {
         targetProcessId: target.processId,
         clickUserId: click.userId,
         clickUsername: click.username,
-      };
+      });
       setTimeout(() => delete Inputs[uid], INPUT_TTL_MS);
     }
     res.json({ message: "Clicked" });

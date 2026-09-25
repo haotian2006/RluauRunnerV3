@@ -9,6 +9,15 @@ local MAX_RESPONSES_BEFORE_TIMEOUT = 50
 local FILE_CHUNK_SIZE = 1024 * 90 -- 90 KB
 local MAX_FILE_SIZE = 10 * 1024 * 1024 -- 10 MB
 local MAX_WRITE_FILES = 8 -- max files queued via io.writefile
+local WEB_INLINE_FILE_SIZE = 1024 * 1024 -- web frames up to this size skip the chunk upload
+local WEB_MAX_FRAMES_IN_FLIGHT = 2 -- overlapping uploads so one round trip doesn't cap the frame rate
+local INPUT_WAIT_SECONDS = 20 -- the server holds /getInputs open this long when nothing is queued
+-- Roblox allows 500 HTTP requests per rolling minute per server. A bucket lets
+-- through at most burst + 60 * rate in any minute (60 + 420 = 480 here), and live
+-- output can't dip into the reserve, so polling and inputs always get through.
+local HTTP_RATE_PER_SECOND = 7
+local HTTP_BURST = 60
+local HTTP_RESERVED = 20
 
 --[[
 	Takes in the number of responses sent so far and returns how often should the next update be sent.
@@ -17,9 +26,9 @@ local function UPDATE_INTERVAL_SCALE(count, isweb)
 	if count <= 10 then
 		return 0.1
 	end
-	-- Discord rate limits edits; the web stream has no such cost.
+	-- Discord rate limits edits; the web stream is bounded only by the HTTP budget.
 	if isweb then
-		return 0.25
+		return 0.1
 	end
 	if count <= 25 then
 		return 0.25
@@ -46,6 +55,33 @@ local encoder = function(data)
 	return Https:JSONEncode(data)
 end
 
+local httpTokens = HTTP_BURST
+local httpRefilledAt = os.clock()
+local function takeHttpBudget(optional)
+	local floor = if optional then HTTP_RESERVED else 0
+	while true do
+		local now = os.clock()
+		httpTokens = math.min(HTTP_BURST, httpTokens + (now - httpRefilledAt) * HTTP_RATE_PER_SECOND)
+		httpRefilledAt = now
+		if httpTokens >= floor + 1 then
+			httpTokens -= 1
+			return
+		end
+		task.wait(0.05)
+	end
+end
+
+local function request(options)
+	takeHttpBudget(false)
+	return Https:RequestAsync(options)
+end
+
+-- Live output updates back off first when the budget runs low.
+local function outputRequest(options)
+	takeHttpBudget(true)
+	return Https:RequestAsync(options)
+end
+
 local function makeHeaders()
 	return {
 		["Content-Type"] = "application/json",
@@ -54,7 +90,7 @@ local function makeHeaders()
 end
 
 local function sendDebug(message)
-	Https:RequestAsync({
+	request({
 		Url = IP .. "/debug",
 		Method = "POST",
 		Headers = makeHeaders(),
@@ -223,7 +259,7 @@ local function sendFileInChunks(interactionToken, fileId, data)
 					index = i - 1,
 				}),
 			}
-			attemptRequest(0.5, 5, Https.RequestAsync, Https, requestData)
+			attemptRequest(0.5, 5, outputRequest, requestData)
 			task.wait(0.1)
 		end
 		SendingChunks[interactionToken] = nil
@@ -256,7 +292,8 @@ local function respondToInteraction(interactionToken, responseContent, logs, awa
 	local sections = nil
 	if logs and logs ~= "" then
 		logs = encode(logs)
-		if #logs > 10000 and #logs < MAX_FILE_SIZE then
+		local inlineLimit = if WebTokens[interactionToken] then WEB_INLINE_FILE_SIZE else 10000
+		if #logs > inlineLimit and #logs < MAX_FILE_SIZE then
 			sections = sendFileInChunks(interactionToken, fileId, logs)
 			logs = encode("[Log too large to send]")
 		elseif #logs >= MAX_FILE_SIZE then
@@ -281,12 +318,13 @@ local function respondToInteraction(interactionToken, responseContent, logs, awa
 			followUp = followUp,
 		}),
 	}
+	local send = if finished then request else outputRequest
 	local a = function()
 		local sus, msg
 		if logs then
-			sus, msg = attemptRequest(0.5, 5, Https.RequestAsync, Https, requestData)
+			sus, msg = attemptRequest(0.5, 5, send, requestData)
 		else
-			sus, msg = pcall(Https.RequestAsync, Https, requestData)
+			sus, msg = pcall(send, requestData)
 		end
 		if not sus then
 			warn(msg)
@@ -386,7 +424,7 @@ local function getContentFromChunks(chunks)
 	local failed = false
 	for i = 1, #chunks do
 		task.spawn(function()
-			local pass, response = attemptRequest(0.5, 4, HttpService.RequestAsync, HttpService, {
+			local pass, response = attemptRequest(0.5, 4, request, {
 				Url = IP .. "/chunk",
 				Method = "POST",
 				Headers = makeHeaders(),
@@ -785,7 +823,7 @@ local function runCode(compCode, data)
 			body[key] = value
 		end
 
-		local success, response = attemptRequest(0.25, 3, Https.RequestAsync, Https, {
+		local success, response = attemptRequest(0.25, 3, request, {
 			Url = IP .. "/button",
 			Method = "PATCH",
 			Headers = makeHeaders(),
@@ -1019,6 +1057,7 @@ local function runCode(compCode, data)
 	task.wait(0.5)
 	local numOfResponses = 0
 	local lastSentFiles = {} -- {[fileType] = lastSentData}
+	local framesInFlight = 0
 	thread.timeOutThread = task.spawn(function()
 		local waitTime = 0
 		local TIMEOUT = env.TIMEOUT
@@ -1050,22 +1089,30 @@ local function runCode(compCode, data)
 				local followUp = thread.followUp
 				thread.followUp = false
 				local sentAny = false
+				local deferred = false
 				for _, file in thread.files do
 					if lastSentFiles[file.fileType] ~= file.data then
-						respondToInteraction(
-							data.token,
-							truncated,
-							file.data,
-							true,
-							file.fileType,
-							nil,
-							not sentAny and followUp or false
-						)
-						lastSentFiles[file.fileType] = file.data
+						local frame, fileType = file.data, file.fileType
+						local followUpNow = not sentAny and followUp or false
+						if not isweb then
+							respondToInteraction(data.token, truncated, frame, true, fileType, nil, followUpNow)
+						elseif framesInFlight < WEB_MAX_FRAMES_IN_FLIGHT then
+							-- The server drops an older frame that lands after a newer one.
+							framesInFlight += 1
+							task.spawn(function()
+								pcall(respondToInteraction, data.token, truncated, frame, true, fileType, nil, followUpNow)
+								framesInFlight -= 1
+							end)
+						else
+							-- Both uploads are busy; this frame goes out with a later update.
+							deferred = true
+							continue
+						end
+						lastSentFiles[fileType] = frame
 						sentAny = true
 					end
 				end
-				if not sentAny then
+				if not sentAny and not deferred then
 					respondToInteraction(data.token, truncated, "", nil, nil, nil, followUp)
 				end
 			end
@@ -1196,15 +1243,16 @@ local function handleRequest(decodedData)
 end
 
 local processedInputs = {}
+-- Returns whether any input arrived.
 local function handleInputs()
-	local res = Https:RequestAsync({
+	local res = request({
 		Url = IP .. "/getInputs",
 		Method = "POST",
 		Headers = makeHeaders(),
-		Body = encoder({ i = processedInputs }),
+		Body = encoder({ i = processedInputs, wait = INPUT_WAIT_SECONDS }),
 	})
 	if res.StatusCode ~= 200 then
-		return
+		return false
 	end
 	local decodedData: { { content: string, id: number, uid: string } } = Https:JSONDecode(res.Body)
 	for _, data in decodedData do
@@ -1242,10 +1290,11 @@ local function handleInputs()
 			end
 		end)
 	end
+	return #decodedData > 0
 end
 
 local function poll()
-	local res = Https:RequestAsync({
+	local res = request({
 		Url = IP .. "/getNext",
 		Method = "POST",
 		Headers = makeHeaders(),
@@ -1264,7 +1313,7 @@ local function poll()
 end
 
 local function notifyClosing(reason)
-	pcall(Https.RequestAsync, Https, {
+	pcall(request, {
 		Url = IP .. "/retire",
 		Method = "POST",
 		Headers = makeHeaders(),
@@ -1300,7 +1349,7 @@ local function start(ip, secretToken)
 	ready = true
 	IP = ip or IP
 	task.wait()
-	local res = Https:RequestAsync({
+	local res = request({
 		Url = IP .. "/start",
 		Method = "POST",
 		Headers = makeHeaders(),
@@ -1315,8 +1364,13 @@ local function start(ip, secretToken)
 
 	task.spawn(function()
 		while true do
-			pcall(handleInputs)
-			task.wait(POLL_RATE / 1000)
+			local started = os.clock()
+			local ok, received = pcall(handleInputs)
+			-- A held request returns once input arrives or the wait runs out. A quick
+			-- empty or failed one means it wasn't held, so fall back to polling.
+			if not ok or (not received and os.clock() - started < 1) then
+				task.wait(POLL_RATE / 1000)
+			end
 		end
 	end)
 
