@@ -136,6 +136,23 @@ local function fetchAsset(id: string, size: number?): (boolean, string)
 	return false, `asset {id} download failed`
 end
 
+-- The bot downloads and builds GitHub sources; this returns the .rbxm bytes.
+local function fetchRepo(url: string): (boolean, string)
+	local ok, res = pcall(outputRequest, {
+		Url = `{IP}/github?url={HttpService:UrlEncode(url)}`,
+		Method = "GET",
+		Headers = { ["x-secret-token"] = SecretToken },
+	})
+	if not ok then
+		return false, `request failed: {res}`
+	end
+	if res.StatusCode == 200 then
+		return true, res.Body
+	end
+	local decoded, body = pcall(HttpService.JSONDecode, HttpService, res.Body)
+	return false, if decoded and type(body) == "table" and body.message then body.message else `HTTP {res.StatusCode}`
+end
+
 local function sendDebug(message)
 	request({
 		Url = IP .. "/debug",
@@ -570,6 +587,7 @@ local function runCode(compCode, data)
 		sandbox = not hasHotComment(code, "nosandbox"),
 		module = Instance.new("ModuleScript"),
 		fetchAsset = fetchAsset,
+		fetchRepo = fetchRepo,
 	}
 	local syncs = {}
 	local syncRunning = false
