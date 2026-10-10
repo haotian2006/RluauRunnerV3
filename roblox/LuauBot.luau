@@ -89,6 +89,53 @@ local function makeHeaders()
 	}
 end
 
+local ASSET_CACHE_BYTES = 16 * 1024 * 1024
+local assetCache = {}
+local assetCacheOrder = {}
+local assetCacheSize = 0
+
+local function cacheAsset(key, bytes)
+	assetCache[key] = bytes
+	table.insert(assetCacheOrder, key)
+	assetCacheSize += #bytes
+	while assetCacheSize > ASSET_CACHE_BYTES and #assetCacheOrder > 1 do
+		local old = table.remove(assetCacheOrder, 1)
+		assetCacheSize -= #assetCache[old]
+		assetCache[old] = nil
+	end
+end
+
+local function fetchAsset(id: string, size: number?): (boolean, string)
+	local key = `{id}:{size or ""}`
+	if assetCache[key] then
+		return true, assetCache[key]
+	end
+	local url = `{IP}/asset/{id}?size={size or ""}`
+	local headers = { ["x-secret-token"] = SecretToken }
+	local ok, res = pcall(outputRequest, { Url = url, Method = "GET", Headers = headers })
+	if not ok then
+		return false, `asset lookup failed: {res}`
+	end
+	local decoded, body = pcall(HttpService.JSONDecode, HttpService, res.Body)
+	if not decoded or type(body) ~= "table" then
+		return false, `asset lookup failed: HTTP {res.StatusCode}`
+	end
+	if res.StatusCode ~= 200 or type(body.url) ~= "string" then
+		return false, `asset {id} is unavailable ({body.state or body.message or res.StatusCode})`
+	end
+	local okCdn, cdn = pcall(outputRequest, { Url = body.url, Method = "GET" })
+	if okCdn and cdn.StatusCode == 200 then
+		cacheAsset(key, cdn.Body)
+		return true, cdn.Body
+	end
+	local okRaw, raw = pcall(outputRequest, { Url = url .. "&raw=1", Method = "GET", Headers = headers })
+	if okRaw and raw.StatusCode == 200 then
+		cacheAsset(key, raw.Body)
+		return true, raw.Body
+	end
+	return false, `asset {id} download failed`
+end
+
 local function sendDebug(message)
 	request({
 		Url = IP .. "/debug",
@@ -522,6 +569,7 @@ local function runCode(compCode, data)
 		onCleanup = {},
 		sandbox = not hasHotComment(code, "nosandbox"),
 		module = Instance.new("ModuleScript"),
+		fetchAsset = fetchAsset,
 	}
 	local syncs = {}
 	local syncRunning = false
@@ -1100,7 +1148,16 @@ local function runCode(compCode, data)
 							-- The server drops an older frame that lands after a newer one.
 							framesInFlight += 1
 							task.spawn(function()
-								pcall(respondToInteraction, data.token, truncated, frame, true, fileType, nil, followUpNow)
+								pcall(
+									respondToInteraction,
+									data.token,
+									truncated,
+									frame,
+									true,
+									fileType,
+									nil,
+									followUpNow
+								)
 								framesInFlight -= 1
 							end)
 						else

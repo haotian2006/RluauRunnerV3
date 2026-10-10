@@ -149,3 +149,5 @@ bin/
 
 # Local deployment notes (box IP, domain, per-deploy specifics)
 DEPLOYMENT.md
+
+.claude/settings.local.json
