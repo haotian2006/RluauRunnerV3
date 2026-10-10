@@ -2949,6 +2949,12 @@ function Context:unwrap(v)
 	return unwrapDeep(self.world, v)
 end
 
+-- Takes a real instance built outside the sandbox into this world and returns its proxy.
+function Context:adopt(inst)
+	pin(self.world, inst)
+	return wrap(self.world, inst)
+end
+
 -- The real instance a renderer may read for v, or nil if v isn't this world's. A shared
 -- engine instance resolves to this world's shadow of it (workspace -> its WorldModel).
 function Context:renderTarget(v)
@@ -3080,31 +3086,50 @@ function Context:_apply(env)
 	local assetModules = {}
 	-- Run a ModuleScript's source in this world instead of the real engine, so its functions see the
 	-- sandbox game and can't leak the real one. Covers owned, shared and asset-loaded modules.
+	-- not NIL: a module may legitimately return nil, and that result is cached as NIL
+	local LOADING = newproxy(false)
+	local loadingThread = {}
 	local function requireSource(real, scriptProxy)
 		local cached = modules[real]
-		if cached == NIL then
-			error("Requested module was required recursively", 0)
+		if cached == LOADING then
+			-- Like the engine: only the loading thread's own chain is a cycle; any other
+			-- thread waits for the module to finish loading.
+			if loadingThread[real] == coroutine.running() then
+				error("Requested module was required recursively", 0)
+			end
+			while modules[real] == LOADING do
+				task.wait()
+			end
+			cached = modules[real]
+			if cached == nil then
+				error("Requested module experienced an error while loading", 0)
+			end
+			return unbox(cached)
 		elseif cached ~= nil then
 			return unbox(cached)
 		end
-		modules[real] = NIL
+		modules[real] = LOADING
+		loadingThread[real] = coroutine.running()
+		local function failed(msg)
+			modules[real] = nil
+			loadingThread[real] = nil
+			error(msg, 0)
+		end
 		local modEnv = table.clone(env)
 		modEnv.script = scriptProxy or wrap(world, real)
 		local fx = hooks.execute(real.Name, real.Source, modEnv)
 		if not fx then
-			modules[real] = nil
-			error("Requested module experienced an error while loading", 0)
+			failed("Requested module experienced an error while loading")
 		end
 		local res = table.pack(pcall(fx))
 		if not res[1] then
-			modules[real] = nil
-			error(res[2], 0)
+			failed(res[2])
 		end
 		if res.n ~= 2 then
-			modules[real] = nil
-			error("Module code did not return exactly one value", 0)
+			failed("Module code did not return exactly one value")
 		end
 		modules[real] = box(res[2])
+		loadingThread[real] = nil
 		return res[2]
 	end
 	env.require = function(target)
