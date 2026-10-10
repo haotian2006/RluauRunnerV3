@@ -2949,6 +2949,22 @@ function Context:unwrap(v)
 	return unwrapDeep(self.world, v)
 end
 
+-- The real instance a renderer may read for v, or nil if v isn't this world's. A shared
+-- engine instance resolves to this world's shadow of it (workspace -> its WorldModel).
+function Context:renderTarget(v)
+	local st = states[v]
+	if not st or st.world ~= self.world then
+		return nil
+	end
+	if st.kind == "shared" then
+		return self.world.shadows[st.real]
+	end
+	if ownerOf(st.real) ~= self.world then
+		return nil
+	end
+	return st.real
+end
+
 function Context:_apply(env)
 	local world = self.world
 	local hooks = self.hooks
