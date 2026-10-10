@@ -607,6 +607,36 @@ elseif config.mode == "path" then
 	else
 		fail(`"{p}" not found in the repository`)
 	end
+elseif config.mode == "wally" then
+	-- Wally's layout: _Index/<scope>_<name>@<version>/<name>, beside one link module per
+	-- dependency, so a package's require(script.Parent.Dep) resolves as installed.
+	local byKey = {}
+	for _, pkg in config.packages do
+		byKey[pkg.key] = pkg
+	end
+	local index = Instance.new("Folder")
+	index.Name = "_Index"
+	for _, pkg in config.packages do
+		local folder = Instance.new("Folder")
+		folder.Name = pkg.key
+		if not dirs[pkg.key] then
+			fail(`package {pkg.key} has no files Rojo can sync`)
+		end
+		local inst = buildDir(pkg.key, pkg.name)
+		inst.Name = pkg.name
+		inst.Parent = folder
+		for alias, depKey in pkg.deps do
+			local link = Instance.new("ModuleScript")
+			link.Name = alias
+			link.Source = `return require(script.Parent.Parent[{string.format("%q", depKey)}][{string.format("%q", byKey[depKey].name)}])\n`
+			link.Parent = folder
+		end
+		folder.Parent = index
+	end
+	root = Instance.new("ModuleScript")
+	root.Name = config.name
+	root.Source = `return require(script._Index[{string.format("%q", config.root)}][{string.format("%q", byKey[config.root].name)}])\n`
+	index.Parent = root
 elseif config.mode == "model" then
 	local ok, roots = pcall(roblox.deserializeModel, files.model or "")
 	if not ok then

@@ -1,36 +1,26 @@
 // Turns a GitHub URL into one .rbxm: a repository, a folder or file in it (built with
-// Rojo's sync rules by build.luau under Lune), or a release .rbxm/.rbxmx asset.
+// Rojo's sync rules by build.luau under Lune), or a release .rbxm/.rbxmx asset. Wally
+// packages go through wally.js and the same builder.
 const path = require("path");
 const zlib = require("zlib");
 const { spawn } = require("child_process");
 const { Readable } = require("stream");
 
 const { PATH_TO_LUNE } = require("../config");
+const { ImportError, SYNCED, MAX_FILE_BYTES, MAX_TOTAL_BYTES, MAX_FILES, FETCH_TIMEOUT_MS } = require("./common");
+const { parseWallyTarget, buildWally } = require("./wally");
 
 const BUILD_SCRIPT = path.join(__dirname, "build.luau");
-const FETCH_TIMEOUT_MS = 30 * 1000;
 const BUILD_TIMEOUT_MS = 20 * 1000;
 const MAX_ARCHIVE_BYTES = 80 * 1024 * 1024;
 const MAX_MODEL_BYTES = 20 * 1024 * 1024;
-const MAX_FILE_BYTES = 4 * 1024 * 1024;
-const MAX_TOTAL_BYTES = 32 * 1024 * 1024;
-const MAX_FILES = 5000;
 const MAX_OUTPUT_BYTES = 32 * 1024 * 1024;
 const MAX_REF_TRIES = 4;
 const CACHE_TTL_MS = 10 * 60 * 1000;
 const CACHE_MAX_BYTES = 64 * 1024 * 1024;
 const MAX_CONCURRENT = 2;
 const MAX_QUEUED = 20;
-const SYNCED = /\.(luau?|json|toml|txt|csv|rbxmx?)$/i;
 const NAME = /^[A-Za-z0-9_.-]{1,100}$/;
-
-class ImportError extends Error {
-  constructor(message, status = 422) {
-    super(message);
-    this.name = "ImportError";
-    this.status = status;
-  }
-}
 
 function refCandidates(rest) {
   const out = [];
@@ -69,7 +59,7 @@ function parseGithubUrl(raw) {
     return { mode: "path", owner, repo, candidates: refCandidates(rest).filter((c) => c.path) };
   }
   if (host !== "github.com" && host !== "www.github.com") {
-    throw new ImportError("only github.com URLs are supported", 400);
+    throw new ImportError("only github.com and Wally URLs are supported", 400);
   }
   const [owner, repoRaw, kind, ...rest] = segs;
   const repo = (repoRaw ?? "").replace(/\.git$/i, "");
@@ -373,13 +363,13 @@ async function withSlot(fn) {
 const inflight = new Map();
 
 async function importModel(rawUrl) {
-  const target = parseGithubUrl(rawUrl);
+  const target = parseWallyTarget(rawUrl) ?? parseGithubUrl(rawUrl);
   const key = JSON.stringify(target);
   const hit = cache.get(key);
   if (hit && hit.expires > Date.now()) return hit.bytes;
   let pending = inflight.get(key);
   if (!pending) {
-    pending = withSlot(() => build(target))
+    pending = withSlot(() => (target.mode === "wally" ? buildWally(target, runBuild) : build(target)))
       .then((bytes) => {
         remember(key, bytes);
         return bytes;
