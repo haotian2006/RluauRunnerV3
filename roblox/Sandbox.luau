@@ -3246,20 +3246,22 @@ function Context:_apply(env)
 	-- not NIL: a module may legitimately return nil, and that result is cached as NIL
 	local LOADING = newproxy(false)
 	local loadingThread = {}
+	local loadErrors = setmetatable({}, { __mode = "k" })
+	local requireFrom
 	local function requireSource(real, scriptProxy)
 		local cached = modules[real]
 		if cached == LOADING then
 			-- Like the engine: only the loading thread's own chain is a cycle; any other
 			-- thread waits for the module to finish loading.
 			if loadingThread[real] == coroutine.running() then
-				error("Requested module was required recursively", 0)
+				error(`Requested module '{real.Name}' was required recursively`, 0)
 			end
 			while modules[real] == LOADING do
 				task.wait()
 			end
 			cached = modules[real]
 			if cached == nil then
-				error("Requested module experienced an error while loading", 0)
+				error(loadErrors[real] or `Requested module '{real.Name}' experienced an error while loading`, 0)
 			end
 			return unbox(cached)
 		elseif cached ~= nil then
@@ -3270,13 +3272,20 @@ function Context:_apply(env)
 		local function failed(msg)
 			modules[real] = nil
 			loadingThread[real] = nil
+			loadErrors[real] = msg
 			error(msg, 0)
 		end
 		local modEnv = table.clone(env)
 		modEnv.script = scriptProxy or wrap(world, real)
-		local fx = hooks.execute(real.Name, real.Source, modEnv)
+		modEnv.require = function(target)
+			return requireFrom(modEnv.script, target)
+		end
+		local fx, compileErr = hooks.execute(real.Name, real.Source, modEnv)
 		if not fx then
-			failed("Requested module experienced an error while loading")
+			local line, msg = tostring(compileErr):match(":(%d+): (.+)$")
+			failed(if line
+				then `Syntax error in required module '{real.Name}' at line {line}: {msg}`
+				else `Requested module '{real.Name}' failed to compile: {compileErr}`)
 		end
 		local res = table.pack(pcall(fx))
 		if not res[1] then
@@ -3289,8 +3298,69 @@ function Context:_apply(env)
 		loadingThread[real] = nil
 		return res[2]
 	end
+	-- require-by-string, resolved from the requiring script through proxies so paths can't climb
+	-- out of this world. Strings never reach the real require: it would resolve them from here.
+	local function resolvePath(path, from)
+		local function fail(msg)
+			error(`error requiring "{path}": {msg}`, 0)
+		end
+		local parts = string.split(path, "/")
+		local head = parts[1]
+		local cur
+		if head == "." or head == ".." then
+			cur = from and from.Parent
+			if cur and head == ".." then
+				cur = cur.Parent
+			end
+			if not cur then
+				fail("could not get parent of requiring context")
+			end
+		elseif string.lower(head) == "@self" then
+			cur = from
+			if not cur then
+				fail("could not get requiring context")
+			end
+		elseif string.lower(head) == "@game" then
+			cur = env.game
+		elseif string.sub(head, 1, 1) == "@" then
+			fail(`{head} is not a valid alias`)
+		else
+			fail("require path must start with a valid prefix: ./, ../, or @")
+		end
+		for i = 2, #parts do
+			local name = parts[i]
+			if name == ".." then
+				cur = cur.Parent
+				if not cur then
+					fail("could not get parent of component")
+				end
+			elseif name ~= "." and name ~= "" then
+				local child = cur:FindFirstChild(name)
+				if not child then
+					fail(`could not resolve child component "{name}"`)
+				end
+				cur = child
+			end
+		end
+		if not cur:IsA("ModuleScript") then
+			fail(`{cur:GetFullName()} is a {cur.ClassName}, not a ModuleScript`)
+		end
+		return cur
+	end
+	requireFrom = function(from, target)
+		if type(target) == "string" and tonumber(target) == nil then
+			return env.require(resolvePath(target, from))
+		end
+		return env.require(target)
+	end
 	env.require = function(target)
+		if type(target) == "string" and tonumber(target) == nil then
+			return env.require(resolvePath(target, env.script))
+		end
 		local st = states[target]
+		if st and st.real == hooks.module then
+			error("Requested module was required recursively", 0)
+		end
 		if st and st.real:IsA("ModuleScript") and hooks.execute then
 			return requireSource(st.real, target)
 		end

@@ -310,7 +310,46 @@ if thread then
 		require(1055656097)
 	end)
 	check("require asset id looks for MainModule", not okId and tostring(errId):find("MainModule") ~= nil, errId)
+
+	local pkg = Instance.new("Folder")
+	local a = Instance.new("ModuleScript")
+	a.Name = "A"
+	a.Source = 'return { b = require("@self/B"), c = require("./C"), g = require("@game/ReplicatedStorage/G") }'
+	a.Parent = pkg
+	local b = Instance.new("ModuleScript")
+	b.Name = "B"
+	b.Source = 'return { up = require("../C"), viaDots = require("@self/../../C") }'
+	b.Parent = a
+	local c = Instance.new("ModuleScript")
+	c.Name = "C"
+	c.Source = "return { game = game }"
+	c.Parent = pkg
+	local gm = Instance.new("ModuleScript")
+	gm.Name = "G"
+	gm.Source = "return 'g'"
+	gm.Parent = game:GetService("ReplicatedStorage")
+	local bad = Instance.new("ModuleScript")
+	bad.Name = "Bad"
+	bad.Source = "return ("
+	bad.Parent = pkg
+	local okA, ra = pcall(require, a)
+	check("string require resolves", okA and ra.c == require(c) and ra.b.up == ra.c and ra.b.viaDots == ra.c and ra.g == "g", ra)
+	check("string required module is sandboxed", okA and ra.c.game == game)
+	local badErr = err(require, bad)
+	check("syntax error names module", has(badErr, "Syntax error in required module 'Bad' at line 1"), badErr)
+	check("failed module keeps its error", err(require, bad) == badErr)
+	local missing = Instance.new("ModuleScript")
+	missing.Source = 'return require("@self/Nope")'
+	missing.Parent = pkg
+	check("missing child error", has(err(require, missing), 'could not resolve child component "Nope"'))
+	gm:Destroy()
 end
+
+check("require @self is not the sandbox", has(err(require, "@self"), "recursively"))
+check("require ./ needs a parent", has(err(require, "./image"), "could not get parent of requiring context"))
+check("require needs a prefix", has(err(require, "image"), "valid prefix"))
+check("require unknown alias", has(err(require, "@foo/x"), "not a valid alias"))
+check("require @game non-module", has(err(require, "@game/Workspace"), "not a ModuleScript"))
 
 check("getfenv self is sandbox", getfenv().game == game)
 check("getfenv on foreign fn is sandboxed", getfenv(typeof).game == game, getfenv(typeof).game.PlaceId)
