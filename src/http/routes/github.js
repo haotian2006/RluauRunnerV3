@@ -3,7 +3,7 @@ const { logBot } = require("../../log");
 const { requireSecret } = require("../middleware");
 
 function registerGithubRoutes(app) {
-  // Worker-only, like /asset: the bot does the downloading and building for misc.import.
+  // Worker-only, like /asset: the bot does the downloading and building for io.import.
   app.get("/github", requireSecret, async (req, res) => {
     const url = req.query.url;
     if (typeof url !== "string" || url.length > 2048) {
