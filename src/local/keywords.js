@@ -133,6 +133,11 @@ const BOT_GLOBALS = new Set([
   "BOOT_RESET",
 ]);
 
+// Members of local globals that only the Roblox environment provides (the private LoadEnv).
+const ROBLOX_MEMBERS = {
+  io: new Set(["import", "writeimage"]),
+};
+
 function classifyGlobal(name) {
   if (LOCAL_GLOBALS.has(name)) return null;
   if (ROBLOX_GLOBALS.has(name)) return "roblox";
@@ -144,5 +149,6 @@ module.exports = {
   LOCAL_GLOBALS,
   ROBLOX_GLOBALS,
   BOT_GLOBALS,
+  ROBLOX_MEMBERS,
   classifyGlobal,
 };

@@ -2,9 +2,40 @@
 // string does not match. Every failure falls back to Roblox, which only costs
 // latency; the reverse fails confusingly.
 
-const { classifyGlobal } = require("./keywords");
+const { ROBLOX_MEMBERS, classifyGlobal } = require("./keywords");
 const { parseHotComments } = require("./hotComments");
-const { findUnknownGlobals } = require("../tools/luau");
+const { findUnknownGlobals, generateAST } = require("../tools/luau");
+
+// Uses of Roblox-only members of local globals (io.import), and require() of anything
+// but a string path, which only Roblox can resolve.
+function robloxOnlyUses(ast) {
+  const found = new Set();
+  const walk = (n) => {
+    if (!n || typeof n !== "object") return;
+    if (Array.isArray(n)) {
+      for (const x of n) walk(x);
+      return;
+    }
+    if (n.expr?.type === "AstExprGlobal") {
+      const members = ROBLOX_MEMBERS[n.expr.global];
+      const key =
+        n.type === "AstExprIndexName"
+          ? n.index
+          : n.type === "AstExprIndexExpr" && n.index?.type === "AstExprConstantString"
+            ? n.index.value
+            : null;
+      if (members && key != null && members.has(key)) found.add(`${n.expr.global}.${key}`);
+    }
+    if (n.type === "AstExprCall" && n.func?.type === "AstExprGlobal" && n.func.global === "require") {
+      if (n.args?.[0]?.type !== "AstExprConstantString") found.add("require");
+    }
+    for (const k in n) walk(n[k]);
+  };
+  walk(ast);
+  return [...found];
+}
+
+const MEMBER_HINT = /\b(require|import|writeimage)\b/;
 
 async function classify(source) {
   // Skips analysis if the user explicitly opts in to local execution.
@@ -55,6 +86,23 @@ async function classify(source) {
       detail: null,
       globals,
     };
+  }
+
+  if (MEMBER_HINT.test(source)) {
+    let uses;
+    try {
+      uses = robloxOnlyUses(JSON.parse((await generateAST(source)).output));
+    } catch (err) {
+      return { eligible: false, reason: "analyzer-unavailable", detail: err.message, globals: {} };
+    }
+    if (uses.length > 0) {
+      return {
+        eligible: false,
+        reason: "roblox-only-members",
+        detail: null,
+        globals: Object.fromEntries(uses.map((u) => [u, "roblox"])),
+      };
+    }
   }
 
   return { eligible: true, reason: null, detail: null, globals: {} };
