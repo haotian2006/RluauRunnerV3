@@ -574,6 +574,7 @@ local function runCode(compCode, data)
 	if code:sub(1, 1) == "=" then
 		code = `print({code:sub(2)})`
 	end
+	-- only a guess, for --!nosandbox runs; sandboxed runs ask the sandbox for live connections
 	local foundSignalUsage = false
 	if code:find("connect") or code:find("Connect") or code:find("once") or code:find("Once") then
 		foundSignalUsage = true
@@ -632,11 +633,18 @@ local function runCode(compCode, data)
 	thread.isweb = isweb
 	local maxHeight = isweb and MAX_STR_HEIGHT_WEB or MAX_STR_HEIGHT
 	local runningThreads = {}
+	-- A coroutine that hasn't started, or that yielded itself, runs again only when other
+	-- code resumes it, so on its own it doesn't keep the run alive.
+	local parked = setmetatable({}, { __mode = "k" })
 
 	local function wrapThread(fx)
-		return function(...)
-			local t = fx(...)
-			table.insert(runningThreads, t)
+		return function(f, ...)
+			local t = fx(f, ...)
+			-- the engine leaves a deferred coroutine.close "suspended" forever, and it can't
+			-- run user code (Promise defers one per settled promise)
+			if f ~= coroutine.close then
+				table.insert(runningThreads, t)
+			end
 			return t
 		end
 	end
@@ -644,7 +652,7 @@ local function runCode(compCode, data)
 	local function numRunning()
 		local count = 0
 		for i, v in runningThreads do
-			if coroutine.status(v) ~= "dead" then
+			if coroutine.status(v) ~= "dead" and not parked[v] then
 				count += 1
 			end
 		end
@@ -652,12 +660,20 @@ local function runCode(compCode, data)
 	end
 
 	local function hasRunning()
-		for i, v in runningThreads do
-			if coroutine.status(v) ~= "dead" then
-				return true
-			end
+		return numRunning() > 0
+	end
+
+	local function createParked(fx)
+		if type(fx) ~= "function" then
+			return coroutine.create(fx)
 		end
-		return false
+		local co = coroutine.create(function(...)
+			parked[coroutine.running()] = nil
+			return fx(...)
+		end)
+		parked[co] = true
+		table.insert(runningThreads, co)
+		return co
 	end
 
 	local function stopAll()
@@ -692,10 +708,16 @@ local function runCode(compCode, data)
 		delay = wrapThread(task.delay),
 	}, { __index = task })
 	env.coroutine = setmetatable({
-		create = wrapThread(coroutine.create),
+		create = createParked,
+		yield = function(...)
+			local co = coroutine.running()
+			parked[co] = true
+			local res = table.pack(coroutine.yield(...))
+			parked[co] = nil
+			return table.unpack(res, 1, res.n)
+		end,
 		wrap = function(fx)
-			local co = coroutine.create(fx)
-			table.insert(runningThreads, co)
+			local co = createParked(fx)
 			return function(...)
 				local res = table.pack(coroutine.resume(co, ...))
 				if not res[1] then
@@ -1132,7 +1154,7 @@ local function runCode(compCode, data)
 				(
 					(os.clock() - thread.start < TIMEOUT or numOfResponses < MAX_RESPONSES_BEFORE_TIMEOUT)
 					and sus
-					and (numRunning() > 0 or foundSignalUsage)
+					and (numRunning() > 0 or (if hooks.sandboxBusy then hooks.sandboxBusy() else foundSignalUsage))
 				) or thread.blocked
 			) and not thread.stopped
 		do

@@ -196,6 +196,9 @@ end
 local function localConnect(ls, fn)
 	local entry = { fn = fn }
 	ls.listeners[entry] = true
+	if ls.onConnect then
+		ls.onConnect()
+	end
 	return {
 		Disconnect = function()
 			ls.listeners[entry] = nil
@@ -1092,7 +1095,12 @@ local function connect(s, fn, once)
 		if once then
 			disconnect(conn)
 		end
+		-- a handler still running (or waiting) keeps the run alive; if it errors its thread
+		-- is dead and stops counting
+		local co = coroutine.running()
+		world.handlers[co] = true
 		fn(...)
+		world.handlers[co] = nil
 	end
 	local function fire(...)
 		if isConnected(conn) then
@@ -2586,6 +2594,132 @@ serviceGetters.ScriptContext = {
 	end),
 }
 
+--// RunService frame events. An Open Cloud server only fires Heartbeat, so each world plays
+--// the rest itself in the order a client runs them (measured in Studio): BindToRenderStep
+--// by priority, RenderStepped, PreRender, PreAnimation, Stepped, PreSimulation,
+--// PostSimulation, then the real Heartbeat. Handlers are deferred, and what they defer
+--// runs before the next event, as with deferred SignalBehavior.
+
+local realRunService = realGame:GetService("RunService")
+local FRAME_EVENTS = { "RenderStepped", "PreRender", "PreAnimation", "Stepped", "PreSimulation", "PostSimulation" }
+local DEFER_DEPTH = 4
+-- time() stays 0 on an Open Cloud server; Stepped's time is how long the server has run
+local SERVER_START = os.clock()
+
+local function drainDeferred()
+	local th = coroutine.running()
+	for _ = 1, DEFER_DEPTH do
+		task.defer(th)
+		coroutine.yield()
+	end
+end
+
+local function runState(world)
+	local r = world.run
+	if r then
+		return r
+	end
+	r = { signals = {}, bindings = {}, order = 0, driving = false }
+	world.run = r
+	local function active()
+		if next(r.bindings) then
+			return true
+		end
+		for _, ls in r.signals do
+			if next(ls.listeners) then
+				return true
+			end
+		end
+		return false
+	end
+	local function stage(ls, ...)
+		if next(ls.listeners) then
+			localFire(ls, ...)
+			drainDeferred()
+		end
+	end
+	-- frame N's events run after Heartbeat N-1 and before Heartbeat N
+	function r.start()
+		if r.driving then
+			return
+		end
+		r.driving = true
+		task.spawn(function()
+			while true do
+				local dt = realRunService.Heartbeat:Wait()
+				if not active() then
+					break
+				end
+				if next(r.bindings) then
+					local list = {}
+					for _, b in r.bindings do
+						table.insert(list, b)
+					end
+					table.sort(list, function(a, b)
+						if a.priority ~= b.priority then
+							return a.priority < b.priority
+						end
+						return a.order < b.order
+					end)
+					for _, b in list do
+						task.defer(b.fn, dt)
+					end
+					drainDeferred()
+				end
+				local s = r.signals
+				stage(s.RenderStepped, dt)
+				stage(s.PreRender, dt)
+				stage(s.PreAnimation, dt)
+				stage(s.Stepped, os.clock() - SERVER_START, dt)
+				stage(s.PreSimulation, dt)
+				stage(s.PostSimulation, dt)
+			end
+			r.driving = false
+		end)
+	end
+	for _, name in FRAME_EVENTS do
+		local ls = newLocal()
+		ls.onConnect = r.start
+		r.signals[name] = ls
+	end
+	return r
+end
+
+local function frameSignal(name)
+	return function(st)
+		return signalFor(st, name, function()
+			return makeSignal(st.world, {}, runState(st.world).signals[name], nil, name)
+		end)
+	end
+end
+
+serviceGetters.RunService = {}
+for _, name in FRAME_EVENTS do
+	serviceGetters.RunService[name] = frameSignal(name)
+end
+serviceMethods.RunService = {
+	BindToRenderStep = function(self, name, priority, fn)
+		local world = selfState(self, "BindToRenderStep").world
+		if type(name) ~= "string" then
+			error(`Argument 1 missing or nil`, 0)
+		end
+		if type(priority) ~= "number" then
+			error(`Unable to cast {typeName(priority)} to int`, 0)
+		end
+		if type(fn) ~= "function" then
+			error(`Argument 3 missing or nil`, 0)
+		end
+		local r = runState(world)
+		r.order += 1
+		r.bindings[name] = { priority = priority, fn = fn, order = r.order }
+		r.start()
+	end,
+	UnbindFromRenderStep = function(self, name)
+		local world = selfState(self, "UnbindFromRenderStep").world
+		runState(world).bindings[tostring(name)] = nil
+	end,
+}
+
 local function joinArgs(...)
 	local t = table.pack(...)
 	for i = 1, t.n do
@@ -2877,6 +3011,7 @@ function Sandbox.getWorld(userId)
 		pinned = {},
 		shared = {},
 		conns = {},
+		handlers = setmetatable({}, { __mode = "k" }),
 		rewrites = {},
 		live = 0,
 	}, World)
@@ -2908,6 +3043,9 @@ end
 function World:idle()
 	for conn in self.conns do
 		disconnect(conn)
+	end
+	if self.run then
+		table.clear(self.run.bindings)
 	end
 	for inst in self.pinned do
 		rootWorld[inst] = nil
@@ -2947,6 +3085,22 @@ end
 
 function Context:unwrap(v)
 	return unwrapDeep(self.world, v)
+end
+
+-- Whether user code in this world can still run on its own: a live connection, or an
+-- event handler that hasn't finished.
+function Context:busy()
+	for conn in self.world.conns do
+		if isConnected(conn) then
+			return true
+		end
+	end
+	for co in self.world.handlers do
+		if coroutine.status(co) ~= "dead" then
+			return true
+		end
+	end
+	return self.world.run ~= nil and next(self.world.run.bindings) ~= nil
 end
 
 -- Takes a real instance built outside the sandbox into this world and returns its proxy.
@@ -2992,6 +3146,9 @@ function Context:_apply(env)
 	hooks.onError = function(message, trace)
 		emitLog(world, message, Enum.MessageType.MessageError)
 		localFire(logState(world).err, message, trace, env.script)
+	end
+	hooks.sandboxBusy = function()
+		return self:busy()
 	end
 	world.warn = env.warn
 	env.game = g
