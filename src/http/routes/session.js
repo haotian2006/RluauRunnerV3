@@ -15,19 +15,23 @@ const {
   Inputs,
   RobloxServers,
   getDispatchedTask,
+  nextTaskFor,
   registerRobloxServer,
   reserveNextTask,
   retireRobloxServer,
   state,
   touchRobloxServer,
+  waitForInput,
 } = require("../../state");
 const { requireSecret } = require("../middleware");
 
 const SERVER_NUMBER_MODULO = 256;
+// Cloudflare drops a request after 100s; stay well under it.
+const MAX_INPUT_WAIT_SECONDS = 25;
 
 async function reserveNextAllowedTask(serverId) {
   while (true) {
-    const taskId = Object.keys(ExecuteTasks)[0];
+    const taskId = nextTaskFor(serverId);
     if (!taskId) return null;
 
     const task = ExecuteTasks[taskId];
@@ -125,17 +129,32 @@ function registerSessionRoutes(app) {
       return res.status(400).json({ message: "i must be an array of uids" });
     }
 
-    const data = [];
-    for (const id in Inputs) {
-      if (!interacted.includes(Inputs[id].uid)) {
-        if (!Inputs[id].encoded) {
-          Inputs[id].content = encodeZstd(Inputs[id].input);
-          Inputs[id].encoded = true;
-          delete Inputs[id].input;
-        }
+    const collect = () => {
+      const data = [];
+      for (const id in Inputs) {
+        if (!interacted.includes(Inputs[id].uid)) {
+          if (!Inputs[id].encoded) {
+            Inputs[id].content = encodeZstd(Inputs[id].input);
+            Inputs[id].encoded = true;
+            delete Inputs[id].input;
+          }
 
-        data.push(toWirePayload(Inputs[id]));
+          data.push(toWirePayload(Inputs[id]));
+        }
       }
+      return data;
+    };
+
+    let data = collect();
+    // Long poll: with nothing queued, hold the request until an input arrives so
+    // clicks reach Roblox in one round trip instead of on its next poll.
+    const wait = Number(req.body.wait);
+    if (data.length === 0 && wait > 0) {
+      const aborted = new AbortController();
+      res.on("close", () => aborted.abort());
+      await waitForInput(Math.min(wait, MAX_INPUT_WAIT_SECONDS) * 1000, aborted.signal);
+      if (aborted.signal.aborted) return;
+      data = collect();
     }
     res.json(data);
   });

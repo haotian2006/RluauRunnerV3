@@ -26,6 +26,30 @@ const CompilingTasks = {};
 
 const Inputs = {};
 
+// Roblox holds /getInputs open until something is queued; these wake it.
+const inputWaiters = new Set();
+
+function putInput(entry) {
+  Inputs[entry.uid] = entry;
+  for (const wake of inputWaiters) wake();
+  inputWaiters.clear();
+}
+
+/** Resolves on the next putInput, after `ms`, or when `signal` aborts. */
+function waitForInput(ms, signal) {
+  return new Promise((resolve) => {
+    const done = () => {
+      clearTimeout(timer);
+      inputWaiters.delete(done);
+      signal?.removeEventListener("abort", done);
+      resolve();
+    };
+    const timer = setTimeout(done, ms);
+    inputWaiters.add(done);
+    signal?.addEventListener("abort", done);
+  });
+}
+
 const ScriptButtonCallbacks = new Map();
 
 const docCodeStore = {};
@@ -63,6 +87,9 @@ function registerRobloxServer(serverId, now = Date.now()) {
     outageRecorded: false,
     retiring: false,
     activeTaskIds: new Set(),
+    // Set by the first task it takes. --!nosandbox runs get the real DataModel,
+    // so they never share a server with sandboxed runs.
+    mode: null,
   };
   RobloxServers[serverId] = server;
   return server;
@@ -145,11 +172,30 @@ function dispatchTask(uuid, serverId = state.RunningServer) {
   return DispatchedTasks[uuid];
 }
 
-function reserveNextTask(serverId) {
+function taskMode(task) {
+  return task?.nosandbox ? "nosandbox" : "sandbox";
+}
+
+function canServe(server, task) {
+  return !server.mode || server.mode === taskMode(task);
+}
+
+function nextTaskFor(serverId) {
   const server = RobloxServers[serverId];
   if (!server || server.retiring) return null;
-  const uuid = Object.keys(ExecuteTasks)[0];
-  if (!uuid || !dispatchTask(uuid, serverId)) return null;
+  for (const [uuid, task] of Object.entries(ExecuteTasks)) {
+    if (canServe(server, task)) return uuid;
+  }
+  return null;
+}
+
+function reserveNextTask(serverId) {
+  const server = RobloxServers[serverId];
+  const uuid = nextTaskFor(serverId);
+  if (!uuid) return null;
+  const mode = taskMode(ExecuteTasks[uuid]);
+  if (!dispatchTask(uuid, serverId)) return null;
+  server.mode = mode;
   server.activeTaskIds.add(uuid);
   return uuid;
 }
@@ -218,11 +264,16 @@ function takeUnfinishedTasksForServer(serverId) {
 }
 
 module.exports = {
+  canServe,
+  nextTaskFor,
+  taskMode,
   state,
   SECRET_TOKEN,
   ExecuteTasks,
   CompilingTasks,
   Inputs,
+  putInput,
+  waitForInput,
   ScriptButtonCallbacks,
   docCodeStore,
   docPreviewStore,

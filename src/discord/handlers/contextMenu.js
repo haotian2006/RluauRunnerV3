@@ -4,7 +4,7 @@ const { MAX_DATA_TO_SEND } = require("../../config");
 const { encodeZstd } = require("../../chunks");
 const { log, logBot } = require("../../log");
 const { deliverLocalInput } = require("../../local/dispatch");
-const { Inputs, docPreviewStore } = require("../../state");
+const { Inputs, docPreviewStore, putInput } = require("../../state");
 const { generateUUID } = require("../../util");
 const { analyzeLuau, formatLuau, generateAST } = require("../../tools/luau");
 const {
@@ -50,11 +50,11 @@ async function handleInputContext(interaction) {
       }
 
       const uid = generateUUID();
-      Inputs[uid] = {
+      putInput({
         uid: uid,
         id: interaction.user.id,
         input: input,
-      };
+      });
       deliverLocalInput(interaction.user.id, input);
 
       log(

@@ -1,4 +1,5 @@
 const { encodeZstd } = require("../chunks");
+const { parseHotComments } = require("../local/hotComments");
 const { codeHash, getActorBlock } = require("../abuse");
 const { closeSession, getSession, openSession } = require("../core/sessions");
 const { selectRuntime, tryRunLocally } = require("../local/dispatch");
@@ -143,6 +144,7 @@ async function sendCompileRequestToRoblox(
     actorKey,
     codeHash: codeHash(code),
     isCommand: isCommand,
+    nosandbox: parseHotComments(code).nosandbox,
   };
 }
 

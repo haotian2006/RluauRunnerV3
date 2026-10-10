@@ -56,6 +56,9 @@ function createResponseEmbed(
       : serverNum === "Lune"
         ? "Lune"
         : `Server #${serverNum}`;
+  // Discord fails to render a masked link placed before some ansi blocks, so
+  // it only goes there when the title link is taken.
+  const inlineRaw = msgLink && sourceUrl ? ` | [see raw](${sourceUrl})` : "";
   const embed = new EmbedBuilder()
     .setTitle(
       runtimeLabel
@@ -63,7 +66,7 @@ function createResponseEmbed(
         : "Luau Compiler Results",
     )
     .setDescription(
-      `Requested by: <@${userId}>${sourceUrl ? ` | [see raw](${sourceUrl})` : ""}` +
+      `Requested by: <@${userId}>${inlineRaw}\n` +
         describeBody(responseContent, isLast),
     )
     .setColor(0x8ce4ff);
@@ -73,8 +76,8 @@ function createResponseEmbed(
     embed.setColor(3447003);
   }
 
-  if (msgLink) {
-    embed.setURL(msgLink);
+  if (msgLink || sourceUrl) {
+    embed.setURL(msgLink || sourceUrl);
   }
 
   return embed;

@@ -6,6 +6,7 @@ const {
 } = require("../abuse");
 const { MAX_DATA_TO_SEND, TRUST_PROXY } = require("../config");
 const { encodeZstd } = require("../chunks");
+const { parseHotComments } = require("../local/hotComments");
 const { closeSession, getSession, openSession } = require("../core/sessions");
 const {
   cancelLocalRun,
@@ -17,7 +18,7 @@ const { ROBLOX_KEY, limiterKey } = require("../origin");
 const { safeMessage } = require("../sanitize");
 const { log } = require("../log");
 const { record } = require("../metrics");
-const { ExecuteTasks, Inputs } = require("../state");
+const { ExecuteTasks, Inputs, putInput } = require("../state");
 const { getByteCodeOptions } = require("../tools/bytecode");
 const { compileLuau, formatLuau, generateAST } = require("../tools/luau");
 const { generateUUID } = require("../util");
@@ -93,7 +94,7 @@ function clearAllPendingUploads(token) {
 function queueInput(token, value) {
   deliverLocalInputToToken(token, value);
   const uid = generateUUID();
-  Inputs[uid] = { uid, id: token, input: value };
+  putInput({ uid, id: token, input: value });
   setTimeout(() => delete Inputs[uid], INPUT_TTL_MS);
 }
 
@@ -321,6 +322,7 @@ function registerWebRoutes(app) {
       codeHash: codeHash(code),
       isCommand: false,
       isWeb: true,
+      nosandbox: parseHotComments(code).nosandbox,
     };
 
     let timeoutId;
@@ -461,6 +463,50 @@ function registerWebRoutes(app) {
     endWebSession(token, "Stopped by user");
 
     res.json({ message: "Stopped" });
+  });
+
+  app.post("/button/:token", (req, res) => {
+    record("web", "button");
+    const token = req.params.token;
+    const session = getSession(token);
+    if (!session?.responder.clickButton) {
+      return res.status(404).json({ error: "Session not found" });
+    }
+
+    const anonIp = callerFor(req).label;
+    const rate = checkInputRate(`web:${anonIp}`, "input");
+    if (!rate.allowed) {
+      record("limited", "input");
+      return res.status(429).json({
+        error: `Rate limit: max ${rate.limit} inputs per ${Math.round(INPUT_WINDOW_MS / 1000)}s. Try again in ${Math.ceil(rate.remainingMs / 1000)} seconds.`,
+      });
+    }
+
+    const { buttonId } = req.body || {};
+    const target = typeof buttonId === "string" ? session.responder.clickButton(buttonId) : null;
+    if (!target) {
+      return res.status(410).json({ error: "This button has expired" });
+    }
+
+    // The clicker is the page that owns the token, the same identity the run
+    // sees as user.UserId / user.Name.
+    const click = { buttonId, userId: token, username: anonIp };
+    if (typeof target.onClick === "function") {
+      target.onClick(click);
+    } else {
+      const uid = generateUUID();
+      putInput({
+        uid,
+        id: token,
+        input: "",
+        buttonId,
+        targetProcessId: target.processId,
+        clickUserId: click.userId,
+        clickUsername: click.username,
+      });
+      setTimeout(() => delete Inputs[uid], INPUT_TTL_MS);
+    }
+    res.json({ message: "Clicked" });
   });
 
   app.post("/input/:token", (req, res) => {

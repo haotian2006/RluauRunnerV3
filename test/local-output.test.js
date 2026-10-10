@@ -245,11 +245,11 @@ test(
 );
 
 test(
-  "Lune discord buttons reject web runs",
+  "Lune discord buttons work on web runs",
   { skip: !fs.existsSync(PATH_TO_LUNE), timeout: 10_000 },
   async () => {
     const events = [];
-    const result = await runLocal('discord.button("No")', {
+    const result = await runLocal('discord.button("Yes")', {
       isWeb: true,
       timeoutMs: 5_000,
       onEvent(event) {
@@ -257,7 +257,48 @@ test(
       },
     });
 
-    assert.equal(result.scriptErrored, true);
-    assert.match(events[0].v, /only available for runs started from Discord/);
+    assert.equal(result.ok, true);
+    assert.equal(events[0].t, "button");
+    assert.equal(events[0].action, "create");
+    assert.equal(events[0].label, "Yes");
+  },
+);
+
+test(
+  "Lune print inside a user coroutine does not consume a resume",
+  { skip: !fs.existsSync(PATH_TO_LUNE), timeout: 10_000 },
+  async () => {
+    const events = [];
+    const result = await runLocal(
+      `local co = coroutine.create(function()
+	print("hey")
+	coroutine.yield()
+	print("sup")
+end)
+print(coroutine.status(co))
+coroutine.resume(co)
+print(coroutine.status(co))
+coroutine.resume(co)
+print(coroutine.status(co))
+local w = coroutine.wrap(function()
+	print("a")
+	coroutine.yield(1)
+	print("b")
+	return 2
+end)
+print(w(), w())`,
+      {
+        timeoutMs: 5_000,
+        onEvent(event) {
+          events.push(event);
+        },
+      },
+    );
+
+    assert.equal(result.ok, true);
+    assert.deepEqual(
+      events.filter((e) => e.t === "out").map((e) => e.v.trim()),
+      ["suspended", "hey", "suspended", "sup", "dead", "a", "b", "1 2"],
+    );
   },
 );

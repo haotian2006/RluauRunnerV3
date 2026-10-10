@@ -102,7 +102,7 @@ const ROBLOX_GLOBALS = new Set([
 ]);
 
 const BOT_GLOBALS = new Set([
-  // LuauBot.luau
+  // roblox/LuauBot.luau
   "discord",
   "log",
   "colorstring",
@@ -126,6 +126,11 @@ const BOT_GLOBALS = new Set([
   "ask",
   "matchcodeblock",
   "GLOBAL",
+  // roblox/Sandbox.luau
+  "firesignal",
+  "fireevent",
+  // roblox/LoadEnv.luau (--!nosandbox only)
+  "BOOT_RESET",
 ]);
 
 function classifyGlobal(name) {

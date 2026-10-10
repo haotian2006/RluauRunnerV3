@@ -7,6 +7,7 @@ const {
   CompilingTasks,
   ExecuteTasks,
   Inputs,
+  putInput,
 } = require("../../state");
 const { generateUUID, wait } = require("../../util");
 const {
@@ -83,11 +84,11 @@ async function handleInputCommand(interaction) {
     ? STOP_SENTINEL
     : interaction.options.getString("input") || "";
   const uid = generateUUID();
-  Inputs[uid] = {
+  putInput({
     uid: uid,
     id: interaction.user.id,
     input: input,
-  };
+  });
   if (!isStop) deliverLocalInput(interaction.user.id, input);
 
   // Unawaited on purpose, so a rejection here must be caught: an echo over

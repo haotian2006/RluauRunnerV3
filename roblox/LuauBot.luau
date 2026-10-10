@@ -9,6 +9,15 @@ local MAX_RESPONSES_BEFORE_TIMEOUT = 50
 local FILE_CHUNK_SIZE = 1024 * 90 -- 90 KB
 local MAX_FILE_SIZE = 10 * 1024 * 1024 -- 10 MB
 local MAX_WRITE_FILES = 8 -- max files queued via io.writefile
+local WEB_INLINE_FILE_SIZE = 1024 * 1024 -- web frames up to this size skip the chunk upload
+local WEB_MAX_FRAMES_IN_FLIGHT = 2 -- overlapping uploads so one round trip doesn't cap the frame rate
+local INPUT_WAIT_SECONDS = 20 -- the server holds /getInputs open this long when nothing is queued
+-- Roblox allows 500 HTTP requests per rolling minute per server. A bucket lets
+-- through at most burst + 60 * rate in any minute (60 + 420 = 480 here), and live
+-- output can't dip into the reserve, so polling and inputs always get through.
+local HTTP_RATE_PER_SECOND = 7
+local HTTP_BURST = 60
+local HTTP_RESERVED = 20
 
 --[[
 	Takes in the number of responses sent so far and returns how often should the next update be sent.
@@ -17,9 +26,9 @@ local function UPDATE_INTERVAL_SCALE(count, isweb)
 	if count <= 10 then
 		return 0.1
 	end
-	-- Discord rate limits edits; the web stream has no such cost.
+	-- Discord rate limits edits; the web stream is bounded only by the HTTP budget.
 	if isweb then
-		return 0.25
+		return 0.1
 	end
 	if count <= 25 then
 		return 0.25
@@ -38,11 +47,39 @@ local ScriptContext = game:GetService("ScriptContext")
 local ServerId = Https:GenerateGUID()
 local Closed = false
 local Processes = {}
+local ProcessHooks = {} -- not reachable from user code, unlike thread
 local ProcessesByUser = {}
 local UserGlobals = {}
 
 local encoder = function(data)
 	return Https:JSONEncode(data)
+end
+
+local httpTokens = HTTP_BURST
+local httpRefilledAt = os.clock()
+local function takeHttpBudget(optional)
+	local floor = if optional then HTTP_RESERVED else 0
+	while true do
+		local now = os.clock()
+		httpTokens = math.min(HTTP_BURST, httpTokens + (now - httpRefilledAt) * HTTP_RATE_PER_SECOND)
+		httpRefilledAt = now
+		if httpTokens >= floor + 1 then
+			httpTokens -= 1
+			return
+		end
+		task.wait(0.05)
+	end
+end
+
+local function request(options)
+	takeHttpBudget(false)
+	return Https:RequestAsync(options)
+end
+
+-- Live output updates back off first when the budget runs low.
+local function outputRequest(options)
+	takeHttpBudget(true)
+	return Https:RequestAsync(options)
 end
 
 local function makeHeaders()
@@ -53,7 +90,7 @@ local function makeHeaders()
 end
 
 local function sendDebug(message)
-	Https:RequestAsync({
+	request({
 		Url = IP .. "/debug",
 		Method = "POST",
 		Headers = makeHeaders(),
@@ -222,7 +259,7 @@ local function sendFileInChunks(interactionToken, fileId, data)
 					index = i - 1,
 				}),
 			}
-			attemptRequest(0.5, 5, Https.RequestAsync, Https, requestData)
+			attemptRequest(0.5, 5, outputRequest, requestData)
 			task.wait(0.1)
 		end
 		SendingChunks[interactionToken] = nil
@@ -255,7 +292,8 @@ local function respondToInteraction(interactionToken, responseContent, logs, awa
 	local sections = nil
 	if logs and logs ~= "" then
 		logs = encode(logs)
-		if #logs > 10000 and #logs < MAX_FILE_SIZE then
+		local inlineLimit = if WebTokens[interactionToken] then WEB_INLINE_FILE_SIZE else 10000
+		if #logs > inlineLimit and #logs < MAX_FILE_SIZE then
 			sections = sendFileInChunks(interactionToken, fileId, logs)
 			logs = encode("[Log too large to send]")
 		elseif #logs >= MAX_FILE_SIZE then
@@ -280,12 +318,13 @@ local function respondToInteraction(interactionToken, responseContent, logs, awa
 			followUp = followUp,
 		}),
 	}
+	local send = if finished then request else outputRequest
 	local a = function()
 		local sus, msg
 		if logs then
-			sus, msg = attemptRequest(0.5, 5, Https.RequestAsync, Https, requestData)
+			sus, msg = attemptRequest(0.5, 5, send, requestData)
 		else
-			sus, msg = pcall(Https.RequestAsync, Https, requestData)
+			sus, msg = pcall(send, requestData)
 		end
 		if not sus then
 			warn(msg)
@@ -315,14 +354,20 @@ if smt then
 	smt:Destroy()
 end
 
-local function executeCode(id, code, env, thread, delay)
-	local m = Instance.new("ModuleScript")
+local function executeCode(id, code, env, thread, delay, m, asFunction)
+	m = m or Instance.new("ModuleScript")
 	local imports = ""
-	local updates = ""
 	local checks = ""
+	local usesTypeof = code:find("typeof", 1, true) ~= nil
+	local usesFenv = code:find("getfenv", 1, true) ~= nil
 	for k in env do
+		if k == "typeof" and not usesTypeof then
+			continue
+		end
+		if k == "getfenv" and not usesFenv then
+			continue
+		end
 		imports ..= `{k} = imports.{k};`
-		updates ..= `imports.{k} = {k};`
 		checks ..= `if _c.{k} ~= {k} then imports.{k} = {k}; end; {k} = imports.{k} _c.{k} = {k};`
 	end
 	local fs = {}
@@ -340,11 +385,11 @@ local function executeCode(id, code, env, thread, delay)
 	end
 	env.optimize = optimize or 2
 
-	updates =
-		`local _ = coroutine.running();task.spawn(function()local _c = {"{}"}local _=_ while coroutine.status(_) ~= 'dead' do {checks} task.wait();end;end);`
+	local updates = `local _c = {"{}"} __rluauSync(function() {checks} end, coroutine.running());`
 	local header = #fs == 0 and "" or (table.concat(fs, "\n") .. "\n")
-	local src =
-		`{header}return function(imports){imports}{updates}return function() return (function (...) --[[START OF CODE]] {code}\n--[[END OF CODE]]\nend)()\n\n\t\t\n\n\tend\nend`
+	local src = if asFunction
+		then `{header}return function(imports, __rluauSync){imports}{updates}return function(...) --[[START OF CODE]] {code}\n--[[END OF CODE]]\nend\nend`
+		else `{header}return function(imports, __rluauSync){imports}{updates}return function() return (function (...) --[[START OF CODE]] {code}\n--[[END OF CODE]]\nend)()\n\n\t\t\n\n\tend\nend`
 
 	local pass, fx = pcall(function()
 		m.Source = src
@@ -379,7 +424,7 @@ local function getContentFromChunks(chunks)
 	local failed = false
 	for i = 1, #chunks do
 		task.spawn(function()
-			local pass, response = attemptRequest(0.5, 4, HttpService.RequestAsync, HttpService, {
+			local pass, response = attemptRequest(0.5, 4, request, {
 				Url = IP .. "/chunk",
 				Method = "POST",
 				Headers = makeHeaders(),
@@ -434,6 +479,21 @@ local function normalizeQuotes(str)
 	return table.concat(out)
 end
 
+local function hasHotComment(code, name)
+	for line in code:gmatch("[^\r\n]*") do
+		line = line:match("^%s*(.-)%s*$")
+		if line ~= "" then
+			if line:sub(1, 2) ~= "--" then
+				return false
+			end
+			if line == "--!" .. name then
+				return true
+			end
+		end
+	end
+	return false
+end
+
 local function runCode(compCode, data)
 	local decodePass, code = decodeZstd(compCode)
 	if not decodePass then
@@ -455,7 +515,37 @@ local function runCode(compCode, data)
 		foundSignalUsage = true
 	end
 	local processID = game:GetService("HttpService"):GenerateGUID(false)
+	local id = "RluauRunnerV3|PROCESS|" .. processID .. "|"
 	local env = {}
+	local hooks = {
+		processId = processID,
+		onCleanup = {},
+		sandbox = not hasHotComment(code, "nosandbox"),
+		module = Instance.new("ModuleScript"),
+	}
+	local syncs = {}
+	local syncRunning = false
+	local function registerSync(fn, th)
+		table.insert(syncs, { fn, th })
+		if syncRunning then
+			return
+		end
+		syncRunning = true
+		task.spawn(function()
+			while #syncs > 0 do
+				for i = #syncs, 1, -1 do
+					local s = syncs[i]
+					if coroutine.status(s[2]) == "dead" then
+						table.remove(syncs, i)
+					else
+						s[1]()
+					end
+				end
+				task.wait()
+			end
+			syncRunning = false
+		end)
+	end
 	local lastOutput = ""
 	local start = os.clock() + 3
 	local thread = {}
@@ -538,8 +628,15 @@ local function runCode(compCode, data)
 	env.coroutine = setmetatable({
 		create = wrapThread(coroutine.create),
 		wrap = function(fx)
-			fx = coroutine.wrap(fx)
-			return wrapThread(fx)
+			local co = coroutine.create(fx)
+			table.insert(runningThreads, co)
+			return function(...)
+				local res = table.pack(coroutine.resume(co, ...))
+				if not res[1] then
+					error(res[2], 2)
+				end
+				return table.unpack(res, 2, res.n)
+			end
 		end,
 	}, { __index = coroutine })
 	env._G = userGlobal
@@ -622,14 +719,39 @@ local function runCode(compCode, data)
 			table.clear(output)
 		end,
 	}
-	env.loadstring = function(...)
-		local f, e = loadstring(...)
-		if f then
-			local meta = setmetatable(env, { __index = getfenv() })
-			setfenv(f, meta)
+	local loadCache = {}
+	local loadModules = {}
+	env.loadstring = function(src, chunkname)
+		if type(src) ~= "string" then
+			return loadstring(src, chunkname)
 		end
-		return f, e
+		local chunk = id
+		if chunkname ~= nil then
+			local cleaned = tostring(chunkname):gsub("[^%w%-_]", "")
+			if cleaned ~= "" then
+				chunk ..= cleaned .. "|"
+			end
+		end
+		local key = chunk .. "\0" .. src
+		local cached = loadCache[key]
+		if cached then
+			return cached
+		end
+		local f, e = loadstring(src, chunk)
+		if not f then
+			return nil, cleanChunkNames(e)
+		end
+		local factory, m = executeCode(chunk, src, env, thread, 0, nil, true)
+		table.insert(loadModules, m)
+		f = factory(env, registerSync)
+		loadCache[key] = f
+		return f
 	end
+	table.insert(hooks.onCleanup, function()
+		for _, m in loadModules do
+			m:Destroy()
+		end
+	end)
 
 	env.colorstring = function(text, color)
 		color = color or ""
@@ -689,7 +811,6 @@ local function runCode(compCode, data)
 			noTimeStamp and createText(text, 2) .. "\n" or createText(string.format(`[%.3f] %s\n`, time, text), 2)
 		)
 	end
-	local id = "RluauRunnerV3|PROCESS|" .. processID .. "|"
 
 	local function requestButton(action, buttonId, changes)
 		local body = {
@@ -702,7 +823,7 @@ local function runCode(compCode, data)
 			body[key] = value
 		end
 
-		local success, response = attemptRequest(0.25, 3, Https.RequestAsync, Https, {
+		local success, response = attemptRequest(0.25, 3, request, {
 			Url = IP .. "/button",
 			Method = "PATCH",
 			Headers = makeHeaders(),
@@ -734,9 +855,6 @@ local function runCode(compCode, data)
 	discord.isWeb = isweb
 
 	discord.button = function(options)
-		if isweb then
-			error("discord.button is only available for runs started from Discord", 2)
-		end
 		if type(options) == "string" then
 			options = { Label = options }
 		elseif type(options) ~= "table" then
@@ -825,21 +943,53 @@ local function runCode(compCode, data)
 		local m
 		fx, m = executeCode(chunk, code, env, thread, 0)
 		return function()
-			fx = fx(env)
+			fx = fx(env, registerSync)
 			return fx()
 		end, m
+	end
+	hooks.execute = function(name, source, moduleEnv)
+		local chunk = id
+		local cleaned = tostring(name):gsub("[^%w%-_]", "")
+		if cleaned ~= "" then
+			chunk ..= cleaned .. "|"
+		end
+		local fx, err = loadstring(source, chunk)
+		if not fx then
+			return false, err
+		end
+		local factory, m = executeCode(chunk, source, moduleEnv, thread, 0)
+		table.insert(loadModules, m)
+		return function()
+			return factory(moduleEnv, registerSync)()
+		end
 	end
 
 	env.TIMEOUT = DEFAULT_TIMEOUT
 
 	local l_sus, l_err = pcall(function()
 		if loadEnv then
-			loadEnv(thread, env)
+			loadEnv(thread, env, hooks)
 		end
 	end)
 
 	if not l_sus then
 		table.insert(thread.output, createText(`Error loading environment: {l_err}`, 3) .. "\n")
+	end
+	if hooks.sandboxExpected and not hooks.sandboxApplied then
+		local reason = if l_sus then "" else `: {cleanChunkNames(tostring(l_err))}`
+		respondToInteraction(
+			data.token,
+			`The sandbox failed to load, so the code was not run{reason}`,
+			nil,
+			nil,
+			nil,
+			true
+		)
+		for _, fn in hooks.onCleanup do
+			pcall(fn)
+		end
+		hooks.module:Destroy()
+		return false
 	end
 	-- env.error = function(msg, context)
 	-- 	local time = os.clock() - start
@@ -866,10 +1016,14 @@ local function runCode(compCode, data)
 				"Detected code block in command ['``lua {CODE} ``']. Remove code block or use an application command instead.\n"
 		end
 		respondToInteraction(data.token, warning .. err:match(":(%d+: .+)"), nil, nil, nil, true)
+		for _, fn in hooks.onCleanup do
+			pcall(fn)
+		end
+		hooks.module:Destroy()
 		return false
 	end
 	local module
-	fx, module = executeCode(id, code, env, thread)
+	fx, module = executeCode(id, code, env, thread, nil, hooks.module)
 	thread.module = module
 
 	if isCommand and code:find("%-%-") then
@@ -882,12 +1036,13 @@ local function runCode(compCode, data)
 	task.wait(0.1)
 
 	Processes[processID] = thread
+	ProcessHooks[processID] = hooks
 
 	thread.start = os.clock()
 	start = thread.start
 	local sus, msg = true, nil
 	thread.running = task.defer(function()
-		sus, msg = pcall(fx, env)
+		sus, msg = pcall(fx, env, registerSync)
 		if sus then
 			sus, msg = pcall(msg)
 			task.wait(EXECUTION_SETTLE_DELAY)
@@ -902,6 +1057,7 @@ local function runCode(compCode, data)
 	task.wait(0.5)
 	local numOfResponses = 0
 	local lastSentFiles = {} -- {[fileType] = lastSentData}
+	local framesInFlight = 0
 	thread.timeOutThread = task.spawn(function()
 		local waitTime = 0
 		local TIMEOUT = env.TIMEOUT
@@ -933,22 +1089,30 @@ local function runCode(compCode, data)
 				local followUp = thread.followUp
 				thread.followUp = false
 				local sentAny = false
+				local deferred = false
 				for _, file in thread.files do
 					if lastSentFiles[file.fileType] ~= file.data then
-						respondToInteraction(
-							data.token,
-							truncated,
-							file.data,
-							true,
-							file.fileType,
-							nil,
-							not sentAny and followUp or false
-						)
-						lastSentFiles[file.fileType] = file.data
+						local frame, fileType = file.data, file.fileType
+						local followUpNow = not sentAny and followUp or false
+						if not isweb then
+							respondToInteraction(data.token, truncated, frame, true, fileType, nil, followUpNow)
+						elseif framesInFlight < WEB_MAX_FRAMES_IN_FLIGHT then
+							-- The server drops an older frame that lands after a newer one.
+							framesInFlight += 1
+							task.spawn(function()
+								pcall(respondToInteraction, data.token, truncated, frame, true, fileType, nil, followUpNow)
+								framesInFlight -= 1
+							end)
+						else
+							-- Both uploads are busy; this frame goes out with a later update.
+							deferred = true
+							continue
+						end
+						lastSentFiles[fileType] = frame
 						sentAny = true
 					end
 				end
-				if not sentAny then
+				if not sentAny and not deferred then
 					respondToInteraction(data.token, truncated, "", nil, nil, nil, followUp)
 				end
 			end
@@ -968,6 +1132,9 @@ local function runCode(compCode, data)
 			else
 				errorMessage = cleanChunkNames(errorMessage)
 				table.insert(thread.output, createText(str .. errorMessage, 3))
+				if hooks.onError then
+					pcall(hooks.onError, errorMessage, "")
+				end
 			end
 		elseif (env :: any).TIMESTAMP ~= false then
 			table.insert(
@@ -1042,11 +1209,15 @@ local function runCode(compCode, data)
 		respondToInteraction(data.token, truncated, log or "", nil, log and "log.ansi", time, thread.followUp)
 
 		Processes[processID] = nil
+		ProcessHooks[processID] = nil
 		ProcessesByUser[userid][processID] = nil
 		WebTokens[data.token] = nil
 		--// ![AFAIK] theres no way to fully cleanup a thread (this included sub-threads). If this was in a live environment I could execute it from a script and destroy it later but
 		--// for now we just have to keep the sub-threads running. Either way, this session only runs for a max of 5 mins.
 		--// 10/30/25, wrapped tasks and coroutine creations to be tracked and closed on script end.
+		for _, fn in hooks.onCleanup do
+			pcall(fn)
+		end
 		module:Destroy()
 	end)
 
@@ -1072,15 +1243,16 @@ local function handleRequest(decodedData)
 end
 
 local processedInputs = {}
+-- Returns whether any input arrived.
 local function handleInputs()
-	local res = Https:RequestAsync({
+	local res = request({
 		Url = IP .. "/getInputs",
 		Method = "POST",
 		Headers = makeHeaders(),
-		Body = encoder({ i = processedInputs }),
+		Body = encoder({ i = processedInputs, wait = INPUT_WAIT_SECONDS }),
 	})
 	if res.StatusCode ~= 200 then
-		return
+		return false
 	end
 	local decodedData: { { content: string, id: number, uid: string } } = Https:JSONDecode(res.Body)
 	for _, data in decodedData do
@@ -1118,10 +1290,11 @@ local function handleInputs()
 			end
 		end)
 	end
+	return #decodedData > 0
 end
 
 local function poll()
-	local res = Https:RequestAsync({
+	local res = request({
 		Url = IP .. "/getNext",
 		Method = "POST",
 		Headers = makeHeaders(),
@@ -1140,7 +1313,7 @@ local function poll()
 end
 
 local function notifyClosing(reason)
-	pcall(Https.RequestAsync, Https, {
+	pcall(request, {
 		Url = IP .. "/retire",
 		Method = "POST",
 		Headers = makeHeaders(),
@@ -1153,6 +1326,10 @@ ScriptContext.Error:Connect(function(err, stackTrace)
 	local process = stackTrace:match("RluauRunnerV3|PROCESS|([%w%-]+)|")
 	if process then
 		sendMessageTo(process, `{msg}`)
+		local h = ProcessHooks[process]
+		if h and h.onError then
+			pcall(h.onError, msg, cleanChunkNames(stackTrace))
+		end
 	end
 end)
 
@@ -1172,7 +1349,7 @@ local function start(ip, secretToken)
 	ready = true
 	IP = ip or IP
 	task.wait()
-	local res = Https:RequestAsync({
+	local res = request({
 		Url = IP .. "/start",
 		Method = "POST",
 		Headers = makeHeaders(),
@@ -1187,8 +1364,13 @@ local function start(ip, secretToken)
 
 	task.spawn(function()
 		while true do
-			pcall(handleInputs)
-			task.wait(POLL_RATE / 1000)
+			local started = os.clock()
+			local ok, received = pcall(handleInputs)
+			-- A held request returns once input arrives or the wait runs out. A quick
+			-- empty or failed one means it wasn't held, so fall back to polling.
+			if not ok or (not received and os.clock() - started < 1) then
+				task.wait(POLL_RATE / 1000)
+			end
 		end
 	end)
 
