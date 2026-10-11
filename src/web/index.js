@@ -30,6 +30,7 @@ const {
   checkFormatDebounce,
   checkPollRate,
   checkRunRate,
+  runRateRetryMs,
   checkToolDebounce,
   checkToolRate,
   describeSubmission,
@@ -276,11 +277,14 @@ function registerWebRoutes(app) {
     const poll = stream === false;
 
     const { key: callerKey, label: anonIp } = callerFor(req);
+    // retryAfter (seconds) lets the playground count down instead of guessing.
     if (!checkRunRate(callerKey)) {
       record("limited", "run");
+      const retryAfter = Math.ceil(runRateRetryMs(callerKey) / 1000);
       return res
         .status(429)
-        .json({ error: `Rate limit: max ${RUN_RATE_LIMIT} runs/min` });
+        .set("Retry-After", String(retryAfter))
+        .json({ error: `Rate limit: max ${RUN_RATE_LIMIT} runs/min. Try again in ${retryAfter} seconds.`, retryAfter });
     }
 
     const selection = await selectRuntime(code);
@@ -288,8 +292,10 @@ function registerWebRoutes(app) {
     let actorKey = `web:${anonIp}:${selection.runtime}`;
     const block = getActorBlock(actorKey);
     if (block) {
-      return res.status(429).json({
-        error: `Failed to start. Try again in ${Math.ceil(block.remainingMs / 1000)} seconds.`,
+      const retryAfter = Math.ceil(block.remainingMs / 1000);
+      return res.status(429).set("Retry-After", String(retryAfter)).json({
+        error: `Failed to start. Try again in ${retryAfter} seconds.`,
+        retryAfter,
       });
     }
 

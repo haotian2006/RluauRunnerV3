@@ -34,6 +34,13 @@ function checkRunRate(ip) {
   return true;
 }
 
+// How long until a limited caller's run window resets; 0 when they aren't limited.
+function runRateRetryMs(ip) {
+  const entry = runRates.get(ip);
+  if (!entry || entry.count < RUN_RATE_LIMIT) return 0;
+  return Math.max(0, entry.resetAt - Date.now());
+}
+
 // One caller may not hold a compiler slot back to back, and may not spend more
 // than TOOL_RATE_LIMIT of them a minute. Each tool carries its own budget.
 function checkToolDebounce(ip, tool) {
@@ -130,6 +137,7 @@ module.exports = {
   TOOL_RATE_LIMIT,
   POLL_RATE_LIMIT,
   checkRunRate,
+  runRateRetryMs,
   checkPollRate,
   checkFormatDebounce,
   checkToolDebounce,

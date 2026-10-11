@@ -71,6 +71,8 @@ test("web /run rejects Roblox execution while its Roblox key is blocked", async 
     const body = await response.json();
     assert.equal(response.status, 429);
     assert.match(body.error, /^Failed to start\. Try again in \d+ seconds\.$/);
+    assert.ok(body.retryAfter > 0);
+    assert.equal(response.headers.get("retry-after"), String(body.retryAfter));
   } finally {
     await new Promise((resolve, reject) => {
       server.close((error) => (error ? reject(error) : resolve()));
