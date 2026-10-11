@@ -1253,19 +1253,26 @@ end
 common("GetFullName", function(self)
 	return virtualFullName(selfState(self, "GetFullName"))
 end)
+-- Like the engine, nil is an answer rather than an error: everything is a descendant of nil and
+-- nothing is its ancestor (UI libraries pass "the object under the mouse", which can be nil).
 common("IsDescendantOf", function(self, other)
 	local st = selfState(self, "IsDescendantOf")
-	if other == nil or not states[other] then
-		error("Argument 1 missing or nil", 0)
+	if other == nil then
+		return true
+	elseif not states[other] then
+		error("Unable to cast value to Object", 0)
 	end
 	return isAncestorProxy(other, st)
 end)
 common("isDescendantOf", ownedMethods.IsDescendantOf)
 common("IsAncestorOf", function(self, other)
 	selfState(self, "IsAncestorOf")
-	local ost = other ~= nil and states[other]
+	if other == nil then
+		return false
+	end
+	local ost = states[other]
 	if not ost then
-		error("Argument 1 missing or nil", 0)
+		error("Unable to cast value to Object", 0)
 	end
 	return isAncestorProxy(self, ost)
 end)
@@ -2681,6 +2688,66 @@ local function constant(v)
 	end
 end
 
+-- The engine's GetGuiObjectsAtPosition is locked to Roblox scripts on the ScreenGui underneath, so
+-- the mock PlayerGui hit-tests itself: visible GuiObjects holding the point, topmost first.
+local function guiObjectsAt(st, x, y)
+	if type(x) ~= "number" or type(y) ~= "number" then
+		error("GetGuiObjectsAtPosition expects two numbers", 0)
+	end
+	local hits = {}
+	local function walk(inst, layer, clipped)
+		local children = inst:GetChildren()
+		if layer.ZIndexBehavior == Enum.ZIndexBehavior.Sibling then
+			-- siblings draw by ZIndex, ties in tree order
+			for i, c in children do
+				children[i] = { c, i }
+			end
+			table.sort(children, function(a, b)
+				local za = if a[1]:IsA("GuiObject") then a[1].ZIndex else 0
+				local zb = if b[1]:IsA("GuiObject") then b[1].ZIndex else 0
+				return if za ~= zb then za < zb else a[2] < b[2]
+			end)
+			for i, entry in children do
+				children[i] = entry[1]
+			end
+		end
+		for _, child in children do
+			if child:IsA("ScreenGui") then
+				if child.Enabled then
+					walk(child, child, false)
+				end
+			elseif child:IsA("GuiObject") then
+				if child.Visible then
+					local p, s = child.AbsolutePosition, child.AbsoluteSize
+					local within = x >= p.X and y >= p.Y and x < p.X + s.X and y < p.Y + s.Y
+					if within and not clipped then
+						table.insert(hits, { child, layer, #hits })
+					end
+					walk(child, layer, clipped or (child.ClipsDescendants and not within))
+				end
+			elseif not child:IsA("LayerCollector") then
+				walk(child, layer, clipped)
+			end
+		end
+	end
+	walk(st.real, st.real, false)
+	-- later in draw order is on top: higher DisplayOrder, then (Global) ZIndex, then tree order
+	table.sort(hits, function(a, b)
+		if a[2].DisplayOrder ~= b[2].DisplayOrder then
+			return a[2].DisplayOrder > b[2].DisplayOrder
+		end
+		if a[2] == b[2] and a[2].ZIndexBehavior == Enum.ZIndexBehavior.Global and a[1].ZIndex ~= b[1].ZIndex then
+			return a[1].ZIndex > b[1].ZIndex
+		end
+		return a[3] > b[3]
+	end)
+	local out = {}
+	for i, hit in hits do
+		out[i] = wrap(st.world, hit[1])
+	end
+	return out
+end
+
 local function containerFake(className, base)
 	local classes = { Instance = true, [className] = true }
 	if base then
@@ -2751,7 +2818,11 @@ local function localPlayer(world)
 	for _, container in { { "PlayerGui", "ScreenGui", "BasePlayerGui" }, { "Backpack", "Folder" } } do
 		local child = realInstance.new(container[2])
 		child.Name = container[1]
-		world.fakes[child] = containerFake(container[1], container[3])
+		local fake = containerFake(container[1], container[3])
+		if container[1] == "PlayerGui" then
+			fake.methods.GetGuiObjectsAtPosition = fakeMethod("GetGuiObjectsAtPosition", guiObjectsAt)
+		end
+		world.fakes[child] = fake
 		child.Parent = real
 	end
 	real.Parent = shadowFor(world, realPlayers)

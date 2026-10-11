@@ -33,6 +33,9 @@ check("part parent", p.Parent == workspace)
 check("find part", workspace:FindFirstChild("Part") == p)
 check("fullname", p:GetFullName() == "Workspace.Part", p:GetFullName())
 check("descendant of game", p:IsDescendantOf(game))
+check("IsAncestorOf(nil) is false", p:IsAncestorOf(nil) == false)
+check("IsDescendantOf(nil) is true", p:IsDescendantOf(nil) == true)
+check("ancestry of a non-Instance errors", has(err(p.IsAncestorOf, p, 1), "Unable to cast value to Object"))
 check("in children", table.find(workspace:GetChildren(), p) ~= nil)
 local leak
 for _, d in game:GetDescendants() do
@@ -438,6 +441,20 @@ do
 	frame.Parent = gui
 	gui.Parent = pg
 	check("ScreenGui in PlayerGui", pg:FindFirstChild("ScreenGui") == gui and frame:GetFullName() == `Players.{lp.Name}.PlayerGui.ScreenGui.Frame`, frame:GetFullName())
+	local top = Instance.new("ScreenGui")
+	top.DisplayOrder = 5
+	local cover = Instance.new("Frame")
+	cover.Size = UDim2.fromOffset(20, 20)
+	cover.Parent = top
+	local hidden = Instance.new("Frame")
+	hidden.Size = UDim2.fromOffset(20, 20)
+	hidden.Visible = false
+	hidden.Parent = top
+	top.Parent = pg
+	local hits = pg:GetGuiObjectsAtPosition(10, 10)
+	check("GetGuiObjectsAtPosition topmost first", hits[1] == cover and hits[2] == frame and #hits == 2, #hits)
+	check("GetGuiObjectsAtPosition misses", #pg:GetGuiObjectsAtPosition(30, 30) == 1 and #pg:GetGuiObjectsAtPosition(90, 90) == 0)
+	top:Destroy()
 	if Image then
 		local c = Image.fromInstance(pg, { Size = Vector2.new(100, 100) }):GetPixel(10, 10)
 		check("PlayerGui renders its ScreenGuis", c ~= nil and c.R > 0.9 and c.G < 0.1, c)
