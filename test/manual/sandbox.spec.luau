@@ -408,4 +408,41 @@ if Image then
 	end
 end
 
+do
+	local Players = game:GetService("Players")
+	local lp = Players.LocalPlayer
+	local discord = string.match(tostring(user.UserId), "^%d+$") ~= nil
+	check("LocalPlayer", lp ~= nil and lp.ClassName == "Player" and lp:IsA("Player") and not lp:IsA("Folder"), lp)
+	check("LocalPlayer is the user", lp.Name == (if discord then user.Name else "Player1"), lp.Name)
+	check("LocalPlayer UserId", lp.UserId == (if discord then tonumber(user.UserId) else -1), lp.UserId)
+	check("LocalPlayer stays the same", Players.LocalPlayer == lp and Players:GetPlayers()[1] == lp)
+	check("LocalPlayer under Players", lp.Parent == Players and Players[lp.Name] == lp, lp:GetFullName())
+	check("GetPlayerByUserId", Players:GetPlayerByUserId(lp.UserId) == lp)
+	local pg = lp:WaitForChild("PlayerGui")
+	check("PlayerGui", pg.ClassName == "PlayerGui" and pg:IsA("BasePlayerGui") and pg.Parent == lp, pg.ClassName)
+	check("FindFirstChildOfClass PlayerGui", lp:FindFirstChildOfClass("PlayerGui") == pg)
+	check("Backpack", lp:FindFirstChild("Backpack") ~= nil and lp.Backpack.ClassName == "Backpack")
+	check("LocalPlayer read only", err(function()
+		lp.UserId = 1
+	end) ~= nil and err(function()
+		lp.Parent = nil
+	end) ~= nil)
+	check("unknown member names Player", has(err(function()
+		return lp.NotAMember
+	end), "is not a valid member of Player"))
+	local gui = Instance.new("ScreenGui")
+	local frame = Instance.new("Frame")
+	frame.Size = UDim2.fromOffset(40, 40)
+	frame.BackgroundColor3 = Color3.new(1, 0, 0)
+	frame.BorderSizePixel = 0
+	frame.Parent = gui
+	gui.Parent = pg
+	check("ScreenGui in PlayerGui", pg:FindFirstChild("ScreenGui") == gui and frame:GetFullName() == `Players.{lp.Name}.PlayerGui.ScreenGui.Frame`, frame:GetFullName())
+	if Image then
+		local c = Image.fromInstance(pg, { Size = Vector2.new(100, 100) }):GetPixel(10, 10)
+		check("PlayerGui renders its ScreenGuis", c ~= nil and c.R > 0.9 and c.G < 0.1, c)
+	end
+	gui:Destroy()
+end
+
 print(#fails == 0 and `PASS {total}/{total}` or (`FAIL {#fails}/{total}\n` .. table.concat(fails, "\n")))

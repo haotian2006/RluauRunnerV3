@@ -685,7 +685,8 @@ local function signalFor(st, k, build)
 end
 
 local function memberError(st, k)
-	error(`{k} is not a valid member of {st.real.ClassName} "{virtualFullName(st)}"`, 0)
+	local className = if st.fake then st.fake.className else st.real.ClassName
+	error(`{k} is not a valid member of {className} "{virtualFullName(st)}"`, 0)
 end
 
 local function slowIndex(st, k)
@@ -793,16 +794,38 @@ local function captureMethodWrapper(k)
 	return m
 end
 
+-- Engine-only classes a run still expects (the mock LocalPlayer and its PlayerGui) are real instances
+-- underneath: the proxy reports the stand-in class and its members, and the rest is the real one's.
+local function fakeIsA(self, class)
+	return selfState(self, "IsA").fake.classes[class] == true
+end
+
 local function makeProxy(world, real, kind)
 	local p = newproxy(true)
 	local mt = getmetatable(p)
 	local class = getClass(real.ClassName)
-	local st = { real = real, world = world, kind = kind, class = class, proxy = p }
+	local fake = world.fakes[real]
+	local st = { real = real, world = world, kind = kind, class = class, proxy = p, fake = fake }
 	states[p] = st
 	proxyKind[p] = "Instance"
 	local props, methods = class.props, class.methods
 	if kind == "owned" then
 		mt.__index = function(_, k)
+			if fake then
+				if k == "ClassName" then
+					return fake.className
+				elseif k == "IsA" or k == "isA" then
+					return fakeIsA
+				end
+				local g = fake.get[k]
+				if g then
+					return g(st)
+				end
+				local fm = fake.methods[k]
+				if fm then
+					return fm
+				end
+			end
 			local m = ownedMethods[k]
 			if m then
 				return m
@@ -821,9 +844,19 @@ local function makeProxy(world, real, kind)
 			if methods[k] then
 				return methodWrapper(k)
 			end
+			if fake then
+				local child = real:FindFirstChild(k)
+				if child then
+					return wrap(world, child)
+				end
+				memberError(st, k)
+			end
 			return slowIndex(st, k)
 		end
 		mt.__newindex = function(_, k, v)
+			if fake and (fake.get[k] or k == "Parent") then
+				error(`Unable to assign property {k}. Property is read only`, 0)
+			end
 			if k == "Parent" then
 				return setParent(st, v)
 			end
@@ -2615,6 +2648,133 @@ serviceGetters.ScriptContext = {
 	end),
 }
 
+--// Players: a mock LocalPlayer with a PlayerGui and Backpack, so client-style code has a player to
+--// work with. It is the run's Discord user; a web run gets Player1 / -1 like a Studio test player.
+
+local realPlayers = realGame:GetService("Players")
+
+local function fakeChildOfClass(st, class, inherited)
+	for _, child in st.real:GetChildren() do
+		local fake = st.world.fakes[child]
+		local matches
+		if fake then
+			matches = if inherited then fake.classes[class] == true else fake.className == class
+		else
+			matches = if inherited then child:IsA(class) else child.ClassName == class
+		end
+		if matches then
+			return wrap(st.world, child)
+		end
+	end
+	return nil
+end
+
+local function fakeMethod(k, fn)
+	return function(self, ...)
+		return fn(selfState(self, k), ...)
+	end
+end
+
+local function constant(v)
+	return function()
+		return v
+	end
+end
+
+local function containerFake(className, base)
+	local classes = { Instance = true, [className] = true }
+	if base then
+		classes[base] = true
+	end
+	return { className = className, classes = classes, get = {}, methods = {} }
+end
+
+local function playerFake(userId)
+	local function event(name)
+		return function(st)
+			return signalFor(st, name, function()
+				return makeSignal(st.world, {}, newLocal(), nil, name)
+			end)
+		end
+	end
+	return {
+		className = "Player",
+		classes = { Instance = true, Player = true },
+		get = {
+			UserId = constant(userId),
+			DisplayName = function(st)
+				return st.real.Name
+			end,
+			AccountAge = constant(0),
+			MembershipType = constant(Enum.MembershipType.None),
+			LocaleId = constant("en-us"),
+			Character = constant(nil),
+			Team = constant(nil),
+			Neutral = constant(true),
+			CharacterAdded = event("CharacterAdded"),
+			CharacterAppearanceLoaded = event("CharacterAppearanceLoaded"),
+			CharacterRemoving = event("CharacterRemoving"),
+			Chatted = event("Chatted"),
+		},
+		methods = {
+			FindFirstChildOfClass = fakeMethod("FindFirstChildOfClass", function(st, class)
+				return fakeChildOfClass(st, class, false)
+			end),
+			FindFirstChildWhichIsA = fakeMethod("FindFirstChildWhichIsA", function(st, class)
+				return fakeChildOfClass(st, class, true)
+			end),
+			IsInGroup = fakeMethod("IsInGroup", constant(false)),
+			GetRankInGroup = fakeMethod("GetRankInGroup", constant(0)),
+			GetRoleInGroup = fakeMethod("GetRoleInGroup", constant("Guest")),
+			HasAppearanceLoaded = fakeMethod("HasAppearanceLoaded", constant(false)),
+			Kick = fakeMethod("Kick", function(_, message)
+				error(if message then `You were kicked: {message}` else "You were kicked from this experience", 0)
+			end),
+		},
+	}
+end
+
+local function localPlayer(world)
+	if world.localPlayer then
+		return world.localPlayer
+	end
+	local user = world.user
+	local name, userId = "Player1", -1
+	if user and string.match(tostring(user.UserId), "^%d+$") then
+		-- Discord ids pass 2^53, so the number keeps only the leading 16 digits; user.UserId is exact
+		name, userId = tostring(user.Name), tonumber(user.UserId)
+	end
+	local real = realInstance.new("Folder")
+	real.Name = name
+	world.fakes[real] = playerFake(userId)
+	-- PlayerGui is a ScreenGui underneath so the renderer draws the ScreenGuis in it as a screen
+	for _, container in { { "PlayerGui", "ScreenGui", "BasePlayerGui" }, { "Backpack", "Folder" } } do
+		local child = realInstance.new(container[2])
+		child.Name = container[1]
+		world.fakes[child] = containerFake(container[1], container[3])
+		child.Parent = real
+	end
+	real.Parent = shadowFor(world, realPlayers)
+	world.localPlayer = wrap(world, real)
+	return world.localPlayer
+end
+
+serviceGetters.Players = {
+	LocalPlayer = function(st)
+		return localPlayer(st.world)
+	end,
+}
+serviceMethods.Players = {
+	GetPlayers = function(self)
+		return { localPlayer(selfState(self, "GetPlayers").world) }
+	end,
+	GetPlayerByUserId = function(self, userId)
+		local player = localPlayer(selfState(self, "GetPlayerByUserId").world)
+		return if userId == player.UserId then player else nil
+	end,
+}
+serviceMethods.Players.getPlayers = serviceMethods.Players.GetPlayers
+
 --// RunService frame events. An Open Cloud server only fires Heartbeat, so each world plays
 --// the rest itself in the order a client runs them (measured in Studio): BindToRenderStep
 --// by priority, RenderStepped, PreRender, PreAnimation, Stepped, PreSimulation,
@@ -3034,6 +3194,8 @@ function Sandbox.getWorld(userId)
 		conns = {},
 		handlers = setmetatable({}, { __mode = "k" }),
 		rewrites = {},
+		-- real Folder -> the class it stands in for; strong keys, an Instance's userdata can be recreated
+		fakes = {},
 		live = 0,
 	}, World)
 	w.root = realInstance.new("Folder")
@@ -3172,6 +3334,7 @@ function Context:_apply(env)
 		return self:busy()
 	end
 	world.warn = env.warn
+	world.user = env.user
 	env.game = g
 	env.Game = g
 	env.workspace = ws
