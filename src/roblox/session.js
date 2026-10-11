@@ -278,7 +278,9 @@ async function fallbackPendingTasksToLune() {
   return Promise.allSettled(runs);
 }
 
-function recordServerOutage(serverId, lastPing) {
+// One strike per actor per server: a server that keeps missing and catching up on
+// heartbeats is the same outage, not a new crash each time.
+function recordServerOutage(serverId) {
   const unfinished = getUnfinishedTasksForServer(serverId);
   const actors = new Map();
 
@@ -292,7 +294,7 @@ function recordServerOutage(serverId, lastPing) {
     if (task.codeHash) hashes.add(task.codeHash);
   }
 
-  const incidentId = `roblox:${serverId}:${lastPing}`;
+  const incidentId = `roblox:${serverId}`;
   for (const [actorKey, hashes] of actors) {
     const result = recordCrash(actorKey, incidentId, [...hashes]);
     logBot(
@@ -365,18 +367,23 @@ async function checkRobloxServer() {
         server.healthy = false;
         server.unhealthySince = now;
         server.outageRecorded = true;
-        const attributed = recordServerOutage(server.serverId, server.lastPing);
-        logBot(
-          "Roblox Server Outage",
-          `${server.serverId}: ${attributed.unfinished} unfinished task(s), ` +
-            `${attributed.actors} actor(s) attributed`,
-        );
       }
 
+      // A busy script can delay heartbeats without killing the server, so only a
+      // server that stays silent for the whole grace period counts as a crash.
       if (
         now - (server.unhealthySince || server.lastPing) >=
         SERVER_RECOVERY_GRACE_MS
       ) {
+        if (!server.crashRecorded) {
+          server.crashRecorded = true;
+          const attributed = recordServerOutage(server.serverId);
+          logBot(
+            "Roblox Server Outage",
+            `${server.serverId}: ${attributed.unfinished} unfinished task(s), ` +
+              `${attributed.actors} actor(s) attributed`,
+          );
+        }
         void reapRobloxServer(server.serverId);
       }
     }
