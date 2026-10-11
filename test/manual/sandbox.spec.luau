@@ -387,4 +387,25 @@ do
 	check("coroutine.wrap reraises", not pcall(err))
 end
 
+if Image then
+	local AssetService = game:GetService("AssetService")
+	local okE, ei = pcall(AssetService.CreateEditableImage, AssetService, { Size = Vector2.new(8, 8) })
+	check("CreateEditableImage", okE and typeof(ei) == "Object" and ei:IsA("EditableImage") and ei.Size == Vector2.new(8, 8), ei)
+	if okE then
+		ei:DrawRectangle(Vector2.zero, Vector2.new(8, 8), Color3.new(1, 0, 0), 0, Enum.ImageCombineType.Overwrite)
+		local px = ei:ReadPixelsBuffer(Vector2.zero, Vector2.new(1, 1))
+		check("EditableImage draws", buffer.readu8(px, 0) == 255 and buffer.readu8(px, 1) == 0)
+		local gui = Instance.new("ScreenGui")
+		local label = Instance.new("ImageLabel")
+		label.Size = UDim2.fromOffset(20, 20)
+		label.BackgroundTransparency = 1
+		label.ImageContent = Content.fromObject(ei)
+		label.Parent = gui
+		local c = Image.fromInstance(gui, { Size = Vector2.new(20, 20) }):GetPixel(10, 10)
+		check("EditableImage renders in an ImageLabel", c ~= nil and c.R > 0.9 and c.G < 0.1, c)
+		ei:Destroy()
+		check("destroyed EditableImage errors", err(ei.ReadPixelsBuffer, ei, Vector2.zero, Vector2.one) ~= nil)
+	end
+end
+
 print(#fails == 0 and `PASS {total}/{total}` or (`FAIL {#fails}/{total}\n` .. table.concat(fails, "\n")))

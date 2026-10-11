@@ -2575,6 +2575,27 @@ serviceGetters.LogService = {
 		return l.silent
 	end),
 }
+-- AssetService's EditableImage methods are blocked on these servers, so a run gets EditableImages
+-- backed by the Image library instead (LoadEnv's hooks.editableImages)
+local function editableProvider(self, k)
+	local provider = selfState(self, k).world.editableImages
+	if not provider then
+		error("EditableImage is not available in this run", 0)
+	end
+	return provider
+end
+serviceMethods.AssetService = {
+	CreateEditableImage = function(self, options)
+		local image = editableProvider(self, "CreateEditableImage").create(options)
+		proxyKind[image] = "Object"
+		return image
+	end,
+	CreateEditableImageAsync = function(self, content)
+		local image = editableProvider(self, "CreateEditableImageAsync").load(content)
+		proxyKind[image] = "Object"
+		return image
+	end,
+}
 serviceMethods.LogService = {
 	GetLogHistory = function(self)
 		local world = selfState(self, "GetLogHistory").world
@@ -3159,6 +3180,20 @@ function Context:_apply(env)
 		env.script = wrap(world, hooks.module)
 	end
 	env.typeof = sandboxTypeof
+	local editable = hooks.editableImages
+	world.editableImages = editable
+	if editable then
+		-- an EditableImage from AssetService becomes a uri the renderer resolves
+		env.Content = setmetatable({
+			fromObject = function(object)
+				local uri = editable.uriOf(object)
+				if uri then
+					return Content.fromUri(uri)
+				end
+				return Content.fromObject(unwrapArg(world, object))
+			end,
+		}, { __index = Content, __metatable = "The metatable is locked" })
+	end
 	-- Return the real env only when it is this world's (its game is our proxy); a foreign or real
 	-- script env would leak the real game, so fall back to the sandbox env. A miscounted level then
 	-- degrades to the sandbox env instead of leaking. LuauBot imports this only when a run names it.
