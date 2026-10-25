@@ -50,4 +50,10 @@ function logBot(name, data) {
   log("0", "BOT", name, data);
 }
 
-module.exports = { log, logBot };
+// Logs and the status page show only a token's last 8 characters: a whole Discord interaction or
+// web run token lets its holder act on that run.
+function tokenTag(token) {
+  return String(token).slice(-8);
+}
+
+module.exports = { log, logBot, tokenTag };

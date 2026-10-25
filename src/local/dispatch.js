@@ -18,7 +18,7 @@ const {
   startLocalExecutionHealth,
 } = require("../abuse");
 const { closeSession, getSession } = require("../core/sessions");
-const { logBot } = require("../log");
+const { logBot, tokenTag } = require("../log");
 const { desugarConstForLune } = require("./constDesugar");
 const { storeSource } = require("../sourceStore");
 const { runLocal } = require("./run");
@@ -262,7 +262,7 @@ async function tryRunLocally(
       if (terminalUpdateSent) return;
       logBot(
         "Lune Stall",
-        `${executionId} produced no terminal update after ${localTimeoutForSelection(selected) + TERMINAL_UPDATE_GRACE_MS}ms; forcing an error reply`,
+        `lune:${tokenTag(token)}:${startedAt} produced no terminal update after ${localTimeoutForSelection(selected) + TERMINAL_UPDATE_GRACE_MS}ms; forcing an error reply`,
       );
       const stalled = getSession(token);
       if (!stalled) return;

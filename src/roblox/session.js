@@ -13,7 +13,7 @@ const {
 } = require("../config");
 const { decodeZstd } = require("../chunks");
 const { recordCrash } = require("../abuse");
-const { log, logBot } = require("../log");
+const { log, logBot, tokenTag } = require("../log");
 const { getMaxWorkers, getProfiles } = require("../profiles");
 const {
   ExecuteTasks,
@@ -161,11 +161,11 @@ async function failTask(task, message) {
     // No session to reply to, so the embed stays stuck (usually on pending); log it.
     logBot(
       "Task Failure Dropped",
-      `"${message}" for token ${task.token} had no session; its embed is now stuck`,
+      `"${message}" for token ${tokenTag(task.token)} had no session; its embed is now stuck`,
     );
     return;
   }
-  logBot("Task Failed", `${task.token}: ${message}`);
+  logBot("Task Failed", `${tokenTag(task.token)}: ${message}`);
 
   let link = null;
   try {

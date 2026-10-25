@@ -3,7 +3,7 @@ const { parseHotComments } = require("../local/hotComments");
 const { codeHash, getActorBlock } = require("../abuse");
 const { closeSession, getSession, openSession } = require("../core/sessions");
 const { selectRuntime, tryRunLocally } = require("../local/dispatch");
-const { logBot } = require("../log");
+const { logBot, tokenTag } = require("../log");
 const { record } = require("../metrics");
 const { createPendingResponseEmbed } = require("./embeds");
 const { createDiscordResponder } = require("./responder");
@@ -60,7 +60,7 @@ async function sendCompileRequestToRoblox(
   const timeoutId = setTimeout(async () => {
     logBot(
       "Task Expired",
-      `${interaction.token} hit the ${TASK_TTL_MS / 1000}s TTL still unfinished ` +
+      `${tokenTag(interaction.token)} hit the ${TASK_TTL_MS / 1000}s TTL still unfinished ` +
         `(queued=${Boolean(ExecuteTasks[uuid])})`,
     );
     const expired = getSession(interaction.token);

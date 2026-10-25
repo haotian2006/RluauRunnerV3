@@ -1,6 +1,6 @@
 const { MAX_RESPONSE_FILES, SupportedFileTypes } = require("../../config");
 const { decodeBuffer } = require("../../chunks");
-const { logBot } = require("../../log");
+const { logBot, tokenTag } = require("../../log");
 const { settleTasksForToken } = require("../../state");
 const { closeSession, getSession } = require("../../core/sessions");
 const {
@@ -41,7 +41,7 @@ function uploadKey(token, fileId) {
 async function retrieveChunkedLogs(respondID, numSections, token) {
   logBot(
     "Respond Endpoint",
-    `Retrieving chunked logs sections: ${numSections} for token: ${token}`,
+    `Retrieving chunked logs sections: ${numSections} for token: ${tokenTag(token)}`,
   );
 
   const result = await waitForUpload(uploadKey(token, respondID), numSections);
@@ -121,7 +121,7 @@ function registerRespondRoutes(app) {
       if (!session) {
         logBot(
           "Response Discarded",
-          `Roblox replied for token ${token} but its session is gone; ` +
+          `Roblox replied for token ${tokenTag(token)} but its session is gone; ` +
             `the user's embed keeps whatever it last showed`,
         );
         if (req.body.finished) settleTasksForToken(token, true);

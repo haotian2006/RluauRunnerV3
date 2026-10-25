@@ -1,7 +1,7 @@
 const { EmbedBuilder } = require("discord.js");
 
 const { safeMessage } = require("../sanitize");
-const { logBot } = require("../log");
+const { logBot, tokenTag } = require("../log");
 const { CompilingTasks } = require("../state");
 const { getSourceUrl } = require("../sourceStore");
 const {
@@ -53,7 +53,7 @@ function createDiscordResponder(token) {
         // let that happen without a trace.
         logBot(
           "Delivery Dropped",
-          `${isLast ? "final" : "live"} update for ${token} had no CompilingTasks entry; the embed is now stuck`,
+          `${isLast ? "final" : "live"} update for ${tokenTag(token)} had no CompilingTasks entry; the embed is now stuck`,
         );
         return;
       }
@@ -160,7 +160,7 @@ function createDiscordResponder(token) {
       if (!current) {
         logBot(
           "Failure Dropped",
-          `could not report "${safeMessage(error)}" for ${token}: no CompilingTasks entry`,
+          `could not report "${safeMessage(error)}" for ${tokenTag(token)}: no CompilingTasks entry`,
         );
         return;
       }
