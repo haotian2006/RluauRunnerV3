@@ -203,6 +203,8 @@ function registerRespondRoutes(app) {
           isLast,
           runtime,
           serverNum,
+          // Only headless Studio workers reach the bot over the worker socket.
+          studio: req.studioWorker === true,
           followUp,
         });
       }

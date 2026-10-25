@@ -16,6 +16,11 @@ test("Roblox results retain their numbered server label", () => {
   assert.equal(embed.data.title, "Luau Compiler Results | Server #3");
 });
 
+test("headless Studio results are labelled Studio", () => {
+  const embed = createResponseEmbed(3, "user", "output", true, 1, null, null, true);
+  assert.equal(embed.data.title, "Luau Compiler Results | Studio #3");
+});
+
 test("pending results use a blank compiler embed without a runtime label", () => {
   const embed = createResponseEmbed(null, "user", "", false, 0, null);
   assert.equal(embed.data.title, "Luau Compiler Results");

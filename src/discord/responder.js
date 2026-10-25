@@ -43,6 +43,7 @@ function createDiscordResponder(token) {
       isLast,
       runtime,
       serverNum,
+      studio,
       followUp,
     }) {
       const current = entry();
@@ -77,6 +78,7 @@ function createDiscordResponder(token) {
         runtime,
         link,
         getSourceUrl(token),
+        studio,
       );
 
       const replyOptions = {

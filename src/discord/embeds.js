@@ -49,13 +49,14 @@ function createResponseEmbed(
   runtime,
   msgLink,
   sourceUrl,
+  studio = false,
 ) {
   const runtimeLabel =
     serverNum == null
       ? null
       : serverNum === "Lune"
         ? "Lune"
-        : `Server #${serverNum}`;
+        : `${studio ? "Studio" : "Server"} #${serverNum}`;
   // Discord fails to render a masked link placed before some ansi blocks, so
   // it only goes there when the title link is taken.
   const inlineRaw = msgLink && sourceUrl ? ` | [see raw](${sourceUrl})` : "";
