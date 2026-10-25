@@ -192,7 +192,7 @@ async function failPendingTasks() {
   await Promise.allSettled(failures);
 }
 
-const SESSION_ENDED = "The worker's session ended before the run finished.";
+const SESSION_ENDED = "Session ended.";
 
 function reapRobloxServer(
   serverId,

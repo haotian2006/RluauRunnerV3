@@ -163,7 +163,7 @@ test("a draining Studio session keeps running its tasks until it ends itself", a
   assert.equal(RobloxServers[server.serverId], undefined);
   await new Promise((resolve) => setImmediate(resolve));
   assert.deepEqual(going.failures, [
-    "The worker's session ended before the run finished.",
+    "Session ended.",
   ]);
 });
 
@@ -196,7 +196,7 @@ test("a draining Studio session that closed its stream lives on its pings", asyn
   assert.equal(RobloxServers[server.serverId], undefined);
   await new Promise((resolve) => setImmediate(resolve));
   assert.deepEqual(going.failures, [
-    "The worker's session ended before the run finished.",
+    "Session ended.",
   ]);
 });
 
@@ -221,7 +221,7 @@ test("a session that ends on schedule costs nobody a strike", async () => {
   await reapLostWorker(server.serverId);
 
   assert.deepEqual(going.failures, [
-    "The worker's session ended before the run finished.",
+    "Session ended.",
   ]);
   assert.equal(recordCrash(going.actorKey, "another").count, 1);
 });
