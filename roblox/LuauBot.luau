@@ -57,6 +57,108 @@ local RunSnapshotTokens = setmetatable({}, { __mode = "k" })
 local chunkEnvModule = script:FindFirstChild("ChunkEnv")
 local isolateChunk = if chunkEnvModule then require(chunkEnvModule) else nil
 
+-- Per-run memory accounting on Studio workers: each run gets a luau_native memory category, which
+-- every thread it makes inherits. Nil elsewhere.
+local NativeLibrary = if type(native) == "table" then native else nil
+local MB = 1024 * 1024
+local Memory = nil
+local MemoryLimits = {
+	workerMb = 1024, -- Luau heap all runs share
+	runFloorMb = 128, -- what a run may always hold, however busy the worker
+	processMb = nil, -- past this Studio commit, the largest run is revoked (engine memory has no category)
+}
+local CategoryRuns = {} -- category -> its run's thread record
+local CategoryFreedAt = {}
+
+-- Freed memory stays charged until the next collection, so take the emptiest, longest-idle category.
+local function takeCategory(thread)
+	if not Memory then
+		return nil
+	end
+	local best, bestBytes, bestFreed
+	for category = Memory.first, Memory.last do
+		if not CategoryRuns[category] then
+			local bytes, freed = Memory.bytes(category), CategoryFreedAt[category] or -math.huge
+			if not best or bytes < bestBytes or (bytes == bestBytes and freed < bestFreed) then
+				best, bestBytes, bestFreed = category, bytes, freed
+			end
+		end
+	end
+	if best then
+		CategoryRuns[best] = thread
+	end
+	return best
+end
+
+local function releaseCategory(category)
+	if category then
+		CategoryRuns[category] = nil
+		CategoryFreedAt[category] = os.clock()
+	end
+end
+
+local function revokeRun(thread, reason)
+	if not thread.stopped then
+		thread.stopReason = reason
+		thread.stopped = true
+	end
+end
+
+-- Runs share the worker budget: past it, the largest run above the floor is revoked, then the next,
+-- until the rest fit, so a lone run may use all of it. Revoked runs no longer count. A run that never
+-- yields isn't checked until it does; the unit's MemoryMax is the last line.
+local function watchMemory()
+	local lastProcessRevoke = -math.huge
+	while true do
+		task.wait(0.25)
+		local held, total = {}, 0
+		for category, thread in CategoryRuns do
+			if not thread.stopped then
+				local bytes = Memory.bytes(category)
+				held[category] = bytes
+				total += bytes
+				thread.memoryPeak = math.max(thread.memoryPeak or 0, bytes)
+			end
+		end
+		while total > MemoryLimits.workerMb * MB do
+			local largest, most
+			for category, bytes in held do
+				if bytes > MemoryLimits.runFloorMb * MB and (not most or bytes > most) then
+					largest, most = category, bytes
+				end
+			end
+			if not largest then
+				break
+			end
+			local others = total - most
+			revokeRun(
+				CategoryRuns[largest],
+				`Memory limit exceeded: the run held {math.floor(most / MB)} MB (limit {math.floor(
+					(MemoryLimits.workerMb * MB - others) / MB
+				)} MB{if others > 0 then `, other runs held {math.floor(others / MB)} MB` else ""}).`
+			)
+			held[largest] = nil
+			total = others
+		end
+		-- One at a time: a revoked run's memory takes a while to be collected.
+		if MemoryLimits.processMb and os.clock() - lastProcessRevoke > 5 then
+			local ok, usage = pcall(NativeLibrary.memory)
+			if ok and type(usage) == "table" and (usage.commit or 0) > MemoryLimits.processMb * MB then
+				local largest, most = nil, -1
+				for category, thread in CategoryRuns do
+					if not thread.stopped and held[category] > most then
+						largest, most = thread, held[category]
+					end
+				end
+				if largest then
+					lastProcessRevoke = os.clock()
+					revokeRun(largest, `Memory limit exceeded: the worker ran low and this run held the most ({math.floor(most / MB)} MB).`)
+				end
+			end
+		end
+	end
+end
+
 local function capability(broker, operation, ...)
 	local result = table.pack(broker:Invoke(operation, ...))
 	if not result[1] then
@@ -1225,6 +1327,10 @@ local function runCode(compCode, data)
 			task.wait(EXECUTION_SETTLE_DELAY)
 		end
 	end)
+	thread.memoryCategory = takeCategory(thread)
+	if thread.memoryCategory then
+		Memory.assign(thread.running, thread.memoryCategory)
+	end
 	thread.stopped = false
 	thread.forceStop = function()
 		env.warn("Force Stop Triggered!")
@@ -1319,7 +1425,7 @@ local function runCode(compCode, data)
 
 		if thread.stopped then
 			sus = false
-			msg = "Script was forcefully stopped."
+			msg = thread.stopReason or "Script was forcefully stopped."
 		end
 		local shouldLog = (env :: any).OUTPUT_LOGS
 		if not sus then
@@ -1416,6 +1522,14 @@ local function runCode(compCode, data)
 			pcall(fn)
 		end
 		module:Destroy()
+		local peak = thread.memoryPeak or 0
+		if thread.memoryCategory then
+			peak = math.max(peak, Memory.bytes(thread.memoryCategory))
+		end
+		releaseCategory(thread.memoryCategory)
+		if thread.memoryCategory and (thread.stopReason or peak >= 64 * MB) then
+			task.spawn(pcall, sendDebug, `run {processID}: memory peak {math.floor(peak / MB)} MB{if thread.stopReason then ", revoked" else ""}`)
+		end
 	end)
 
 	return true
@@ -1649,6 +1763,22 @@ local function start(ip, secretToken, options)
 	end
 	if options and typeof(options.capabilities) == "Instance" and options.capabilities:IsA("BindableFunction") then
 		Capabilities = options.capabilities
+	end
+	-- options.memory: budgets; the bootstrap opened a one-time claim, taken here before any run exists.
+	if options and type(options.memory) == "table" and NativeLibrary and NativeLibrary.claimMemoryAccounting then
+		local claimed, controller = pcall(NativeLibrary.claimMemoryAccounting)
+		if claimed then
+			Memory = controller
+			for _, key in { "workerMb", "runFloorMb", "processMb" } do
+				local value = options.memory[key]
+				if type(value) == "number" and value > 0 then
+					MemoryLimits[key] = value
+				end
+			end
+			task.spawn(watchMemory)
+		else
+			warn("memory accounting unavailable:", controller)
+		end
 	end
 	task.wait()
 	local res = request({
