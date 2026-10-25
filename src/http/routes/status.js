@@ -2,8 +2,9 @@ const crypto = require("crypto");
 const os = require("os");
 
 const { listActorBlocks } = require("../../abuse");
-const { LOCAL_MAX_CONCURRENT } = require("../../config");
+const { ENABLE_LOCAL_EXEC, LOCAL_MAX_CONCURRENT } = require("../../config");
 const { sessionBreakdown } = require("../../core/sessions");
+const { dataStoreStats } = require("../../dataStores");
 const { client } = require("../../discord/client");
 const {
   covers,
@@ -84,6 +85,10 @@ function collect(now = Date.now()) {
   const errors = windows("error", now);
 
   const workers = Object.values(RobloxServers);
+  const studio = workers.filter((worker) => worker.kind === "studio");
+  const cloud = workers.filter((worker) => worker.kind !== "studio");
+  const taking = (list) =>
+    list.filter((worker) => worker.healthy && !worker.retiring).length;
   const memory = process.memoryUsage();
   const store = storeStats();
   const load = getLoad();
@@ -138,13 +143,21 @@ function collect(now = Date.now()) {
       healthy: workers.filter((worker) => worker.healthy && !worker.retiring)
         .length,
       retiring: workers.filter((worker) => worker.retiring).length,
+      // Studio workers are headless Studio on this host; maxWorkers caps Open Cloud only.
+      studioWorkers: studio.length,
+      studioTaking: taking(studio),
+      studioDraining: studio.filter((worker) => worker.retiring).length,
+      cloudWorkers: cloud.length,
+      cloudHealthy: taking(cloud),
       queued: Object.keys(ExecuteTasks).length,
       dispatched: Object.keys(DispatchedTasks).length,
       active: Object.keys(ActiveRobloxTasks).length,
       created: state.SERVERS_CREATED,
       pendingStarts: state.PendingRobloxStarts.length,
+      localExec: ENABLE_LOCAL_EXEC,
       localMaxConcurrent: LOCAL_MAX_CONCURRENT,
     },
+    dataStores: dataStoreStats(now),
     charts: {
       runsPerHour: histogram("run", HOUR_MS, CHART_BUCKETS, now),
       webPerHour: histogram("web", HOUR_MS, CHART_BUCKETS, now),
@@ -224,8 +237,12 @@ function rows(stats) {
         ],
         ["Discord sessions", String(stats.sessions.discord)],
         [
-          "Roblox workers",
-          `${stats.pool.workers} / ${stats.pool.maxWorkers} (${stats.pool.healthy} healthy)`,
+          "Studio workers",
+          `${stats.pool.studioWorkers} (${stats.pool.studioTaking} taking runs)`,
+        ],
+        [
+          "Open Cloud servers",
+          `${stats.pool.cloudWorkers} / ${stats.pool.maxWorkers} (${stats.pool.cloudHealthy} healthy)`,
         ],
         ["Roblox tasks running", String(stats.pool.active)],
         ["Tasks queued", String(stats.pool.queued)],
@@ -259,15 +276,38 @@ function rows(stats) {
     [
       "Worker pool",
       [
-        ["Workers", `${stats.pool.workers} / ${stats.pool.maxWorkers}`],
-        ["Healthy", String(stats.pool.healthy)],
-        ["Retiring", String(stats.pool.retiring)],
+        ["Studio workers", String(stats.pool.studioWorkers)],
+        ["Studio sessions taking runs", String(stats.pool.studioTaking)],
+        ["Studio sessions draining", String(stats.pool.studioDraining)],
+        [
+          "Open Cloud servers",
+          `${stats.pool.cloudWorkers} / ${stats.pool.maxWorkers}`,
+        ],
+        ["Open Cloud healthy", String(stats.pool.cloudHealthy)],
+        ["Open Cloud starts", String(stats.pool.created)],
+        ["Open Cloud pending starts", String(stats.pool.pendingStarts)],
         ["Tasks queued", String(stats.pool.queued)],
         ["Tasks dispatched", String(stats.pool.dispatched)],
         ["Tasks active", String(stats.pool.active)],
-        ["Servers created", String(stats.pool.created)],
-        ["Pending starts", String(stats.pool.pendingStarts)],
-        ["Lune max concurrent", String(stats.pool.localMaxConcurrent)],
+        [
+          "Lune",
+          stats.pool.localExec
+            ? `on, ${stats.pool.localMaxConcurrent} at once`
+            : "off",
+        ],
+      ],
+    ],
+    [
+      "DataStores",
+      [
+        ["Users with data", String(stats.dataStores.users)],
+        ["On disk", formatBytes(stats.dataStores.bytesOnDisk)],
+        ["Quota per user", formatBytes(stats.dataStores.quotaBytes)],
+        [
+          "Removed after",
+          `${Math.round(stats.dataStores.expiryMs / DAY_MS)} days unused`,
+        ],
+        ["Runs holding a token", String(stats.dataStores.liveGrants)],
       ],
     ],
     [

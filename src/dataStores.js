@@ -263,7 +263,39 @@ function startDataStoreSweeps() {
   sweepTimer.unref?.();
 }
 
+// The status page polls every second, so the directory is read at most every 30 s.
+const STATS_TTL_MS = 30 * 1000;
+let statsCache = null;
+
+function dataStoreStats(now = Date.now()) {
+  if (statsCache && now - statsCache.at < STATS_TTL_MS) return statsCache.stats;
+  let users = 0;
+  let bytesOnDisk = 0;
+  let names = [];
+  try {
+    names = fs.readdirSync(DATASTORE_DIR);
+  } catch {}
+  for (const name of names) {
+    if (!name.endsWith(".json")) continue;
+    try {
+      bytesOnDisk += fs.statSync(path.join(DATASTORE_DIR, name)).size;
+      users += 1;
+    } catch {}
+  }
+  const liveGrants = [...grants.values()].filter((grant) => grant.expiresAt > now).length;
+  const stats = {
+    users,
+    bytesOnDisk,
+    quotaBytes: DATASTORE_QUOTA_BYTES,
+    expiryMs: DATASTORE_EXPIRY_MS,
+    liveGrants,
+  };
+  statsCache = { at: now, stats };
+  return stats;
+}
+
 module.exports = {
+  dataStoreStats,
   grantStorage,
   userForToken,
   loadUserData,
