@@ -138,7 +138,8 @@ return function(thread, env, hooks)
 	end
 	-- filled once the sandbox context exists; lets libraries hand back sandboxed instances
 	local sandboxBridge = {}
-	if Sandbox and hooks and hooks.sandbox ~= false then
+	-- Expected even when the bundle has no Sandbox (it's private), so LuauBot refuses the run.
+	if hooks and hooks.sandbox ~= false then
 		hooks.sandboxExpected = true
 	end
 	-- Custom environment variables go here; they become every run's globals (and module globals).

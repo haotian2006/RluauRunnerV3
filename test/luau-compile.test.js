@@ -6,9 +6,11 @@ const os = require("node:os");
 const path = require("node:path");
 
 const { PATH_TO_COMPILER } = require("../src/config");
+const { ROBLOX_SANDBOX_PATH } = require("../src/privateFiles");
 
 // The bundle's Luau is only compiled when a worker loads it, and a Sandbox.luau that doesn't
-// compile fails every run, so compile it here.
+// compile fails every run, so compile it here. Sandbox.luau is in the private luau-bot-headless
+// checkout; its checks skip without it.
 const ROBLOX = path.join(__dirname, "..", "roblox");
 const skip = !fs.existsSync(PATH_TO_COMPILER);
 
@@ -30,16 +32,17 @@ function compileError(file) {
 }
 
 test("every bundled Luau file compiles", { skip }, () => {
-  const failures = luauFiles(ROBLOX)
-    .map((file) => [path.relative(ROBLOX, file), compileError(file)])
+  const files = luauFiles(ROBLOX).concat(ROBLOX_SANDBOX_PATH ? [ROBLOX_SANDBOX_PATH] : []);
+  const failures = files
+    .map((file) => [path.basename(file), compileError(file)])
     .filter(([, error]) => error);
   assert.deepEqual(failures, []);
 });
 
 // Luau gives a function 200 registers, and Sandbox.luau's file scope holds ~190 locals at
 // once. Fail here, with room to spare, rather than in the bundle.
-test("Sandbox.luau has room for 8 more file-scope locals", { skip }, () => {
-  const source = fs.readFileSync(path.join(ROBLOX, "Sandbox.luau"), "utf8");
+test("Sandbox.luau has room for 8 more file-scope locals", { skip: skip || !ROBLOX_SANDBOX_PATH }, () => {
+  const source = fs.readFileSync(ROBLOX_SANDBOX_PATH, "utf8");
   const at = source.indexOf("\nlocal ");
   assert.ok(at > 0, "no file-scope local found");
   const extra = Array.from({ length: 8 }, (_, i) => `local __headroom${i} = {}`).join("\n");

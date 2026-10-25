@@ -125,7 +125,7 @@ const BOT_GLOBALS = new Set([
   "ask",
   "matchcodeblock",
   "GLOBAL",
-  // roblox/Sandbox.luau
+  // Sandbox.luau (luau-bot-headless sandbox/)
   "firesignal",
   "fireevent",
   // roblox/LoadEnv.luau (--!nosandbox only)

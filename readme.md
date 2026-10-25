@@ -94,6 +94,7 @@ STUDIO_DRAIN_SECONDS=60(OPTIONAL, least time a session's runs get before the ses
 DATASTORE_DIR=./data/datastores(OPTIONAL, where each Discord user's saved DataStores and MemoryStores live)
 DATASTORE_QUOTA_BYTES=1048576(OPTIONAL, default 1 MB per user)
 DATASTORE_EXPIRY_DAYS=30(OPTIONAL, a user's saved stores are deleted after this long unused)
+LUAU_BOT_PRIVATE_DIR=../luau-bot-headless(OPTIONAL, the private checkout holding the sandboxes; default beside this one)
 FORM_ID=Google_Form_Id(OPTIONAL)
 FORM_ENTRY_NAME=entry.0000000000(OPTIONAL)
 FORM_ENTRY_USER_ID=entry.0000000000(OPTIONAL)
@@ -118,6 +119,12 @@ restarts them when the secret changes.
 While a Studio session takes tasks, sandboxed runs go only to Studio workers.
 With none, the bot starts Open Cloud servers, then falls back to Lune if those
 fail. `--!nosandbox` runs always go to Open Cloud.
+
+The sandboxes (`Sandbox.luau` for Roblox runs, `lune-sandbox.luau` for local Lune runs)
+are in the private luau-bot-headless repository, under `sandbox/`. Building
+`luauBot.b64` and local runs need that checkout (`LUAU_BOT_PRIVATE_DIR`, or beside
+this one); without it the bundle refuses to build, local runs refuse to start,
+and a bundle without a Sandbox refuses sandboxed runs.
 
 On Studio workers with luau-bot-headless' luau_native, each run has a memory
 budget and a native brake: a run past its share, or one that keeps the worker

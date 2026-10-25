@@ -160,3 +160,7 @@ DEPLOYMENT.md
 
 # Saved DataStores (DATASTORE_DIR default)
 data/
+
+# The sandboxes live in the private luau-bot-headless repository (sandbox/)
+roblox/Sandbox.luau
+src/local/sandbox.luau

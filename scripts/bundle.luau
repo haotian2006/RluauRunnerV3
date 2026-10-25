@@ -8,6 +8,10 @@
 
 	LuauBot's servers load it: an rbxm of the ModuleScript tree, zstd compressed and base64
 	encoded, which EncodingService decodes and decompresses for DeserializeInstancesAsync.
+
+	"$private" paths are read from the private luau-bot-headless checkout (LUAU_BOT_PRIVATE_DIR,
+	or ../luau-bot-headless or ../studio-mods), as src/privateFiles.js finds it; without it the
+	build fails rather than ship a bot with no sandbox.
 ]=]
 local fs = require("@lune/fs")
 local process = require("@lune/process")
@@ -15,6 +19,13 @@ local roblox = require("@lune/roblox")
 local serde = require("@lune/serde")
 
 local ROOT = process.cwd
+local PRIVATE = nil
+for _, dir in { process.env.LUAU_BOT_PRIVATE_DIR, `{ROOT}/../luau-bot-headless`, `{ROOT}/../studio-mods` } do
+	if dir and dir ~= "" and fs.isDir(`{dir}/sandbox`) then
+		PRIVATE = dir
+		break
+	end
+end
 local ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
 
 local function base64Encode(data: string): string
@@ -61,9 +72,8 @@ local function base64Decode(text: string): string
 	return buffer.readstring(output, 0, out)
 end
 
--- Lune's zstd frames omit the content size, so EncodingService:DecompressBuffer fails
--- ("decompression failed - Error (generic)"). This swaps descriptor 0 for 0x80, which adds a
--- 4-byte size after the window byte (RFC 8878 3.1.1.1); the blocks are unchanged.
+-- Lune's zstd frames omit the content size, which DecompressBuffer rejects. Descriptor 0x80
+-- adds a 4-byte size after the window byte (RFC 8878 3.1.1.1); blocks unchanged.
 local function withContentSize(frame: string, size: number): string
 	assert(frame:byte(5) == 0, "unexpected zstd frame header")
 	return frame:sub(1, 4) .. string.char(0x80) .. frame:sub(6, 6) .. string.pack("<I4", size) .. frame:sub(7)
@@ -88,14 +98,20 @@ local function walk(roots, visit)
 end
 
 -- One project node: "$path" is a .luau file or a folder with init.luau (whose other .luau files
--- and subfolders become children); every other key is a child node.
+-- and subfolders become children), "$private" a file in the private checkout; every other key
+-- is a child node.
 local function build(name: string, node, parentPath: string)
 	local module = roblox.Instance.new("ModuleScript")
 	module.Name = name
 	local path = node["$path"]
+	local full = if path then `{ROOT}/{path}` else nil
+	if node["$private"] then
+		assert(PRIVATE, `{node["$private"]} is in the private luau-bot-headless repository; check it out beside this one or set LUAU_BOT_PRIVATE_DIR`)
+		full = `{PRIVATE}/{node["$private"]}`
+		assert(fs.isFile(full), `missing private file {full}`)
+	end
 	local folder
-	if path then
-		local full = `{ROOT}/{path}`
+	if full then
 		if fs.isDir(full) then
 			folder = full
 			full ..= "/init.luau"

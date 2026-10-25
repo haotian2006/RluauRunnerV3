@@ -5,7 +5,7 @@
     "ChunkEnv": { "$path": "roblox/ChunkEnv.luau" },
     "LoadEnv": {
       "$path": "roblox/LoadEnv.luau",
-      "Sandbox": { "$path": "roblox/Sandbox.luau" },
+      "Sandbox": { "$private": "sandbox/Sandbox.luau" },
       "LuneImports": {
         "$path": "roblox/LuneImports.luau",
         "VirtualFs": { "$path": "roblox/VirtualFs.luau" }

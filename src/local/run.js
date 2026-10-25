@@ -16,12 +16,11 @@ const {
   LOCAL_HEARTBEAT_TIMEOUT_MS,
   LOCAL_TIMEOUT_MS,
   PATH_TO_LUNE,
-  ROOT_DIR,
 } = require("../config");
 const { parseHotComments } = require("./hotComments");
+const { LUNE_SANDBOX_PATH: SANDBOX_PATH } = require("../privateFiles");
 const { stripHostPaths } = require("../sanitize");
 
-const SANDBOX_PATH = path.join(ROOT_DIR, "src", "local", "sandbox.luau");
 const KILL_GRACE_MS = 1000;
 const HEARTBEAT_STALE_MS = 1500;
 // After SIGKILL, how long to wait for 'close' before giving up on it.
@@ -289,6 +288,10 @@ async function runLocal(source, options = {}) {
   let tmpDir = null;
   let jobPath = null;
   try {
+    // The sandbox is in the private checkout; without it nothing runs.
+    if (!SANDBOX_PATH || !fs.existsSync(SANDBOX_PATH)) {
+      throw new Error("Local runs are unavailable on this host.");
+    }
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "luau-local-"));
     jobPath = path.join(tmpDir, "job.json");
 
