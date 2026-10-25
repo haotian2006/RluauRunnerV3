@@ -1973,7 +1973,8 @@ serviceMethods.CollectionService = {
 	end,
 }
 
---// Mock stores (sandbox only; data lasts as long as the user's world)
+--// Mock stores (sandbox only; persisted per Discord user on the bot when the run has a token,
+--// otherwise kept as long as the user's world)
 
 local HttpService = realGame:GetService("HttpService")
 local InsertService = realGame:GetService("InsertService")
@@ -2112,6 +2113,8 @@ local function checkKey(key, what)
 		error(`101: {what} can't be empty.`, 0)
 	elseif #key > 50 then
 		error(`101: {what} exceeds the 50 character limit.`, 0)
+	elseif not utf8.len(key) then
+		error(`101: {what} must be valid UTF-8.`, 0)
 	end
 	return key
 end
@@ -2119,9 +2122,21 @@ end
 local function storeRoot(world)
 	local s = world.stores
 	if not s then
-		s = { data = {}, hash = {}, sorted = {}, queues = {}, topics = {}, version = 0 }
+		s = {
+			data = {},
+			hash = {},
+			sorted = {},
+			queues = {},
+			topics = {},
+			version = 0,
+			records = {}, -- store id -> key -> record, for every persisted kind
+			pending = {}, -- store id -> key -> wire record, or false to delete
+			sizes = {},
+			used = 0,
+		}
 		world.stores = s
 	end
+	s.persist = s.persist or world.persist
 	return s
 end
 
@@ -2163,6 +2178,239 @@ local function nowMs()
 	return DateTime.now().UnixTimestampMillis
 end
 
+--// Persistence: a Discord user's DataStore and MemoryStore records live on the bot
+--// (hooks.dataStore, holding LuauBot's private per-run token). They load on first use and are
+--// written back key by key a second after each change, so runs on another worker see them in
+--// their next run. Without it (web runs) they last as long as the world.
+
+local recordsFor, flushStores, stage, sync
+do
+	local MAX_METADATA = 300
+	local MAX_SORT_KEY = 200
+
+	function recordsFor(root, id)
+		local records = root.records[id]
+		if not records then
+			records = {}
+			root.records[id] = records
+		end
+		return records
+	end
+
+	-- Wrapped in an array, as JSONDecode wants an object or array at the top.
+	local function encodeValue(v)
+		return HttpService:JSONEncode({ v })
+	end
+
+	local function decodeValue(s)
+		return HttpService:JSONDecode(s)[1]
+	end
+
+	local function expiresAt(e)
+		return math.floor(e.expires * 1000)
+	end
+
+	-- Record <-> wire form, by the store id's first byte. Encoding checks what only the bot limits.
+	local codecs = {}
+	codecs.d = {
+		encode = function(e)
+			local metadata = if e.metadata and next(e.metadata) then HttpService:JSONEncode(e.metadata) else nil
+			if metadata and #metadata > MAX_METADATA then
+				error(`Metadata exceeds the {MAX_METADATA} character limit.`, 0)
+			end
+			if e.userIds then
+				if #e.userIds > 4 then
+					error("At most 4 user IDs can be attached to a key.", 0)
+				end
+				for _, id in e.userIds do
+					if type(id) ~= "number" then
+						error("User IDs must be numbers.", 0)
+					end
+				end
+			end
+			return {
+				v = encodeValue(e.value),
+				version = e.version,
+				created = e.created,
+				updated = e.updated,
+				userIds = e.userIds,
+				metadata = metadata,
+			}
+		end,
+		decode = function(w)
+			local value = decodeValue(w.v)
+			return {
+				value = value,
+				version = w.version,
+				created = w.created,
+				updated = w.updated,
+				userIds = w.userIds,
+				metadata = if w.metadata then HttpService:JSONDecode(w.metadata) else nil,
+				deleted = false,
+				versions = { { version = w.version, created = w.updated, value = value, deleted = false } },
+			}
+		end,
+	}
+	codecs.o = codecs.d
+	codecs.h = {
+		encode = function(e)
+			return { v = encodeValue(e.value), expiresAt = expiresAt(e) }
+		end,
+		decode = function(w)
+			return { value = decodeValue(w.v), expires = w.expiresAt / 1000 }
+		end,
+	}
+	codecs.s = {
+		encode = function(e)
+			local sortKey = nil
+			if e.sortKey ~= nil then
+				if type(e.sortKey) ~= "number" and type(e.sortKey) ~= "string" then
+					error("Sort key must be a number or a string.", 0)
+				end
+				sortKey = encodeValue(e.sortKey)
+				if #sortKey > MAX_SORT_KEY then
+					error("Sort key is too long.", 0)
+				end
+			end
+			return { v = encodeValue(e.value), expiresAt = expiresAt(e), sortKey = sortKey }
+		end,
+		decode = function(w, key)
+			return {
+				key = key,
+				value = decodeValue(w.v),
+				expires = w.expiresAt / 1000,
+				sortKey = if w.sortKey then decodeValue(w.sortKey) else nil,
+			}
+		end,
+	}
+	codecs.q = {
+		encode = function(e)
+			return {
+				v = encodeValue(e.value),
+				expiresAt = expiresAt(e),
+				priority = e.priority,
+				order = e.order,
+				hiddenUntil = math.floor(e.hiddenUntil * 1000),
+			}
+		end,
+		decode = function(w, key)
+			return {
+				id = key,
+				value = decodeValue(w.v),
+				expires = w.expiresAt / 1000,
+				priority = w.priority or 0,
+				order = w.order or 0,
+				hiddenUntil = (w.hiddenUntil or 0) / 1000,
+			}
+		end,
+	}
+
+	-- Counted as the bot counts them.
+	local function wireBytes(id, key, w)
+		return #id + #key + #w.v + #(w.metadata or "") + #(w.sortKey or "")
+	end
+
+	-- One write-back at a time, so a key's changes reach the bot in order.
+	function flushStores(root)
+		if root.flushing then
+			return
+		end
+		root.flushing = true
+		while root.persist and next(root.pending) do
+			local changes = {}
+			for id, keys in root.pending do
+				for key, wire in keys do
+					table.insert(changes, { store = id, key = key, entry = if wire then wire else nil })
+				end
+			end
+			table.clear(root.pending)
+			local saved, err = nil, nil
+			for attempt = 1, 3 do
+				saved, err = root.persist.save(changes)
+				if saved or string.find(tostring(err), "limit", 1, true) then
+					break
+				end
+				task.wait(2 * attempt)
+			end
+			if not saved and root.persist.report then
+				root.persist.report(`DataStore write-back failed: {err}`)
+			end
+		end
+		root.flushing = false
+	end
+
+	local function queueFlush(root)
+		if not root.flushQueued then
+			root.flushQueued = true
+			task.delay(1, function()
+				root.flushQueued = false
+				flushStores(root)
+			end)
+		end
+	end
+
+	-- Records a change for write-back before it is made; errors, changing nothing, if it doesn't fit.
+	function stage(root, id, key, record)
+		if not root.persist then
+			return
+		end
+		local wire = if record then codecs[string.sub(id, 1, 1)].encode(record) else false
+		local sizes = root.sizes[id] or {}
+		local size = if wire then wireBytes(id, key, wire) else 0
+		local used = root.used - (sizes[key] or 0) + size
+		if wire and used > (root.quota or math.huge) then
+			error(`DataStores for this user are full ({math.ceil(used / 1024)} KB of {math.floor(root.quota / 1024)} KB).`, 0)
+		end
+		root.sizes[id] = sizes
+		sizes[key] = if wire then size else nil
+		root.used = used
+		root.pending[id] = root.pending[id] or {}
+		root.pending[id][key] = wire
+		queueFlush(root)
+	end
+
+	-- Every store call yields once, as on Roblox; the first also loads the user's records.
+	function sync(world)
+		local root = storeRoot(world)
+		task.wait()
+		if not root.persist or root.loaded then
+			return root
+		end
+		while root.loading do
+			task.wait()
+		end
+		if root.loaded then
+			return root
+		end
+		root.loading = true
+		local reply, err = root.persist.load()
+		root.loading = false
+		if not reply then
+			error(`502: DataStore request failed: {err}`, 0)
+		end
+		for id, keys in reply.entries or {} do
+			local codec = codecs[string.sub(id, 1, 1)]
+			if codec then
+				local records, sizes = recordsFor(root, id), root.sizes[id] or {}
+				root.sizes[id] = sizes
+				for key, wire in keys do
+					local ok, record = pcall(codec.decode, wire, key)
+					if ok then
+						records[key] = record
+						sizes[key] = wireBytes(id, key, wire)
+						if record.version then
+							root.version = math.max(root.version, tonumber(record.version, 16) or 0)
+						end
+					end
+				end
+			end
+		end
+		root.used, root.quota = reply.used or 0, reply.quota
+		root.loaded = true
+		return root
+	end
+end
+
 local function keyInfo(world, e, version)
 	return makeVirtual(world, "DataStoreKeyInfo", "DataStoreKeyInfo", {
 		GetUserIds = method("GetUserIds", function()
@@ -2184,9 +2432,9 @@ local function optionMetadata(options)
 	return ok and md or nil
 end
 
-local function makeDataStore(world, name, ordered)
+local function makeDataStore(world, name, ordered, id)
 	local root = storeRoot(world)
-	local data = {}
+	local data = recordsFor(root, id)
 	local function nextVersion()
 		root.version += 1
 		return string.format("%016X", root.version)
@@ -2194,13 +2442,23 @@ local function makeDataStore(world, name, ordered)
 	local function write(key, value, userIds, metadata)
 		local now = nowMs()
 		local e = data[key]
+		local version = nextVersion()
+		userIds = userIds and table.clone(userIds) or nil
+		metadata = metadata and deepCopy(metadata) or nil
+		stage(root, id, key, {
+			value = value,
+			version = version,
+			created = if e then e.created else now,
+			updated = now,
+			userIds = userIds,
+			metadata = metadata,
+		})
 		if not e then
 			e = { created = now, versions = {} }
 			data[key] = e
 		end
-		e.value, e.version, e.updated, e.deleted = value, nextVersion(), now, false
-		e.userIds = userIds and table.clone(userIds) or nil
-		e.metadata = metadata and deepCopy(metadata) or nil
+		e.value, e.version, e.updated, e.deleted = value, version, now, false
+		e.userIds, e.metadata = userIds, metadata
 		table.insert(e.versions, { version = e.version, created = now, value = value, deleted = false })
 		return e
 	end
@@ -2230,7 +2488,7 @@ local function makeDataStore(world, name, ordered)
 	local members = {}
 	members.GetAsync = method("GetAsync", function(key)
 		key = checkKey(key, "Key name")
-		task.wait()
+		sync(world)
 		local e = live(key)
 		if not e then
 			return nil, nil
@@ -2240,7 +2498,7 @@ local function makeDataStore(world, name, ordered)
 	members.SetAsync = method("SetAsync", function(key, v, userIds, options)
 		key = checkKey(key, "Key name")
 		v = value(v)
-		task.wait()
+		sync(world)
 		return write(key, v, userIds, optionMetadata(options)).version
 	end)
 	members.UpdateAsync = method("UpdateAsync", function(key, fn)
@@ -2248,7 +2506,7 @@ local function makeDataStore(world, name, ordered)
 		if type(fn) ~= "function" then
 			error("Argument 2 missing or nil", 0)
 		end
-		task.wait()
+		sync(world)
 		local e = live(key)
 		local new, userIds, metadata = fn(e and deepCopy(e.value), info(e))
 		if new == nil then
@@ -2263,7 +2521,7 @@ local function makeDataStore(world, name, ordered)
 		if not delta then
 			error("Unable to cast value to int", 0)
 		end
-		task.wait()
+		sync(world)
 		local e = live(key)
 		local cur = e and e.value or 0
 		if type(cur) ~= "number" then
@@ -2274,12 +2532,13 @@ local function makeDataStore(world, name, ordered)
 	end)
 	members.RemoveAsync = method("RemoveAsync", function(key)
 		key = checkKey(key, "Key name")
-		task.wait()
+		sync(world)
 		local e = live(key)
 		if not e then
 			return nil, nil
 		end
 		local old, oldInfo = deepCopy(e.value), info(e)
+		stage(root, id, key, nil)
 		e.deleted = true
 		table.insert(e.versions, { version = nextVersion(), created = nowMs(), deleted = true })
 		return old, oldInfo
@@ -2290,7 +2549,7 @@ local function makeDataStore(world, name, ordered)
 			if not pageSize or pageSize < 1 or pageSize > 100 then
 				error("PageSize must be within a predefined range of 1 to 100.", 0)
 			end
-			task.wait()
+			sync(world)
 			local items = {}
 			for k, e in data do
 				if
@@ -2314,7 +2573,7 @@ local function makeDataStore(world, name, ordered)
 		end)
 	else
 		members.ListKeysAsync = method("ListKeysAsync", function(prefix, pageSize, _, excludeDeleted)
-			task.wait()
+			sync(world)
 			local keys = {}
 			for k, e in data do
 				if (prefix == nil or k:sub(1, #prefix) == prefix) and not (excludeDeleted and e.deleted) then
@@ -2330,7 +2589,7 @@ local function makeDataStore(world, name, ordered)
 		end)
 		members.GetVersionAsync = method("GetVersionAsync", function(key, version)
 			key = checkKey(key, "Key name")
-			task.wait()
+			sync(world)
 			local e = data[key]
 			for _, v in e and e.versions or {} do
 				if v.version == version then
@@ -2344,7 +2603,7 @@ local function makeDataStore(world, name, ordered)
 		end)
 		members.ListVersionsAsync = method("ListVersionsAsync", function(key, sortDirection, minDate, maxDate, pageSize)
 			key = checkKey(key, "Key name")
-			task.wait()
+			sync(world)
 			local e = data[key]
 			local items = {}
 			for _, v in e and e.versions or {} do
@@ -2378,11 +2637,11 @@ local function getStore(self, k, name, scope, ordered)
 	local world = selfState(self, k).world
 	local root = storeRoot(world)
 	name = checkKey(name, "DataStore name")
-	scope = if scope == nil then "global" else tostring(scope)
+	scope = if scope == nil then "global" else checkKey(scope, "Scope")
 	local id = (ordered and "o\0" or "d\0") .. name .. "\0" .. scope
 	local s = root.data[id]
 	if not s then
-		s = { proxy = makeDataStore(world, name, ordered), name = name, ordered = ordered, created = nowMs() }
+		s = { proxy = makeDataStore(world, name, ordered, id), name = name, ordered = ordered, created = nowMs() }
 		root.data[id] = s
 	end
 	return s.proxy
@@ -2404,11 +2663,23 @@ serviceMethods.DataStoreService = {
 	end,
 	ListDataStoresAsync = function(self, prefix, pageSize)
 		local world = selfState(self, "ListDataStoresAsync").world
-		task.wait()
+		local root = sync(world)
 		local created = {}
-		for _, s in storeRoot(world).data do
+		for _, s in root.data do
 			if not s.ordered and (prefix == nil or s.name:sub(1, #prefix) == prefix) then
 				created[s.name] = created[s.name] or s.created
+			end
+		end
+		-- and stores with saved keys this world hasn't opened
+		for id, records in root.records do
+			local parts = string.split(id, "\0")
+			local name = if parts[1] == "d" then parts[2] else nil
+			if name and (prefix == nil or name:sub(1, #prefix) == prefix) then
+				for _, e in records do
+					if not e.deleted then
+						created[name] = math.min(created[name] or math.huge, e.created)
+					end
+				end
 			end
 		end
 		local names = {}
@@ -2438,18 +2709,17 @@ local function expiry(exp, arg)
 	elseif exp <= 0 or exp > MAX_EXPIRATION then
 		error(`Expiration must be between 0 and {MAX_EXPIRATION} seconds.`, 0)
 	end
-	return os.clock() + exp
+	return nowMs() / 1000 + exp
 end
 
 local function memValue(v)
 	return storable(v, 32 * 1024)
 end
 
-local function expiringItems()
-	local items = {}
+local function expiringItems(items)
 	local function live(key)
 		local e = items[key]
-		if e and e.expires > os.clock() then
+		if e and e.expires > nowMs() / 1000 then
 			return e
 		end
 		items[key] = nil
@@ -2458,12 +2728,16 @@ local function expiringItems()
 	return items, live
 end
 
-local function makeHashMap(world, name)
-	local items, live = expiringItems()
+local function makeHashMap(world, name, records, id)
+	local items, live = expiringItems(records)
+	local function put(key, record)
+		stage(storeRoot(world), id, key, record)
+		items[key] = record
+	end
 	return makeVirtual(world, "MemoryStoreHashMap", name, {
 		GetAsync = method("GetAsync", function(key)
 			key = checkKey(key, "Key")
-			task.wait()
+			sync(world)
 			local e = live(key)
 			return e and deepCopy(e.value)
 		end),
@@ -2471,30 +2745,32 @@ local function makeHashMap(world, name)
 			key = checkKey(key, "Key")
 			v = memValue(v)
 			local expires = expiry(exp, 3)
-			task.wait()
-			items[key] = { value = v, expires = expires }
+			sync(world)
+			put(key, { value = v, expires = expires })
 			return true
 		end),
 		UpdateAsync = method("UpdateAsync", function(key, fn, exp)
 			key = checkKey(key, "Key")
 			local expires = expiry(exp, 3)
-			task.wait()
+			sync(world)
 			local e = live(key)
 			local new = fn(e and deepCopy(e.value))
 			if new == nil then
 				return nil
 			end
 			new = memValue(new)
-			items[key] = { value = new, expires = expires }
+			put(key, { value = new, expires = expires })
 			return deepCopy(new)
 		end),
 		RemoveAsync = method("RemoveAsync", function(key)
 			key = checkKey(key, "Key")
-			task.wait()
-			items[key] = nil
+			sync(world)
+			if items[key] then
+				put(key, nil)
+			end
 		end),
 		ListItemsAsync = method("ListItemsAsync", function(count)
-			task.wait()
+			sync(world)
 			local keys = {}
 			for k in items do
 				if live(k) then
@@ -2533,12 +2809,16 @@ local function entryLess(a, b)
 	return a.key < b.key
 end
 
-local function makeSortedMap(world, name)
-	local items, live = expiringItems()
+local function makeSortedMap(world, name, records, id)
+	local items, live = expiringItems(records)
+	local function put(key, record)
+		stage(storeRoot(world), id, key, record)
+		items[key] = record
+	end
 	return makeVirtual(world, "MemoryStoreSortedMap", name, {
 		GetAsync = method("GetAsync", function(key)
 			key = checkKey(key, "Key")
-			task.wait()
+			sync(world)
 			local e = live(key)
 			if not e then
 				return nil
@@ -2549,35 +2829,37 @@ local function makeSortedMap(world, name)
 			key = checkKey(key, "Key")
 			v = memValue(v)
 			local expires = expiry(exp, 3)
-			task.wait()
+			sync(world)
 			local isNew = live(key) == nil
-			items[key] = { key = key, value = v, expires = expires, sortKey = sortKey }
+			put(key, { key = key, value = v, expires = expires, sortKey = sortKey })
 			return isNew
 		end),
 		UpdateAsync = method("UpdateAsync", function(key, fn, exp)
 			key = checkKey(key, "Key")
 			local expires = expiry(exp, 3)
-			task.wait()
+			sync(world)
 			local e = live(key)
 			local new, sortKey = fn(e and deepCopy(e.value), e and e.sortKey)
 			if new == nil then
 				return nil
 			end
 			new = memValue(new)
-			items[key] = { key = key, value = new, expires = expires, sortKey = sortKey }
+			put(key, { key = key, value = new, expires = expires, sortKey = sortKey })
 			return deepCopy(new), sortKey
 		end),
 		RemoveAsync = method("RemoveAsync", function(key)
 			key = checkKey(key, "Key")
-			task.wait()
-			items[key] = nil
+			sync(world)
+			if items[key] then
+				put(key, nil)
+			end
 		end),
 		GetRangeAsync = method("GetRangeAsync", function(direction, count, lower, upper)
 			count = tonumber(count)
 			if not count or count < 1 or count > 200 then
 				error("Count must be between 1 and 200.", 0)
 			end
-			task.wait()
+			sync(world)
 			local list = {}
 			for k in items do
 				local e = live(k)
@@ -2606,21 +2888,26 @@ local function makeSortedMap(world, name)
 	})
 end
 
-local function makeQueue(world, name, invisibility)
+-- Items are keyed by time added plus a counter and a random part (another worker may add to the
+-- same saved queue), so they persist key by key like the maps.
+local function makeQueue(world, name, invisibility, items, storeId)
 	invisibility = tonumber(invisibility) or 30
-	local items, reads = {}, {}
-	local readId, order = 0, 0
+	local reads, readId, added = {}, 0, 0
+	local function put(key, record)
+		stage(storeRoot(world), storeId, key, record)
+		items[key] = record
+	end
 	local function prune()
-		local now = os.clock()
-		for i = #items, 1, -1 do
-			if items[i].expires <= now then
-				table.remove(items, i)
+		local now = nowMs() / 1000
+		for key, it in items do
+			if it.expires <= now then
+				items[key] = nil
 			end
 		end
 	end
 	local function visible()
 		prune()
-		local now = os.clock()
+		local now = nowMs() / 1000
 		local out = {}
 		for _, it in items do
 			if it.hiddenUntil <= now then
@@ -2631,7 +2918,10 @@ local function makeQueue(world, name, invisibility)
 			if a.priority ~= b.priority then
 				return a.priority > b.priority
 			end
-			return a.order < b.order
+			if a.order ~= b.order then
+				return a.order < b.order
+			end
+			return a.id < b.id
 		end)
 		return out
 	end
@@ -2639,13 +2929,16 @@ local function makeQueue(world, name, invisibility)
 		AddAsync = method("AddAsync", function(v, exp, priority)
 			v = memValue(v)
 			local expires = expiry(exp, 2)
-			task.wait()
-			order += 1
-			table.insert(items, {
+			sync(world)
+			added += 1
+			local now = nowMs()
+			local key = string.format("%x.%x.%x", now, added, math.random(0, 0xFFFF))
+			put(key, {
+				id = key,
 				value = v,
 				expires = expires,
 				priority = tonumber(priority) or 0,
-				order = order,
+				order = now,
 				hiddenUntil = 0,
 			})
 		end),
@@ -2653,7 +2946,7 @@ local function makeQueue(world, name, invisibility)
 			count = tonumber(count) or 1
 			waitTimeout = tonumber(waitTimeout) or -1
 			local deadline = if waitTimeout >= 0 then os.clock() + waitTimeout else math.huge
-			task.wait()
+			sync(world)
 			while true do
 				local vis = visible()
 				local enough = #vis >= count or (not allOrNothing and #vis > 0)
@@ -2663,9 +2956,11 @@ local function makeQueue(world, name, invisibility)
 					end
 					local out, taken = {}, {}
 					for i = 1, math.min(count, #vis) do
-						vis[i].hiddenUntil = os.clock() + invisibility
-						table.insert(out, deepCopy(vis[i].value))
-						table.insert(taken, vis[i])
+						local it = table.clone(vis[i])
+						it.hiddenUntil = nowMs() / 1000 + invisibility
+						put(it.id, it)
+						table.insert(out, deepCopy(it.value))
+						table.insert(taken, it.id)
 					end
 					readId += 1
 					local id = tostring(readId)
@@ -2676,34 +2971,39 @@ local function makeQueue(world, name, invisibility)
 			end
 		end),
 		RemoveAsync = method("RemoveAsync", function(id)
-			task.wait()
-			for _, it in reads[id] or {} do
-				local i = table.find(items, it)
-				if i then
-					table.remove(items, i)
+			sync(world)
+			for _, key in reads[id] or {} do
+				if items[key] then
+					put(key, nil)
 				end
 			end
 			reads[id] = nil
 		end),
 		GetSizeAsync = method("GetSizeAsync", function(excludeInvisible)
-			task.wait()
+			sync(world)
 			if excludeInvisible then
 				return #visible()
 			end
 			prune()
-			return #items
+			local size = 0
+			for _ in items do
+				size += 1
+			end
+			return size
 		end),
 	})
 end
 
-local function memoryGetter(kind, bucketName, make)
+local function memoryGetter(kind, bucketName, prefix, make)
 	return function(self, name, extra)
 		local world = selfState(self, "Get" .. kind).world
 		name = checkKey(name, kind .. " name")
-		local bucket = storeRoot(world)[bucketName]
+		local root = storeRoot(world)
+		local bucket = root[bucketName]
 		local s = bucket[name]
 		if not s then
-			s = make(world, name, extra)
+			local id = prefix .. "\0" .. name
+			s = make(world, name, extra, recordsFor(root, id), id)
 			bucket[name] = s
 		end
 		return s
@@ -2711,9 +3011,13 @@ local function memoryGetter(kind, bucketName, make)
 end
 
 serviceMethods.MemoryStoreService = {
-	GetHashMap = memoryGetter("HashMap", "hash", makeHashMap),
-	GetSortedMap = memoryGetter("SortedMap", "sorted", makeSortedMap),
-	GetQueue = memoryGetter("Queue", "queues", makeQueue),
+	GetHashMap = memoryGetter("HashMap", "hash", "h", function(world, name, _, records, id)
+		return makeHashMap(world, name, records, id)
+	end),
+	GetSortedMap = memoryGetter("SortedMap", "sorted", "s", function(world, name, _, records, id)
+		return makeSortedMap(world, name, records, id)
+	end),
+	GetQueue = memoryGetter("Queue", "queues", "q", makeQueue),
 }
 
 serviceMethods.MessagingService = {
@@ -3500,6 +3804,9 @@ function World:destroy()
 	if worlds[self.id] == self then
 		worlds[self.id] = nil
 	end
+	if self.stores then
+		task.spawn(flushStores, self.stores)
+	end
 	local pinned = table.clone(self.pinned)
 	self:idle()
 	for inst in pinned do
@@ -3520,6 +3827,13 @@ function World:destroy()
 end
 
 function World:newContext(hooks, env)
+	-- Any run's token reaches the same user's stores; the latest is kept.
+	if hooks.dataStore then
+		self.persist = hooks.dataStore
+		if self.stores and not self.stores.persist then
+			self.stores.persist = hooks.dataStore
+		end
+	end
 	self.live += 1
 	placeWorld(self)
 	local ctx = setmetatable({ world = self, hooks = hooks, env = env, modules = {}, extensions = {}, extensionInstances = {} }, Context)
@@ -3548,6 +3862,9 @@ function Context:destroy()
 		world:destroy()
 	else
 		placeWorld(world)
+		if world.stores then
+			task.spawn(flushStores, world.stores)
+		end
 	end
 end
 

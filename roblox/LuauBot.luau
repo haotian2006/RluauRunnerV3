@@ -66,9 +66,22 @@ local MemoryLimits = {
 	workerMb = 1024, -- Luau heap all runs share
 	runFloorMb = 128, -- what a run may always hold, however busy the worker
 	processMb = nil, -- past this Studio commit, the largest run is revoked (engine memory has no category)
+	stepSeconds = nil, -- longest run code may keep the worker busy without LuauBot getting a turn
 }
 local CategoryRuns = {} -- category -> its run's thread record
 local CategoryFreedAt = {}
+
+-- What a run may hold now: the budget less the others, never under the floor. The native brake
+-- stops it there even if it never yields; the watcher below handles the rest at yields.
+local function allowance(category)
+	local others = 0
+	for other, thread in CategoryRuns do
+		if other ~= category and not thread.stopped then
+			others += Memory.bytes(other)
+		end
+	end
+	return math.max(MemoryLimits.runFloorMb, MemoryLimits.workerMb - others / MB) * MB
+end
 
 -- Freed memory stays charged until the next collection, so take the emptiest, longest-idle category.
 local function takeCategory(thread)
@@ -94,23 +107,60 @@ local function releaseCategory(category)
 	if category then
 		CategoryRuns[category] = nil
 		CategoryFreedAt[category] = os.clock()
+		if Memory.release then
+			Memory.release(category)
+		end
 	end
 end
 
+-- Revoking also makes each of the run's threads throw at its next loop or call (native brake).
 local function revokeRun(thread, reason)
 	if not thread.stopped then
 		thread.stopReason = reason
 		thread.stopped = true
+		if thread.memoryCategory and Memory.revoke then
+			Memory.revoke(thread.memoryCategory)
+		end
 	end
 end
 
+local function trippedReason(why, held, limit)
+	if why == "memory" then
+		return `Memory limit exceeded: the run held {math.ceil(held / MB)} MB (limit {math.floor(limit / MB)} MB).`
+	elseif why == "step" then
+		return string.format(
+			"CPU limit exceeded: the run kept the worker busy for %.1f s without a break (limit %.1f s).",
+			held / 1000,
+			limit / 1000
+		)
+	end
+	return nil
+end
+
 -- Runs share the worker budget: past it, the largest run above the floor is revoked, then the next,
--- until the rest fit, so a lone run may use all of it. Revoked runs no longer count. A run that never
--- yields isn't checked until it does; the unit's MemoryMax is the last line.
+-- until the rest fit, so a lone run may use all of it. Revoked runs no longer count. Between yields
+-- the native brake holds each run to its allowance; the unit's MemoryMax is the last line.
 local function watchMemory()
 	local lastProcessRevoke = -math.huge
+	local brakeStatus = nil
 	while true do
 		task.wait(0.25)
+		if Memory.brake then
+			-- also the tick the step guard counts from
+			local status, why = Memory.brake()
+			if status ~= brakeStatus and status ~= "checking" then
+				brakeStatus = status
+				task.spawn(pcall, sendDebug, `memory brake {status}{if status == "off" then ": " .. tostring(why) else ""}`)
+			end
+			for category, thread in CategoryRuns do
+				if not thread.stopped then
+					local reason = trippedReason(Memory.tripped(category))
+					if reason then
+						revokeRun(thread, reason)
+					end
+				end
+			end
+		end
 		local held, total = {}, 0
 		for category, thread in CategoryRuns do
 			if not thread.stopped then
@@ -139,6 +189,11 @@ local function watchMemory()
 			)
 			held[largest] = nil
 			total = others
+		end
+		if Memory.limit then
+			for category, bytes in held do
+				Memory.limit(category, math.max(MemoryLimits.runFloorMb * MB, MemoryLimits.workerMb * MB - (total - bytes)))
+			end
 		end
 		-- One at a time: a revoked run's memory takes a while to be collected.
 		if MemoryLimits.processMb and os.clock() - lastProcessRevoke > 5 then
@@ -734,6 +789,41 @@ local function runCode(compCode, data)
 		fetchAsset = fetchAsset,
 		fetchRepo = fetchRepo,
 	}
+	-- Persistent DataStores (Sandbox): the bot's private per-run token stays in these closures.
+	if type(data.storageToken) == "string" then
+		local storageToken = data.storageToken
+		local function storageRequest(path, body)
+			local ok, res = pcall(request, {
+				Url = IP .. path,
+				Method = "POST",
+				Headers = {
+					["Content-Type"] = "application/json",
+					["x-secret-token"] = SecretToken,
+					["x-storage-token"] = storageToken,
+				},
+				Body = encoder(body or {}),
+			})
+			if not ok then
+				return nil, `request failed: {res}`
+			end
+			local decoded, reply = pcall(HttpService.JSONDecode, HttpService, res.Body)
+			if res.StatusCode ~= 200 then
+				return nil, if decoded and type(reply) == "table" and reply.message then reply.message else `HTTP {res.StatusCode}`
+			end
+			return if decoded then reply else nil, if decoded then nil else "unreadable reply"
+		end
+		hooks.dataStore = {
+			load = function()
+				return storageRequest("/dataStore/load")
+			end,
+			save = function(changes)
+				return storageRequest("/dataStore/save", { changes = changes })
+			end,
+			report = function(message)
+				task.spawn(pcall, sendDebug, message)
+			end,
+		}
+	end
 	local syncs = {}
 	local syncRunning = false
 	local function registerSync(fn, th)
@@ -1330,6 +1420,9 @@ local function runCode(compCode, data)
 	thread.memoryCategory = takeCategory(thread)
 	if thread.memoryCategory then
 		Memory.assign(thread.running, thread.memoryCategory)
+		if Memory.limit then
+			Memory.limit(thread.memoryCategory, allowance(thread.memoryCategory))
+		end
 	end
 	thread.stopped = false
 	thread.forceStop = function()
@@ -1769,11 +1862,17 @@ local function start(ip, secretToken, options)
 		local claimed, controller = pcall(NativeLibrary.claimMemoryAccounting)
 		if claimed then
 			Memory = controller
-			for _, key in { "workerMb", "runFloorMb", "processMb" } do
+			for _, key in { "workerMb", "runFloorMb", "processMb", "stepSeconds" } do
 				local value = options.memory[key]
 				if type(value) == "number" and value > 0 then
 					MemoryLimits[key] = value
 				end
+			end
+			if MemoryLimits.stepSeconds and Memory.stepLimit then
+				Memory.stepLimit(MemoryLimits.stepSeconds)
+			end
+			-- The brake trusts its interrupt once it sees it called; each pass of this loop calls it.
+			for _ = 1, 4096 do
 			end
 			task.spawn(watchMemory)
 		else

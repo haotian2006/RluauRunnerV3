@@ -157,3 +157,6 @@ bin/
 DEPLOYMENT.md
 
 .claude/settings.local.json
+
+# Saved DataStores (DATASTORE_DIR default)
+data/

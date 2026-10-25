@@ -9,9 +9,11 @@ const {
   WORKER_SECRET_FILE,
   WORKER_SOCKET,
 } = require("../config");
+const { startDataStoreSweeps } = require("../dataStores");
 const { SECRET_TOKEN } = require("../state");
 const { registerAssetRoutes } = require("./routes/assets");
 const { registerButtonRoutes } = require("./routes/buttons");
+const { registerDataStoreRoutes } = require("./routes/dataStores");
 const { registerGithubRoutes } = require("./routes/github");
 const { registerRespondRoutes } = require("./routes/respond");
 const { registerSessionRoutes } = require("./routes/session");
@@ -36,6 +38,7 @@ app.use(express.urlencoded({ extended: false, limit: "4kb" }));
 registerRespondRoutes(app);
 registerAssetRoutes(app);
 registerButtonRoutes(app);
+registerDataStoreRoutes(app);
 registerGithubRoutes(app);
 registerSessionRoutes(app);
 registerSourceRoutes(app);
@@ -60,6 +63,8 @@ const WORKER_PATHS = new Set([
   "/button",
   "/github",
   "/workerEvents",
+  "/dataStore/load",
+  "/dataStore/save",
 ]);
 
 function isWorkerPath(url) {
@@ -89,6 +94,7 @@ function startWorkerSocket() {
 
 function start() {
   if (WORKER_SOCKET) startWorkerSocket();
+  startDataStoreSweeps();
   return app.listen(PORT, "0.0.0.0", () => {
     console.log(`Server is running on port ${PORT}`);
   });

@@ -91,6 +91,9 @@ WORKER_SECRET_FILE=/run/luau-bot/secret(OPTIONAL, default next to WORKER_SOCKET;
 STUDIO_ACCEPT_SECONDS=120(OPTIONAL, a Studio session's least time taking tasks before it hands over)
 STUDIO_SESSION_SECONDS=240(OPTIONAL, must match the workers' SESSION_MAX_SECONDS)
 STUDIO_DRAIN_SECONDS=60(OPTIONAL, least time a session's runs get before the session ends)
+DATASTORE_DIR=./data/datastores(OPTIONAL, where each Discord user's saved DataStores and MemoryStores live)
+DATASTORE_QUOTA_BYTES=1048576(OPTIONAL, default 1 MB per user)
+DATASTORE_EXPIRY_DAYS=30(OPTIONAL, a user's saved stores are deleted after this long unused)
 FORM_ID=Google_Form_Id(OPTIONAL)
 FORM_ENTRY_NAME=entry.0000000000(OPTIONAL)
 FORM_ENTRY_USER_ID=entry.0000000000(OPTIONAL)
@@ -115,6 +118,21 @@ restarts them when the secret changes.
 While a Studio session takes tasks, sandboxed runs go only to Studio workers.
 With none, the bot starts Open Cloud servers, then falls back to Lune if those
 fail. `--!nosandbox` runs always go to Open Cloud.
+
+On Studio workers with luau-bot-headless' luau_native, each run has a memory
+budget and a native brake: a run past its share, or one that keeps the worker
+busy longer than `stepSeconds` between LuauBot's watcher ticks, is stopped at
+its next loop or call even if it never yields ("Memory limit exceeded" /
+"CPU limit exceeded").
+
+Sandboxed Discord runs keep their DataStores and MemoryStores: the bot saves
+them per user under `DATASTORE_DIR`, key by key, up to `DATASTORE_QUOTA_BYTES`,
+and deletes a user's after `DATASTORE_EXPIRY_DAYS` unused. A worker reaches them
+only through `/dataStore/load` and `/dataStore/save` with the worker secret and
+a private token the bot mints for each run and hands to LuauBot, never to run
+code; the token picks the user. Runs on two workers at once only race on the
+same key, and see each other's writes in their next run. Web runs have no
+lasting user, so their stores last as long as their world, as before.
 
 `STORE_COMPILE_SOURCE` is covered in [Source links](#source-links-optional).
 

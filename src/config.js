@@ -286,6 +286,15 @@ module.exports = {
     (process.env.WORKER_SOCKET
       ? path.join(path.dirname(process.env.WORKER_SOCKET), "secret")
       : ""),
+  // Persistent DataStoreService data for sandboxed Discord runs: one file per user, a quota each,
+  // removed after DATASTORE_EXPIRY_DAYS without use. Workers reach it with a per-run token that
+  // lives DATASTORE_GRANT_TTL_MS past its last use.
+  DATASTORE_DIR:
+    process.env.DATASTORE_DIR || path.join(ROOT_DIR, "data", "datastores"),
+  DATASTORE_QUOTA_BYTES: envNumber("DATASTORE_QUOTA_BYTES", 1024 * 1024),
+  DATASTORE_EXPIRY_MS:
+    envNumber("DATASTORE_EXPIRY_DAYS", 30) * 24 * 60 * 60 * 1000,
+  DATASTORE_GRANT_TTL_MS: envNumber("DATASTORE_GRANT_TTL_MS", 60 * 60 * 1000),
   CALLBACK_URL,
   ENABLE_DISCORD,
   ENABLE_WEB,

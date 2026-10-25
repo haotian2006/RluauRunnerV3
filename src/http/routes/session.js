@@ -13,6 +13,7 @@ const {
   STUDIO_SESSION_MS,
 } = require("../../config");
 const { closeSession, getSession } = require("../../core/sessions");
+const { grantStorage } = require("../../dataStores");
 const { logBot } = require("../../log");
 const { getMaxWorkers } = require("../../profiles");
 const {
@@ -217,13 +218,16 @@ function registerSessionRoutes(app) {
 
     const taskId = await reserveNextAllowedTask(serverId);
     if (!taskId) return res.status(204).end();
-    res.json(toWirePayload(getDispatchedTask(taskId)));
+    const task = getDispatchedTask(taskId);
+    grantStorage(task);
+    res.json(toWirePayload(task));
   });
 
   app.post("/get", requireSecret, async (req, res) => {
     const TaskId = req.body.TaskId;
     const task = getDispatchedTask(TaskId);
     if (task) {
+      grantStorage(task);
       const payload = toWirePayload(task);
       res.json(payload);
       return;
