@@ -13,6 +13,13 @@ local realUserSettings = UserSettings
 local realPluginManager = PluginManager
 local realRaycastParams = RaycastParams
 local realOverlapParams = OverlapParams
+local infrastructureCheck = type(native) == "table" and native.isSessionInfrastructure
+local function isInfrastructure(instance)
+	return infrastructureCheck ~= nil and infrastructureCheck(instance)
+end
+local function checkInfrastructure(instance)
+	assert(not isInfrastructure(instance), "worker infrastructure is not accessible in the sandbox")
+end
 -- Referencing this drops inlining in this module only, never in user code (accepted).
 local realGetfenv = getfenv
 
@@ -29,6 +36,16 @@ local sigStates = setmetatable({}, { __mode = "k" })
 local rootWorld = {}
 local shadowInfo = {}
 local worlds = {}
+-- Extension definitions belong to a context, not to the VM or shared class cache.
+local extensionOwners = {}
+local function attachExtensions(context, root)
+	local function attach(instance)
+		extensionOwners[instance] = context
+		context.extensionInstances[instance] = true
+	end
+	attach(root)
+	for _, instance in root:GetDescendants() do attach(instance) end
+end
 
 local function index(o, k)
 	return o[k]
@@ -281,6 +298,7 @@ local function ovFor(world, real)
 end
 
 local function isHidden(world, real)
+	if isInfrastructure(real) then return true end
 	local ov = world.overlay[real]
 	return ov ~= nil and ov.destroyed
 end
@@ -422,6 +440,7 @@ end
 local function unwrapArg(world, v)
 	local st = states[v]
 	if st then
+		checkInfrastructure(st.real)
 		return st.real
 	end
 	local dt = dtReal[v]
@@ -454,6 +473,7 @@ end
 function unwrapDeep(world, v, seen)
 	local st = states[v]
 	if st then
+		checkInfrastructure(st.real)
 		return st.real
 	end
 	if type(v) ~= "table" then
@@ -587,6 +607,7 @@ local function selfState(self, k)
 	if not st then
 		error(`Expected ':' not '.' calling member function {k}`, 0)
 	end
+	checkInfrastructure(st.real)
 	return st
 end
 
@@ -689,8 +710,100 @@ local function memberError(st, k)
 	error(`{k} is not a valid member of {className} "{virtualFullName(st)}"`, 0)
 end
 
+--// Script Source and Enabled
+-- On a headless Studio worker a game Script can't read or write Source, and an enabled Script a
+-- run parents into the place would run unsandboxed (Open Cloud never runs them). So Source lives
+-- here when the engine refuses it, and Enabled always does: real Scripts are switched off first.
+local virtualSource = setmetatable({}, { __mode = "k" })
+local virtualEnabled = setmetatable({}, { __mode = "k" })
+
+local function sourceOf(real)
+	local own = virtualSource[real]
+	if own ~= nil then
+		return own
+	end
+	-- Scripts a run imported belong to its broker, which can read them.
+	local context = extensionOwners[real]
+	local read = context and not context.dead and context.hooks and context.hooks.readSource
+	if read then
+		local ok, source = pcall(read, real)
+		if ok and type(source) == "string" then
+			return source
+		end
+	end
+	local ok, source = pcall(index, real, "Source")
+	return if ok then source else ""
+end
+
+local function setSource(real, v)
+	if type(v) ~= "string" then
+		error(`Unable to assign property Source. string expected, got {typeName(v)}`, 0)
+	end
+	if pcall(setIndex, real, "Source", v) then
+		virtualSource[real] = nil
+	else
+		virtualSource[real] = v
+	end
+end
+
+local function enabledOf(real)
+	local own = virtualEnabled[real]
+	if own == nil then
+		return real.Enabled
+	end
+	return own
+end
+
+local function setEnabled(real, v)
+	if type(v) ~= "boolean" then
+		error(`Unable to assign property Enabled. bool expected, got {typeName(v)}`, 0)
+	end
+	virtualEnabled[real] = v
+end
+
+local function disableScripts(real)
+	if not (real:IsA("BaseScript") or real:FindFirstChildWhichIsA("BaseScript", true)) then
+		return
+	end
+	local tree = real:GetDescendants()
+	table.insert(tree, real)
+	for _, instance in tree do
+		if instance:IsA("BaseScript") and instance.Enabled then
+			if virtualEnabled[instance] == nil then
+				virtualEnabled[instance] = true
+			end
+			instance.Enabled = false
+		end
+	end
+end
+
+-- Carries a tree's own Source and Enabled to its clone, pairing children the way Clone copies them.
+local function copyVirtual(original, copy)
+	if original:IsA("LuaSourceContainer") then
+		virtualSource[copy] = virtualSource[original] or (if extensionOwners[original] then sourceOf(original) else nil)
+		virtualEnabled[copy] = virtualEnabled[original]
+	end
+	local children, i = copy:GetChildren(), 1
+	for _, child in original:GetChildren() do
+		if child.Archivable then
+			local cloned = children[i]
+			if not cloned or cloned.ClassName ~= child.ClassName then
+				return
+			end
+			copyVirtual(child, cloned)
+			i += 1
+		end
+	end
+end
+
+-- luau_native adds these to every Instance; they leak the real full name and memory address.
+local NATIVE_MEMBERS = table.freeze({ GetNativeInfo = true, CountDescendants = true, NativeAddress = true })
+
 local function slowIndex(st, k)
 	local world, real = st.world, st.real
+	if NATIVE_MEMBERS[k] then
+		memberError(st, k)
+	end
 	if st.class.events[k] then
 		return signalFor(st, k, function()
 			return makeSignal(world, { real[k] })
@@ -719,6 +832,7 @@ local function setParent(st, v)
 		else
 			target = vs.real == realWorkspace and world.ws or shadowFor(world, vs.real)
 		end
+		disableScripts(real)
 	end
 	local ok, err = pcall(setIndex, real, "Parent", target)
 	if not ok then
@@ -731,9 +845,8 @@ local function setParent(st, v)
 	end
 end
 
--- Writes to a shared instance run against the real one with this world's overlay applied, then the
--- real values are restored. The engine does linked properties (ClockTime/TimeOfDay) and validation,
--- and nothing can observe the real instance in between because none of this yields.
+-- Shared-instance writes apply this world's overlay to the real one, write, and restore it without
+-- yielding, so the engine handles linked props (ClockTime/TimeOfDay) and validation unobserved.
 local CAPTURE_METHODS = { Lighting = true }
 
 local function readWritable(real, class)
@@ -794,10 +907,30 @@ local function captureMethodWrapper(k)
 	return m
 end
 
--- Engine-only classes a run still expects (the mock LocalPlayer and its PlayerGui) are real instances
--- underneath: the proxy reports the stand-in class and its members, and the rest is the real one's.
+-- Mock engine-only classes (LocalPlayer, its PlayerGui) are real instances underneath: the proxy
+-- reports the stand-in class and members, and the rest is the real one's.
 local function fakeIsA(self, class)
 	return selfState(self, "IsA").fake.classes[class] == true
+end
+
+local extensionBases = {}
+local function extensionFor(st, name)
+	if st.kind ~= "owned" then return nil end
+	local context = extensionOwners[st.real]
+	if not context or context.dead then return nil end
+	local className = st.real.ClassName
+	while className do
+		local members = context.extensions[className]
+		if members and members[name] then return members[name], context end
+		local base = extensionBases[className]
+		if base == nil then
+			local reflected = ReflectionService:GetClass(className)
+			base = reflected and reflected.Superclass or false
+			extensionBases[className] = base
+		end
+		className = base or nil
+	end
+	return nil
 end
 
 local function makeProxy(world, real, kind)
@@ -811,6 +944,7 @@ local function makeProxy(world, real, kind)
 	local props, methods = class.props, class.methods
 	if kind == "owned" then
 		mt.__index = function(_, k)
+			checkInfrastructure(real)
 			if fake then
 				if k == "ClassName" then
 					return fake.className
@@ -844,6 +978,13 @@ local function makeProxy(world, real, kind)
 			if methods[k] then
 				return methodWrapper(k)
 			end
+			if not st.class.events[k] then
+				local extension = extensionFor(st, k)
+				if extension then
+					if extension.method then return extension.method end
+					return extension.get(p)
+				end
+			end
 			if fake then
 				local child = real:FindFirstChild(k)
 				if child then
@@ -854,11 +995,26 @@ local function makeProxy(world, real, kind)
 			return slowIndex(st, k)
 		end
 		mt.__newindex = function(_, k, v)
+			checkInfrastructure(real)
 			if fake and (fake.get[k] or k == "Parent") then
 				error(`Unable to assign property {k}. Property is read only`, 0)
 			end
 			if k == "Parent" then
 				return setParent(st, v)
+			end
+			if k == "Source" and real:IsA("LuaSourceContainer") then
+				return setSource(real, v)
+			elseif k == "Enabled" and real:IsA("BaseScript") then
+				return setEnabled(real, v)
+			elseif k == "Disabled" and real:IsA("BaseScript") then
+				return setEnabled(real, if type(v) == "boolean" then not v else v)
+			end
+			if not props[k] and not methods[k] and not st.class.events[k] then
+				local extension = extensionFor(st, k)
+				if extension then
+					if not extension.set then error(`Unable to assign property {k}. Property is read only`, 0) end
+					return extension.set(p, v)
+				end
 			end
 			local ok, err = pcall(setIndex, real, k, unwrapArg(world, v))
 			if not ok then
@@ -872,6 +1028,7 @@ local function makeProxy(world, real, kind)
 		local mocked = MOCKED[real.ClassName]
 		local isWs = real == realWorkspace
 		mt.__index = function(_, k)
+			checkInfrastructure(real)
 			if sgets then
 				local g = sgets[k]
 				if g then
@@ -934,6 +1091,7 @@ local function makeProxy(world, real, kind)
 			memberError(st, k)
 		end
 		mt.__newindex = function(_, k, v)
+			checkInfrastructure(real)
 			if k == "Parent" then
 				local ok, err = pcall(setIndex, real, "Parent", unwrapArg(world, v))
 				if not ok then
@@ -967,6 +1125,7 @@ local function makeProxy(world, real, kind)
 end
 
 function wrap(world, real)
+	if isInfrastructure(real) then return nil end
 	local p = world.proxies[real]
 	if p then
 		return p
@@ -985,6 +1144,10 @@ function wrap(world, real)
 		return nil
 	end
 	if isEngine(real) then
+		-- Hide a headless worker's runner Script (not Archivable, so LuauBot's boot reset keeps it).
+		if real:IsA("LuaSourceContainer") and not real.Archivable then
+			return nil
+		end
 		if baseline[real] or isEngineClass(real) then
 			return makeProxy(world, real, "shared")
 		end
@@ -1128,8 +1291,7 @@ local function connect(s, fn, once)
 		if once then
 			disconnect(conn)
 		end
-		-- a handler still running (or waiting) keeps the run alive; if it errors its thread
-		-- is dead and stops counting
+		-- a running or waiting handler keeps the run alive; one that errored is dead and stops counting
 		local co = coroutine.running()
 		world.handlers[co] = true
 		fn(...)
@@ -1253,8 +1415,8 @@ end
 common("GetFullName", function(self)
 	return virtualFullName(selfState(self, "GetFullName"))
 end)
--- Like the engine, nil is an answer rather than an error: everything is a descendant of nil and
--- nothing is its ancestor (UI libraries pass "the object under the mouse", which can be nil).
+-- Like the engine, nil isn't an error: everything descends from nil and nothing is its ancestor
+-- (UI libraries pass the object under the mouse, which can be nil).
 common("IsDescendantOf", function(self, other)
 	local st = selfState(self, "IsDescendantOf")
 	if other == nil then
@@ -1320,6 +1482,11 @@ local function ownedClone(self)
 		return nil
 	end
 	pin(st.world, c)
+	if st.real:IsA("LuaSourceContainer") or st.real:FindFirstChildWhichIsA("LuaSourceContainer", true) then
+		copyVirtual(st.real, c)
+	end
+	local context = extensionOwners[st.real]
+	if context and not context.dead then attachExtensions(context, c) end
 	return wrap(st.world, c)
 end
 -- the engine hands out a new signal object per call; one proxy per name keeps firesignal working
@@ -1339,6 +1506,24 @@ ownedMethods.GetPropertyChangedSignal = ownedSignalGetter("GetPropertyChangedSig
 ownedMethods.GetAttributeChangedSignal = ownedSignalGetter("GetAttributeChangedSignal", "attr:")
 ownedMethods.Clone = ownedClone
 ownedMethods.clone = ownedClone
+ownedGetters.Source = function(st)
+	if st.real:IsA("LuaSourceContainer") then
+		return sourceOf(st.real)
+	end
+	return slowIndex(st, "Source")
+end
+ownedGetters.Enabled = function(st)
+	if st.real:IsA("BaseScript") then
+		return enabledOf(st.real)
+	end
+	return slowIndex(st, "Enabled")
+end
+ownedGetters.Disabled = function(st)
+	if st.real:IsA("BaseScript") then
+		return not enabledOf(st.real)
+	end
+	return slowIndex(st, "Disabled")
+end
 
 local function ownedDestroy(self)
 	local st = selfState(self, "Destroy")
@@ -1788,7 +1973,7 @@ serviceMethods.CollectionService = {
 	end,
 }
 
---// Mock stores (sandbox only; data lives for this server session)
+--// Mock stores (sandbox only; data lasts as long as the user's world)
 
 local HttpService = realGame:GetService("HttpService")
 local InsertService = realGame:GetService("InsertService")
@@ -2615,8 +2800,8 @@ serviceGetters.LogService = {
 		return l.silent
 	end),
 }
--- AssetService's EditableImage methods are blocked on these servers, so a run gets EditableImages
--- backed by the Image library instead (LoadEnv's hooks.editableImages)
+-- AssetService's EditableImage methods are blocked on these servers, so runs get Image-library
+-- EditableImages instead (LoadEnv's hooks.editableImages)
 local function editableProvider(self, k)
 	local provider = selfState(self, k).world.editableImages
 	if not provider then
@@ -2655,8 +2840,8 @@ serviceGetters.ScriptContext = {
 	end),
 }
 
---// Players: a mock LocalPlayer with a PlayerGui and Backpack, so client-style code has a player to
---// work with. It is the run's Discord user; a web run gets Player1 / -1 like a Studio test player.
+--// Players: a mock LocalPlayer (PlayerGui, Backpack) for client-style code. It is the run's
+--// Discord user; a web run gets Player1 / -1 like a Studio test player.
 
 local realPlayers = realGame:GetService("Players")
 
@@ -2688,8 +2873,8 @@ local function constant(v)
 	end
 end
 
--- The engine's GetGuiObjectsAtPosition is locked to Roblox scripts on the ScreenGui underneath, so
--- the mock PlayerGui hit-tests itself: visible GuiObjects holding the point, topmost first.
+-- GetGuiObjectsAtPosition on the real ScreenGui underneath is Roblox-script-only, so the mock
+-- PlayerGui hit-tests itself: visible GuiObjects holding the point, topmost first.
 local function guiObjectsAt(st, x, y)
 	if type(x) ~= "number" or type(y) ~= "number" then
 		error("GetGuiObjectsAtPosition expects two numbers", 0)
@@ -2846,11 +3031,9 @@ serviceMethods.Players = {
 }
 serviceMethods.Players.getPlayers = serviceMethods.Players.GetPlayers
 
---// RunService frame events. An Open Cloud server only fires Heartbeat, so each world plays
---// the rest itself in the order a client runs them (measured in Studio): BindToRenderStep
---// by priority, RenderStepped, PreRender, PreAnimation, Stepped, PreSimulation,
---// PostSimulation, then the real Heartbeat. Handlers are deferred, and what they defer
---// runs before the next event, as with deferred SignalBehavior.
+--// RunService frame events. Open Cloud only fires Heartbeat, so each world fires the rest in
+--// client order (measured in Studio): BindToRenderStep by priority, FRAME_EVENTS, then the real
+--// Heartbeat. Handlers are deferred, and what they defer runs before the next event.
 
 local realRunService = realGame:GetService("RunService")
 local FRAME_EVENTS = { "RenderStepped", "PreRender", "PreAnimation", "Stepped", "PreSimulation", "PostSimulation" }
@@ -3250,7 +3433,7 @@ end
 function Sandbox.getWorld(userId)
 	local key = tostring(userId)
 	local w = worlds[key]
-	if w then
+	if w and not w.dead then
 		return w
 	end
 	w = setmetatable({
@@ -3307,10 +3490,39 @@ function World:idle()
 	table.clear(self.pinned)
 end
 
+-- A world lives only while its user has runs going; the last one ending tears it down, so the next
+-- run gets a fresh workspace, LocalPlayer, PlayerGui, shared table, mock stores and overlays.
+function World:destroy()
+	if self.dead then
+		return
+	end
+	self.dead = true
+	if worlds[self.id] == self then
+		worlds[self.id] = nil
+	end
+	local pinned = table.clone(self.pinned)
+	self:idle()
+	for inst in pinned do
+		pcall(inst.Destroy, inst)
+	end
+	for _, shadow in self.shadows do
+		shadowInfo[shadow] = nil
+	end
+	rootWorld[self.root] = nil
+	rootWorld[self.ws] = nil
+	pcall(self.ws.Destroy, self.ws)
+	pcall(self.root.Destroy, self.root)
+	table.clear(self.shadows)
+	table.clear(self.fakes)
+	table.clear(self.overlay)
+	table.clear(self.shared)
+	self.stores, self.run, self.localPlayer = nil, nil, nil
+end
+
 function World:newContext(hooks, env)
 	self.live += 1
 	placeWorld(self)
-	local ctx = setmetatable({ world = self, hooks = hooks, env = env, modules = {} }, Context)
+	local ctx = setmetatable({ world = self, hooks = hooks, env = env, modules = {}, extensions = {}, extensionInstances = {} }, Context)
 	if hooks.onCleanup then
 		table.insert(hooks.onCleanup, function()
 			ctx:destroy()
@@ -3324,13 +3536,19 @@ function Context:destroy()
 		return
 	end
 	self.dead = true
+	for instance in self.extensionInstances do
+		if extensionOwners[instance] == self then extensionOwners[instance] = nil end
+	end
+	table.clear(self.extensionInstances)
+	table.clear(self.extensions)
 	local world = self.world
 	world.live -= 1
 	if world.live <= 0 then
 		world.live = 0
-		world:idle()
+		world:destroy()
+	else
+		placeWorld(world)
 	end
-	placeWorld(world)
 end
 
 function Context:wrap(v)
@@ -3341,8 +3559,7 @@ function Context:unwrap(v)
 	return unwrapDeep(self.world, v)
 end
 
--- Whether user code in this world can still run on its own: a live connection, or an
--- event handler that hasn't finished.
+-- Whether user code here can still run on its own: a live connection or an unfinished handler.
 function Context:busy()
 	for conn in self.world.conns do
 		if isConnected(conn) then
@@ -3359,15 +3576,120 @@ end
 
 -- Takes a real instance built outside the sandbox into this world and returns its proxy.
 function Context:adopt(inst)
+	assert(not self.dead, "job is closed")
+	checkInfrastructure(inst)
+	assert(ownerOf(inst) == nil or ownerOf(inst) == self.world, "cannot adopt another user's instance")
 	pin(self.world, inst)
+	attachExtensions(self, inst)
 	return wrap(self.world, inst)
+end
+
+-- Trusted entry points used by LuneImports; only proxies and data cross to user code.
+function Context:implementMember(className, name, getterOrMethod, setter, isMethod)
+	assert(not self.dead, "job is closed")
+	assert(type(className) == "string" and ReflectionService:GetClass(className), "unknown class")
+	assert(type(name) == "string" and #name > 0 and #name <= 128, "invalid custom member name")
+	assert(type(getterOrMethod) == "function" and (setter == nil or type(setter) == "function"), "expected callbacks")
+	local class = getClass(className)
+	assert(not class.props[name] and not class.methods[name] and not class.events[name], "cannot replace an engine member")
+	assert(not ownedMethods[name] and not ownedGetters[name], "cannot replace a sandbox member")
+	local members = self.extensions[className]
+	if not members then members = {}; self.extensions[className] = members end
+	if isMethod then
+		local context = self
+		members[name] = {method = function(instance, ...)
+			local st = states[instance]
+			assert(not context.dead and st and extensionOwners[st.real] == context and st.real:IsA(className), "custom method requires a job-owned instance of its class")
+			return getterOrMethod(instance, ...)
+		end}
+	else
+		members[name] = {get = getterOrMethod, set = setter}
+	end
+end
+
+function Context:serializeModel(instances)
+	assert(not self.dead, "job is closed")
+	assert(type(instances) == "table" and #instances > 0 and #instances <= 10000, "expected an array of job-owned instances")
+	assert(type(self.hooks.serializeModel) == "function", "model serialization is unavailable on this worker")
+	local originals, seen, count = {}, {}, 0
+	for i = 1, #instances do
+		local st = states[rawget(instances, i)]
+		assert(st and st.world == self.world and st.kind == "owned" and extensionOwners[st.real] == self, "model export requires job-owned instances")
+		local root = st.real
+		checkInfrastructure(root)
+		assert(root.Archivable, "model export root must be Archivable")
+		local tree = root:GetDescendants()
+		table.insert(tree, root)
+		for _, instance in tree do
+			checkInfrastructure(instance)
+			assert(not seen[instance], "duplicate or overlapping model roots")
+			assert(extensionOwners[instance] == self and ownerOf(instance) == self.world, "model contains a foreign instance")
+			seen[instance] = true; count += 1
+			assert(count <= 10000, "model exceeds 10000 instances")
+		end
+		originals[i] = root
+	end
+	local copies, mapping = {}, {}
+	local ok, result = pcall(function()
+		local function pair(original, copy)
+			mapping[original] = copy
+			local children, index = copy:GetChildren(), 1
+			for _, child in original:GetChildren() do
+				if child.Archivable then
+					local cloned = children[index]
+					assert(cloned and cloned.ClassName == child.ClassName and cloned.Name == child.Name, "clone tree changed during export")
+					pair(child, cloned); index += 1
+				end
+			end
+		end
+		for _, original in originals do
+			local copy = assert(original:Clone(), "model root could not be cloned")
+			table.insert(copies, copy); pair(original, copy)
+		end
+		-- Preserve references across separately cloned roots, omit external references.
+		for original, copy in mapping do
+			for name, info in getClass(original.ClassName).props do
+				if info.instanceType and info.write and name ~= "Parent" then
+					local readable, target = pcall(index, original, name)
+					if readable and target ~= nil then copy[name] = mapping[target] end
+				end
+			end
+		end
+		-- The model keeps the run's own Source and Enabled; the trusted serializer writes the Source.
+		local sources = {}
+		for original, copy in mapping do
+			if virtualSource[original] ~= nil then
+				sources[copy] = virtualSource[original]
+			end
+			if original:IsA("BaseScript") then
+				copy.Enabled = enabledOf(original)
+			end
+		end
+		return self.hooks.serializeModel(copies, sources)
+	end)
+	for _, copy in copies do copy:Destroy() end
+	if not ok then error(result, 0) end
+	assert(not self.dead, "job is closed")
+	return result
+end
+
+function Context:deserializeModel(contents)
+	assert(not self.dead and type(self.hooks.deserializeModel) == "function", "model deserialization is unavailable on this worker")
+	local roots = self.hooks.deserializeModel(contents)
+	if self.dead then
+		for _, root in roots do root:Destroy() end
+		error("job is closed", 0)
+	end
+	local results = {}
+	for i, root in roots do results[i] = self:adopt(root) end
+	return results
 end
 
 -- The real instance a renderer may read for v, or nil if v isn't this world's. A shared
 -- engine instance resolves to this world's shadow of it (workspace -> its WorldModel).
 function Context:renderTarget(v)
 	local st = states[v]
-	if not st or st.world ~= self.world then
+	if not st or st.world ~= self.world or isInfrastructure(st.real) then
 		return nil
 	end
 	if st.kind == "shared" then
@@ -3382,6 +3704,16 @@ end
 function Context:_apply(env)
 	local world = self.world
 	local hooks = self.hooks
+	hooks.luneRoblox = {
+		newInstance = function(...)
+			assert(not self.dead, "job is closed")
+			return env.Instance.new(...)
+		end,
+		serializeModel = function(instances) return self:serializeModel(instances) end,
+		deserializeModel = function(contents) return self:deserializeModel(contents) end,
+		implementMethod = function(class, name, callback) return self:implementMember(class, name, callback, nil, true) end,
+		implementProperty = function(class, name, get, set) return self:implementMember(class, name, get, set, false) end,
+	}
 	local g = wrap(world, realGame)
 	local ws = wrap(world, realWorkspace)
 	local rawPrint, rawWarn = env.print, env.warn
@@ -3428,9 +3760,8 @@ function Context:_apply(env)
 			end,
 		}, { __index = Content, __metatable = "The metatable is locked" })
 	end
-	-- Return the real env only when it is this world's (its game is our proxy); a foreign or real
-	-- script env would leak the real game, so fall back to the sandbox env. A miscounted level then
-	-- degrades to the sandbox env instead of leaking. LuauBot imports this only when a run names it.
+	-- Returns the real env only if it's this world's (game is our proxy); any other env or a miscounted
+	-- level gets the sandbox env, so the real game never leaks. Imported only when a run names it.
 	env.getfenv = function(target)
 		local t = type(target)
 		local e
@@ -3446,9 +3777,8 @@ function Context:_apply(env)
 		if type(e) ~= "table" then
 			return env
 		end
-		-- A real or foreign script env resolves game/workspace to the real ones; hand those back as
-		-- the sandbox env. A user's own env (their chunk, or one they setfenv'd) can't hold the real
-		-- instances, so it passes through untouched.
+		-- A real or foreign script env holds the real game/workspace, so it becomes the sandbox env;
+		-- a user's own env (their chunk or a setfenv'd one) can't hold them and passes through.
 		local ok1, eg = pcall(function()
 			return e.game
 		end)
@@ -3470,6 +3800,7 @@ function Context:_apply(env)
 				error(inst, 0)
 			end
 			pin(world, inst)
+			attachExtensions(self, inst)
 			local p = wrap(world, inst)
 			if parent ~= nil then
 				setParent(states[p], parent)
@@ -3482,6 +3813,7 @@ function Context:_apply(env)
 				error(inst, 0)
 			end
 			pin(world, inst)
+			attachExtensions(self, inst)
 			return wrap(world, inst)
 		end,
 	})
@@ -3510,9 +3842,8 @@ function Context:_apply(env)
 	end
 	local modules = self.modules
 	local assetModules = {}
-	-- Run a ModuleScript's source in this world instead of the real engine, so its functions see the
-	-- sandbox game and can't leak the real one. Covers owned, shared and asset-loaded modules.
-	-- not NIL: a module may legitimately return nil, and that result is cached as NIL
+	-- Runs ModuleScript sources (owned, shared or asset-loaded) in this world so they never see the
+	-- real game. LOADING isn't NIL because a module may return nil, which is cached as NIL.
 	local LOADING = newproxy(false)
 	local loadingThread = {}
 	local loadErrors = setmetatable({}, { __mode = "k" })
@@ -3520,8 +3851,7 @@ function Context:_apply(env)
 	local function requireSource(real, scriptProxy)
 		local cached = modules[real]
 		if cached == LOADING then
-			-- Like the engine: only the loading thread's own chain is a cycle; any other
-			-- thread waits for the module to finish loading.
+			-- Like the engine: only the loading thread's own chain is a cycle; other threads wait.
 			if loadingThread[real] == coroutine.running() then
 				error(`Requested module '{real.Name}' was required recursively`, 0)
 			end
@@ -3549,7 +3879,7 @@ function Context:_apply(env)
 		modEnv.require = function(target)
 			return requireFrom(modEnv.script, target)
 		end
-		local fx, compileErr = hooks.execute(real.Name, real.Source, modEnv)
+		local fx, compileErr = hooks.execute(real.Name, sourceOf(real), modEnv)
 		if not fx then
 			local line, msg = tostring(compileErr):match(":(%d+): (.+)$")
 			failed(if line
@@ -3567,8 +3897,8 @@ function Context:_apply(env)
 		loadingThread[real] = nil
 		return res[2]
 	end
-	-- require-by-string, resolved from the requiring script through proxies so paths can't climb
-	-- out of this world. Strings never reach the real require: it would resolve them from here.
+	-- require-by-string resolves through proxies so paths can't climb out of this world; strings
+	-- never reach the real require, which would resolve them from here.
 	local function resolvePath(path, from)
 		local function fail(msg)
 			error(`error requiring "{path}": {msg}`, 0)
@@ -3617,12 +3947,19 @@ function Context:_apply(env)
 		return cur
 	end
 	requireFrom = function(from, target)
+		if type(target) == "string" and target:sub(1, 6) == "@lune/" then
+			return env.require(target)
+		end
 		if type(target) == "string" and tonumber(target) == nil then
 			return env.require(resolvePath(target, from))
 		end
 		return env.require(target)
 	end
 	env.require = function(target)
+		if type(target) == "string" and target:sub(1, 6) == "@lune/" then
+			if not hooks.luneRequire then error("Lune-style libraries are unavailable on this worker", 2) end
+			return hooks.luneRequire(target)
+		end
 		if type(target) == "string" and tonumber(target) == nil then
 			return env.require(resolvePath(target, env.script))
 		end
@@ -3714,7 +4051,9 @@ function Context:apply(env)
 end
 
 function Sandbox.disabled(env, userId, hooks)
-	env.shared = Sandbox.getWorld(userId).shared
+	-- shares `shared` with the user's sandboxed runs going at the same time, without keeping a world
+	local w = worlds[tostring(userId)]
+	env.shared = if w then w.shared else {}
 	nosandboxRuns += 1
 	placeAll()
 	local done = false

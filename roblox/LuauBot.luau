@@ -12,16 +12,14 @@ local MAX_WRITE_FILES = 8 -- max files queued via io.writefile
 local WEB_INLINE_FILE_SIZE = 1024 * 1024 -- web frames up to this size skip the chunk upload
 local WEB_MAX_FRAMES_IN_FLIGHT = 2 -- overlapping uploads so one round trip doesn't cap the frame rate
 local INPUT_WAIT_SECONDS = 20 -- the server holds /getInputs open this long when nothing is queued
--- Roblox allows 500 HTTP requests per rolling minute per server. A bucket lets
--- through at most burst + 60 * rate in any minute (60 + 420 = 480 here), and live
--- output can't dip into the reserve, so polling and inputs always get through.
+local STREAM_POLL_SECONDS = 10 -- fallback poll while /workerEvents is open
+-- Roblox allows 500 HTTP requests/min per server; the bucket passes at most burst + 60 * rate a
+-- minute (60 + 420 = 480), and live output can't use the reserve, so polls and inputs get through.
 local HTTP_RATE_PER_SECOND = 7
 local HTTP_BURST = 60
 local HTTP_RESERVED = 20
 
---[[
-	Takes in the number of responses sent so far and returns how often should the next update be sent.
-]]
+-- Seconds until the next update, given how many responses have been sent.
 local function UPDATE_INTERVAL_SCALE(count, isweb)
 	if count <= 10 then
 		return 0.1
@@ -49,7 +47,23 @@ local Closed = false
 local Processes = {}
 local ProcessHooks = {} -- not reachable from user code, unlike thread
 local ProcessesByUser = {}
-local UserGlobals = {}
+-- Headless Studio workers only (options.capabilities): a per-run broker makes the ModuleScripts,
+-- since a game Script can't set Source. See luau-bot-headless docs/job-capabilities.md.
+local Capabilities = nil
+local RunBrokers = setmetatable({}, { __mode = "k" }) -- thread -> its broker, kept from user code
+local RunSnapshotTokens = setmetatable({}, { __mode = "k" })
+-- Gives a loadstring chunk its own globals; in ChunkEnv.luau so getfenv/setfenv don't turn off
+-- this script's import and fastcall optimizations.
+local chunkEnvModule = script:FindFirstChild("ChunkEnv")
+local isolateChunk = if chunkEnvModule then require(chunkEnvModule) else nil
+
+local function capability(broker, operation, ...)
+	local result = table.pack(broker:Invoke(operation, ...))
+	if not result[1] then
+		error(result[2], 2)
+	end
+	return table.unpack(result, 2, result.n)
+end
 
 local encoder = function(data)
 	return Https:JSONEncode(data)
@@ -419,7 +433,13 @@ if smt then
 end
 
 local function executeCode(id, code, env, thread, delay, m, asFunction)
+	local ownModule = m == nil
 	m = m or Instance.new("ModuleScript")
+	-- `native` must always be set: unset, it falls through to luau_native's real `native` table,
+	-- whose hookMethod/defineProperty change Instances for every script in the Studio.
+	if env.native == nil then
+		env.native = false
+	end
 	local imports = ""
 	local checks = ""
 	local usesTypeof = code:find("typeof", 1, true) ~= nil
@@ -465,9 +485,31 @@ local function executeCode(id, code, env, thread, delay, m, asFunction)
 		return fx, m
 	end
 
+	-- The run's broker makes the module instead. A passed-in module stays, as the run's `script`.
+	local broker = RunBrokers[thread]
+	if broker then
+		local created, result = pcall(function()
+			local module = capability(broker, "createModule", src)
+			module.Name = id
+			return { require(module), module }
+		end)
+		if created then
+			if ownModule then
+				m:Destroy()
+			end
+			return result[1], result[2]
+		end
+	end
+
 	m:Destroy()
 	table.insert(thread.output, colorsLower.yellow .. "[WARNING] Failed To initialize module. Using loadstring!\n")
-	return (loadstring :: any)(src)(), m
+	-- The generated source sets the run's env (print, user, ...) as globals, and a chunk shares its
+	-- caller's globals, so without its own table each run would overwrite the others'.
+	local chunk = (loadstring :: any)(src)
+	if isolateChunk then
+		isolateChunk(chunk)
+	end
+	return chunk(), m
 end
 
 local function decodeZstd(data)
@@ -617,6 +659,56 @@ local function runCode(compCode, data)
 	local start = os.clock() + 3
 	local thread = {}
 	local inputs = {}
+	if Capabilities then
+		local opened, broker, snapshotToken = pcall(Capabilities.Invoke, Capabilities, "open")
+		if opened and broker then
+			RunBrokers[thread] = broker
+			RunSnapshotTokens[thread] = snapshotToken
+			table.insert(hooks.onCleanup, function()
+				RunBrokers[thread] = nil
+				RunSnapshotTokens[thread] = nil
+				pcall(Capabilities.Invoke, Capabilities, "close", broker)
+			end)
+		end
+	end
+	-- Trusted-only model transport: Context validates proxies and makes snapshots, and no raw Instance
+	-- or broker token reaches sandboxed code. sources: the run's Source for scripts the engine refused.
+	hooks.serializeModel = function(roots, sources)
+		local broker = RunBrokers[thread]
+		if broker then
+			-- A Bindable drops Instance keys, so the broker gets { instance, source } pairs.
+			local list = {}
+			for instance, source in sources or {} do
+				table.insert(list, { instance, source })
+			end
+			return capability(broker, "serializeSnapshot", roots, RunSnapshotTokens[thread], list)
+		end
+		for instance, source in sources or {} do
+			instance.Source = source
+		end
+		return game:GetService("SerializationService"):SerializeInstancesAsync(roots)
+	end
+	-- Source of a script the run imported, which only its broker may read on a Studio worker.
+	hooks.readSource = function(instance)
+		local broker = RunBrokers[thread]
+		if broker then return capability(broker, "readSource", instance) end
+		return instance.Source
+	end
+	hooks.deserializeModel = function(contents)
+		assert(typeof(contents) == "buffer" and buffer.len(contents) <= 16 * 1024 * 1024, "model input exceeds 16 MiB")
+		local broker = RunBrokers[thread]
+		if broker then return capability(broker, "deserialize", contents) end
+		local roots = game:GetService("SerializationService"):DeserializeInstancesAsync(contents)
+		local count = 0
+		for _, root in roots do
+			local tree = root:GetDescendants()
+			table.insert(tree, root)
+			count += #tree
+			for _, instance in tree do if instance:IsA("BaseScript") then instance.Enabled = false end end
+		end
+		if count > 10000 then for _, root in roots do root:Destroy() end; error("model exceeds 10000 instances") end
+		return roots
+	end
 	thread.env = env
 	thread.output = {}
 	thread.inputs = inputs
@@ -633,15 +725,14 @@ local function runCode(compCode, data)
 	thread.isweb = isweb
 	local maxHeight = isweb and MAX_STR_HEIGHT_WEB or MAX_STR_HEIGHT
 	local runningThreads = {}
-	-- A coroutine that hasn't started, or that yielded itself, runs again only when other
-	-- code resumes it, so on its own it doesn't keep the run alive.
+	-- Unstarted or self-yielded coroutines run only when resumed, so they don't keep the run alive.
 	local parked = setmetatable({}, { __mode = "k" })
 
 	local function wrapThread(fx)
 		return function(f, ...)
 			local t = fx(f, ...)
-			-- the engine leaves a deferred coroutine.close "suspended" forever, and it can't
-			-- run user code (Promise defers one per settled promise)
+			-- a deferred coroutine.close stays "suspended" forever but runs no user code
+			-- (Promise defers one per settled promise)
 			if f ~= coroutine.close then
 				table.insert(runningThreads, t)
 			end
@@ -693,8 +784,6 @@ local function runCode(compCode, data)
 
 	ProcessesByUser[userid] = ProcessesByUser[userid] or {}
 	ProcessesByUser[userid][processID] = thread
-	local userGlobal = UserGlobals[userid] or {}
-	UserGlobals[userid] = userGlobal
 	env.user = table.freeze({
 		Name = data.username,
 		UserId = data.userId,
@@ -727,7 +816,7 @@ local function runCode(compCode, data)
 			end
 		end,
 	}, { __index = coroutine })
-	env._G = userGlobal
+	env._G = {} -- each run's own; nothing carries over from a user's earlier runs
 	env.setenvkey = function(key, value)
 		env[key] = value
 	end
@@ -741,7 +830,7 @@ local function runCode(compCode, data)
 	env.io = {
 		read = function()
 			local info
-			while task.wait() and not info do --ik this is bad but i'm lazy and this works
+			while task.wait() and not info do -- crude busy-wait, but it works
 				info = table.remove(inputs, 1)
 			end
 			table.insert(parsedInputs, info)
@@ -1006,8 +1095,8 @@ local function runCode(compCode, data)
 		end
 		return handle
 	end
-	-- Send the next response as a follow-up: ephemeral in a guild, a DM outside
-	-- one, so inputs can be sent without scrolling back to the original message.
+	-- Send the next response as a follow-up (ephemeral in a guild, else a DM) so inputs can be sent
+	-- without scrolling back.
 	discord.followUpNext = function()
 		thread.followUp = true
 	end
@@ -1146,6 +1235,14 @@ local function runCode(compCode, data)
 	local numOfResponses = 0
 	local lastSentFiles = {} -- {[fileType] = lastSentData}
 	local framesInFlight = 0
+	local function hasNewFiles()
+		for _, file in thread.files do
+			if lastSentFiles[file.fileType] ~= file.data then
+				return true
+			end
+		end
+		return false
+	end
 	thread.timeOutThread = task.spawn(function()
 		local waitTime = 0
 		local TIMEOUT = env.TIMEOUT
@@ -1159,18 +1256,12 @@ local function runCode(compCode, data)
 			) and not thread.stopped
 		do
 			TIMEOUT = env.TIMEOUT
+			local outputLength = #thread.output
 			local outStr = table.concat(truncateArray(thread.output, maxHeight))
 			if outStr == "" then
 				outStr = "  "
 			end
-			local hasNewFiles = false
-			for _, file in thread.files do
-				if lastSentFiles[file.fileType] ~= file.data then
-					hasNewFiles = true
-					break
-				end
-			end
-			if lastOutput ~= outStr or hasNewFiles then
+			if lastOutput ~= outStr or hasNewFiles() then
 				local truncated = truncateString(outStr, maxHeight)
 				lastOutput = outStr
 				numOfResponses += 1
@@ -1213,7 +1304,17 @@ local function runCode(compCode, data)
 					respondToInteraction(data.token, truncated, "", nil, nil, nil, followUp)
 				end
 			end
-			waitTime += task.wait(UPDATE_INTERVAL_SCALE(numOfResponses, isweb))
+			-- After an input or button click, the next output goes out at once, not up to an interval later.
+			local interval = UPDATE_INTERVAL_SCALE(numOfResponses, isweb)
+			local waited = 0
+			repeat
+				waited += task.wait()
+				if thread.inputArrived and (#thread.output ~= outputLength or hasNewFiles()) then
+					thread.inputArrived = false
+					break
+				end
+			until waited >= interval or thread.stopped
+			waitTime += waited
 		end
 
 		if thread.stopped then
@@ -1309,9 +1410,8 @@ local function runCode(compCode, data)
 		ProcessHooks[processID] = nil
 		ProcessesByUser[userid][processID] = nil
 		WebTokens[data.token] = nil
-		--// ![AFAIK] theres no way to fully cleanup a thread (this included sub-threads). If this was in a live environment I could execute it from a script and destroy it later but
-		--// for now we just have to keep the sub-threads running. Either way, this session only runs for a max of 5 mins.
-		--// 10/30/25, wrapped tasks and coroutine creations to be tracked and closed on script end.
+		--// A thread and its sub-threads can't be fully cleaned up, so wrapped tasks and coroutines
+		--// are tracked and closed when the script ends.
 		for _, fn in hooks.onCleanup do
 			pcall(fn)
 		end
@@ -1340,8 +1440,21 @@ local function handleRequest(decodedData)
 end
 
 local processedInputs = {}
+local processedAt = {} -- uid -> os.clock() when it was handled
+-- The bot drops an input 30 s after it was queued, so a uid needs sending back only until then.
+local PROCESSED_INPUT_SECONDS = 60
 -- Returns whether any input arrived.
 local function handleInputs()
+	local now = os.clock()
+	local kept = {}
+	for _, uid in processedInputs do
+		if now - processedAt[uid] < PROCESSED_INPUT_SECONDS then
+			table.insert(kept, uid)
+		else
+			processedAt[uid] = nil
+		end
+	end
+	processedInputs = kept
 	local res = request({
 		Url = IP .. "/getInputs",
 		Method = "POST",
@@ -1356,6 +1469,7 @@ local function handleInputs()
 		task.spawn(function()
 			local id = data.id
 			table.insert(processedInputs, data.uid)
+			processedAt[data.uid] = os.clock()
 			local content = data.content
 			if type(content) == "table" then
 				local pass, content_ = getContentFromChunks(content)
@@ -1374,10 +1488,12 @@ local function handleInputs()
 				local process = Processes[data.targetProcessId]
 				local callback = process and process.buttonCallbacks[data.buttonId]
 				if callback then
+					process.inputArrived = true
 					callback:Fire(data.clickUserId, data.clickUsername)
 				end
 			elseif not isStop then
 				for _, process in ProcessesByUser[id] or {} do
+					process.inputArrived = true
 					table.insert(process.inputs, input)
 				end
 			else
@@ -1402,11 +1518,92 @@ local function poll()
 		return
 	end
 	if res.StatusCode == 204 then
-		return
+		return false
 	end
 
 	local data = Https:JSONDecode(res.Body)
 	task.spawn(handleRequest, data)
+	return true
+end
+
+-- Wakes one waiting thread; a fire with nobody waiting is kept for the next wait.
+local function signal()
+	local s = { pending = false, gen = 0 }
+	local waiting
+	local function resume()
+		local thread = waiting
+		waiting = nil
+		task.spawn(thread)
+	end
+	function s.fire()
+		if waiting then
+			resume()
+		else
+			s.pending = true
+		end
+	end
+	function s.wait(seconds)
+		if s.pending then
+			s.pending = false
+			return
+		end
+		s.gen += 1
+		local gen = s.gen
+		waiting = coroutine.running()
+		task.delay(seconds, function()
+			if s.gen == gen and waiting then
+				resume()
+			end
+		end)
+		coroutine.yield()
+	end
+	return s
+end
+
+local taskWake = signal()
+local streamOpen = false
+local workerStream
+
+-- The bot counts the open stream as this server's heartbeat, and its closing as the server dying.
+local function openWorkerEvents()
+	local ok, client = pcall(Https.CreateWebStreamClient, Https, Enum.WebStreamClientType.SSE, {
+		Url = `{IP}/workerEvents?ServerId={HttpService:UrlEncode(ServerId)}`,
+		Method = "GET",
+		Headers = makeHeaders(),
+	})
+	if not ok then
+		warn("workerEvents unavailable:", client)
+		return
+	end
+	workerStream = client
+	local lost = false
+	local function onLost()
+		if lost then
+			return
+		end
+		lost = true
+		streamOpen = false
+		if workerStream == client then
+			workerStream = nil
+		end
+		taskWake.fire()
+		if not Closed then
+			task.delay(5, openWorkerEvents)
+		end
+	end
+	client.Opened:Connect(function(code)
+		streamOpen = code == 200
+	end)
+	-- Each event arrives as raw text. Inputs use the held /getInputs instead: a wake-up plus a new
+	-- request is slower than one already open.
+	client.MessageReceived:Connect(function(message)
+		local event = message:match("^event: (%w+)") or message:match("\nevent: (%w+)")
+		if event == "task" then
+			taskWake.fire()
+		end
+	end)
+	client.Error:Connect(onLost)
+	client.Closed:Connect(onLost)
 end
 
 local function notifyClosing(reason)
@@ -1438,13 +1635,21 @@ LogService.MessageOut:Connect(function(errmsg, type)
 	end
 end)
 local ready = false
-local function start(ip, secretToken)
+-- options.stream: wake on GET /workerEvents instead of polling (workers on the bot's host).
+-- options.httpRatePerSecond: overrides HTTP_RATE_PER_SECOND on headless Studio (no 500/min cap).
+local function start(ip, secretToken, options)
 	SecretToken = secretToken or ""
 	if ready then
 		error("Already started")
 	end
 	ready = true
 	IP = ip or IP
+	if options and type(options.httpRatePerSecond) == "number" and options.httpRatePerSecond > 0 then
+		HTTP_RATE_PER_SECOND = options.httpRatePerSecond
+	end
+	if options and typeof(options.capabilities) == "Instance" and options.capabilities:IsA("BindableFunction") then
+		Capabilities = options.capabilities
+	end
 	task.wait()
 	local res = request({
 		Url = IP .. "/start",
@@ -1458,13 +1663,19 @@ local function start(ip, secretToken)
 		ServerNumber = data.id
 	end)
 	task.wait(0.5)
+	if options and options.stream then
+		openWorkerEvents()
+		local opening = os.clock()
+		while not streamOpen and os.clock() - opening < 2 do
+			task.wait(0.05)
+		end
+	end
 
 	task.spawn(function()
 		while true do
 			local started = os.clock()
 			local ok, received = pcall(handleInputs)
-			-- A held request returns once input arrives or the wait runs out. A quick
-			-- empty or failed one means it wasn't held, so fall back to polling.
+			-- A held request returns on input or timeout; a quick empty or failed one wasn't held, so poll.
 			if not ok or (not received and os.clock() - started < 1) then
 				task.wait(POLL_RATE / 1000)
 			end
@@ -1472,15 +1683,40 @@ local function start(ip, secretToken)
 	end)
 
 	while not Closed do
-		local sus, err = pcall(poll)
+		local sus, got = pcall(poll)
 		if not sus then
-			warn("Failed to poll:", err)
+			warn("Failed to poll:", got)
 		end
-		task.wait(POLL_RATE / 1000)
+		if Closed then
+			break
+		elseif streamOpen and not (sus and got) then
+			taskWake.wait(STREAM_POLL_SECONDS)
+		else
+			task.wait(POLL_RATE / 1000)
+		end
+	end
+	-- Retired. Polls have stopped, so ping while the runs drain or the bot reaps this server. Close the
+	-- stream too: Studio caps open streams, and destroying the runner leaves it open.
+	local function ping()
+		task.spawn(pcall, request, {
+			Url = IP .. "/ping",
+			Method = "POST",
+			Headers = makeHeaders(),
+			Body = encoder({ ServerId = ServerId }),
+		})
+	end
+	ping()
+	if workerStream then
+		pcall(workerStream.Close, workerStream)
 	end
 	task.wait(1)
+	local pinged = os.clock()
 	while next(Processes) do
-		task.wait()
+		if os.clock() - pinged >= 2 then
+			pinged = os.clock()
+			ping()
+		end
+		task.wait(0.1)
 	end
 end
 
