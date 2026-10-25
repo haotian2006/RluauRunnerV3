@@ -118,6 +118,9 @@ end
 
 if #changes > 0 then
 	warn(`[LoadEnv] reset {#changes} change(s): {table.concat(changes, ", ", 1, math.min(#changes, 20))}`)
+end
+-- Studio workers reopen their place each session, so there's nothing to save.
+if #changes > 0 and not game:GetService("RunService"):IsStudio() then
 	local ok, err = pcall(game:GetService("AssetService").SavePlaceAsync, game:GetService("AssetService"))
 	if not ok then
 		warn(`[LoadEnv] SavePlaceAsync failed: {err}`)
@@ -277,12 +280,19 @@ return function(thread, env, hooks)
 			if not ok then
 				error(`import: {bytes}`, 2)
 			end
-			local SerializationService = game:GetService("SerializationService")
-			local loaded, roots = pcall(SerializationService.DeserializeInstancesAsync, SerializationService, buffer.fromstring(bytes))
+			-- SerializationService is out of reach on Studio workers; these go through the run's broker.
+			-- The sandbox's own deserializeModel also adopts what it loads.
+			local deserialize = if hooks.luneRoblox and hooks.luneRoblox.deserializeModel
+				then hooks.luneRoblox.deserializeModel
+				else hooks.deserializeModel
+			if not deserialize then
+				error("import: imports aren't available here", 2)
+			end
+			local loaded, roots = pcall(deserialize, buffer.fromstring(bytes))
 			if not loaded or #roots ~= 1 then
 				error("import: the built model couldn't be loaded", 2)
 			end
-			return if sandboxBridge.adopt then sandboxBridge.adopt(roots[1]) else roots[1]
+			return roots[1]
 		end
 	end
 	local benches = 0
