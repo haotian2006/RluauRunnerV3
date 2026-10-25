@@ -3,9 +3,8 @@ const crypto = require("crypto");
 const CRASH_WINDOW_MS = 2 * 60 * 1000;
 const CRASHES_BEFORE_BLOCK = 3;
 const BLOCK_DURATION_MS = 45 * 1000;
-// A first block is a warning; the same actor earning another one is a pattern,
-// so each block doubles the last. The ceiling keeps it a cooldown rather than a
-// ban, and a spell of good behaviour clears the escalation entirely.
+// Each repeat block doubles the last, capped so it stays a cooldown, not a ban.
+// A quiet spell (ESCALATION_RESET_MS) clears the escalation.
 const MAX_BLOCK_DURATION_MS = 15 * 60 * 1000;
 const ESCALATION_RESET_MS = 30 * 60 * 1000;
 const LOCAL_MAX_PER_ACTOR = 10;
@@ -13,10 +12,13 @@ const LOCAL_STALE_AFTER_MS = 3 * 1000;
 const LOCAL_STALE_LIMIT = 2;
 const LOCAL_STALE_BLOCK_MS = 11 * 1000;
 const INPUT_WINDOW_MS = 10 * 1000;
-// Text inputs are typed by a person; chunks are one file split up, so the
-// chunk budget has to clear a full upload in one window rather than pace it.
+// Text inputs are typed by a person; chunks are one file split up, so their
+// budget must fit a full upload in one window.
 const INPUT_MAX_PER_WINDOW = 40;
 const INPUT_CHUNK_MAX_PER_WINDOW = 600;
+// Studio-worker runs cost the bot's host, not a Roblox server's HTTP budget, so
+// a button-driven game can send several a second.
+const STUDIO_INPUT_MAX_PER_WINDOW = 200;
 
 const actorIncidents = new Map();
 const localExecutions = new Map();
@@ -28,9 +30,8 @@ function codeHash(source) {
   return crypto.createHash("sha256").update(source).digest("hex");
 }
 
-// A timeout is an intentional kill by the bot's own time limit, not a Lune
-// crash. Keep the flag for reporting, but only unexpected process exits earn a
-// crash strike.
+// A timeout is the bot's own kill, not a Lune crash, so only unexpected exits
+// earn a strike (the flag stays for reporting).
 function isPunishableLuneExit(result) {
   return Boolean(result?.abnormalExit && !result.timedOut);
 }
@@ -51,8 +52,7 @@ function nextBlockDuration(entry) {
   );
 }
 
-// An entry is only worth keeping while it still says something: live incidents,
-// a block in force, or an escalation that has not yet decayed.
+// Dead: no live incidents, no block in force, and no undecayed escalation.
 function isEntryDead(entry, now) {
   return (
     entry.incidents.length === 0 &&
@@ -138,8 +138,8 @@ function recordCrash(actorKey, incidentId, hashes = [], now = Date.now()) {
   };
 }
 
-// Counts active and globally queued Lune runs. The runner's separate global
-// cap remains authoritative when it is configured lower than this per-actor cap.
+// Counts an actor's active and queued Lune runs; the runner's global cap still
+// wins when it is lower.
 function acquireLocalExecution(actorKey) {
   if (!actorKey) return true;
   const count = localExecutions.get(actorKey) || 0;
@@ -233,7 +233,11 @@ function checkInputRate(actorKey, kind = "input", now = Date.now()) {
   if (!actorKey) return { allowed: true, remainingMs: 0 };
 
   const limit =
-    kind === "chunk" ? INPUT_CHUNK_MAX_PER_WINDOW : INPUT_MAX_PER_WINDOW;
+    kind === "chunk"
+      ? INPUT_CHUNK_MAX_PER_WINDOW
+      : kind === "studio"
+        ? STUDIO_INPUT_MAX_PER_WINDOW
+        : INPUT_MAX_PER_WINDOW;
   const key = `${actorKey}|${kind}`;
   let entry = inputRates.get(key);
   if (!entry || now >= entry.resetAt) {
@@ -292,6 +296,7 @@ module.exports = {
   INPUT_CHUNK_MAX_PER_WINDOW,
   INPUT_MAX_PER_WINDOW,
   INPUT_WINDOW_MS,
+  STUDIO_INPUT_MAX_PER_WINDOW,
   acquireLocalExecution,
   checkInputRate,
   codeHash,

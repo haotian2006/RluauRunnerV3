@@ -5,6 +5,9 @@ const {
   SERVER_RECOVERY_GRACE_MS,
   SERVER_RUN_TIME_MAX,
   SERVER_TIME_OUT,
+  STUDIO_SESSION_MS,
+  WORKER_STREAM_GRACE_MS,
+  WORKER_STREAM_PING_TIMEOUT,
   ENABLE_LOCAL_EXEC,
   botSrcEncoded,
 } = require("../config");
@@ -16,7 +19,9 @@ const {
   ExecuteTasks,
   RobloxServers,
   SECRET_TOKEN,
+  canServeMode,
   getUnfinishedTasksForServer,
+  requeueUnstartedTasksForServer,
   state,
   takeUnfinishedTasksForServer,
   taskMode,
@@ -25,6 +30,7 @@ const {
 const { wait } = require("../util");
 const { closeSession, getSession } = require("../core/sessions");
 const { tryRunLocally } = require("../local/dispatch");
+const { notifyWorkers } = require("../workerEvents");
 
 function bootstrapScript() {
   return `local EncodingService = game:GetService("EncodingService")
@@ -100,10 +106,7 @@ async function startRoblox(profile) {
   return true;
 }
 
-/**
- * How long to wait between session creations. Backs off when many sessions
- * have been created recently.
- */
+/** Wait between session creations; backs off when many were created recently. */
 function creationDebounce() {
   if (state.SERVERS_CREATED <= 2) {
     return SERVER_CREATION_COOL_DOWN / 1.5;
@@ -155,8 +158,7 @@ async function startAnyProfile() {
 async function failTask(task, message) {
   const session = getSession(task.token);
   if (!session) {
-    // Nothing left to reply to, so the user's embed keeps whatever it last
-    // showed - usually the pending one. Say so rather than vanishing.
+    // No session to reply to, so the embed stays stuck (usually on pending); log it.
     logBot(
       "Task Failure Dropped",
       `"${message}" for token ${task.token} had no session; its embed is now stuck`,
@@ -190,7 +192,12 @@ async function failPendingTasks() {
   await Promise.allSettled(failures);
 }
 
-function reapRobloxServer(serverId) {
+const SESSION_ENDED = "The worker's session ended before the run finished.";
+
+function reapRobloxServer(
+  serverId,
+  message = "Roblox server stopped responding.",
+) {
   const tasks = takeUnfinishedTasksForServer(serverId);
   unregisterRobloxServer(serverId);
   if (tasks.length) {
@@ -200,9 +207,32 @@ function reapRobloxServer(serverId) {
     );
   }
 
-  return Promise.allSettled(
-    tasks.map((task) => failTask(task, "Roblox server stopped responding.")),
-  );
+  return Promise.allSettled(tasks.map((task) => failTask(task, message)));
+}
+
+// A worker whose /workerEvents stream closed for good is gone. Unstarted tasks
+// are requeued; only actors with runs going when a session died early get a strike.
+function reapLostWorker(serverId) {
+  const server = RobloxServers[serverId];
+  if (!server) return Promise.resolve([]);
+  const { requeued, exhausted } = requeueUnstartedTasksForServer(serverId);
+  if (server.retiring) {
+    logBot(
+      "Worker Session Ended",
+      `${serverId}: ${requeued} unstarted task(s) requeued`,
+    );
+  } else {
+    const attributed = recordServerOutage(serverId);
+    logBot(
+      "Worker Lost",
+      `${serverId}: event stream closed; ${requeued} unstarted task(s) requeued, ` +
+        `${attributed.unfinished} running, ${attributed.actors} actor(s) attributed`,
+    );
+  }
+  return Promise.allSettled([
+    ...exhausted.map((task) => failTask(task, "Lost handoff to Roblox.")),
+    reapRobloxServer(serverId, server.retiring ? SESSION_ENDED : undefined),
+  ]);
 }
 
 function luneActorKey(actorKey) {
@@ -234,10 +264,8 @@ async function fallbackPendingTasksToLune() {
     }
 
     const actorKey = luneActorKey(task.actorKey);
-    // tryRunLocally returns false to mean "the caller should enqueue this for
-    // Roblox instead" - it happens whenever Lune is at capacity. The task was
-    // already pulled out of ExecuteTasks above, so dropping that answer loses
-    // the task outright: never run, never queued, never reported.
+    // tryRunLocally returns false when Lune is at capacity ("queue it for
+    // Roblox"). The task is already out of ExecuteTasks, so ignoring that loses it.
     runs.push(
       tryRunLocally(source, task.token, {
         actorKey,
@@ -254,6 +282,7 @@ async function fallbackPendingTasksToLune() {
             return;
           }
           ExecuteTasks[taskId] = task;
+          notifyWorkers("task");
           logBot(
             "Roblox Fallback",
             `Lune was busy, requeued task ${taskId} for Roblox`,
@@ -278,8 +307,8 @@ async function fallbackPendingTasksToLune() {
   return Promise.allSettled(runs);
 }
 
-// One strike per actor per server: a server that keeps missing and catching up on
-// heartbeats is the same outage, not a new crash each time.
+// One strike per actor per server: repeated missed heartbeats on one server are
+// one outage, not a new crash each time.
 function recordServerOutage(serverId) {
   const unfinished = getUnfinishedTasksForServer(serverId);
   const actors = new Map();
@@ -309,8 +338,8 @@ function recordServerOutage(serverId) {
   return { actors: actors.size, unfinished: unfinished.length };
 }
 
-// `queued` is a count, or the queued tasks themselves so --!nosandbox work,
-// which never shares a server with sandboxed work, is sized separately.
+// `queued` is a count, or the tasks themselves so --!nosandbox work (which
+// never shares a server with sandboxed work) is sized separately.
 function needsAdditionalWorker(workers, queued, pendingWorkers) {
   const responsive = workers.filter(
     (server) => server.healthy && !server.retiring,
@@ -321,12 +350,87 @@ function needsAdditionalWorker(workers, queued, pendingWorkers) {
   for (const mode of ["sandbox", "nosandbox"]) {
     const waiting = queued.filter((task) => taskMode(task) === mode).length;
     if (waiting === 0) continue;
-    const able = responsive.filter(
-      (server) => !server.mode || server.mode === mode,
-    ).length;
-    if (waiting > able + pendingWorkers) return true;
+    const able = responsive.filter((server) => canServeMode(server, mode));
+    // A Studio worker takes any number of runs, so Open Cloud starts only when none is up.
+    if (able.some((server) => server.kind === "studio")) continue;
+    if (waiting > able.length + pendingWorkers) return true;
   }
   return false;
+}
+
+// One health-check pass: retires idle servers, reaps dead ones, flags silent ones.
+function checkServer(server, now = Date.now()) {
+  if (
+    !server.retiring &&
+    server.activeTaskIds.size === 0 &&
+    now - server.startedAt > SERVER_RUN_TIME_MAX
+  ) {
+    server.retiring = true;
+  }
+
+  // A worker that polls or pings after its stream closed is still alive; one
+  // that doesn't within the grace period is gone. Until then, wait.
+  if (server.streamLostAt) {
+    if (server.lastPing > server.streamLostAt) {
+      server.streamLostAt = null;
+    } else {
+      if (now - server.streamLostAt >= WORKER_STREAM_GRACE_MS) {
+        void reapLostWorker(server.serverId);
+      }
+      return;
+    }
+  }
+
+  // A draining Studio session stops polling but runs its tasks until it
+  // ends itself; its stream closing, or that time passing, reaps it.
+  if (server.kind === "studio" && server.retiring && server.streams > 0) {
+    if (server.activeTaskIds.size === 0) {
+      void reapRobloxServer(server.serverId);
+    } else if (
+      now - server.startedAt >=
+      STUDIO_SESSION_MS + WORKER_STREAM_GRACE_MS
+    ) {
+      void reapRobloxServer(server.serverId, SESSION_ENDED);
+    }
+    return;
+  }
+
+  const pingTimeout =
+    server.streams > 0 ? WORKER_STREAM_PING_TIMEOUT : SERVER_PING_TIMEOUT;
+  if (now - server.lastPing <= pingTimeout) return;
+
+  // A draining session pings every 2 s; silence means it ended or was cut off.
+  if (server.retiring) {
+    void reapRobloxServer(
+      server.serverId,
+      server.kind === "studio" ? SESSION_ENDED : undefined,
+    );
+    return;
+  }
+
+  if (server.healthy && !server.outageRecorded) {
+    server.healthy = false;
+    server.unhealthySince = now;
+    server.outageRecorded = true;
+  }
+
+  // A busy script can delay heartbeats, so only a server silent for the whole
+  // grace period counts as a crash.
+  if (
+    now - (server.unhealthySince || server.lastPing) >=
+    SERVER_RECOVERY_GRACE_MS
+  ) {
+    if (!server.crashRecorded) {
+      server.crashRecorded = true;
+      const attributed = recordServerOutage(server.serverId);
+      logBot(
+        "Roblox Server Outage",
+        `${server.serverId}: ${attributed.unfinished} unfinished task(s), ` +
+          `${attributed.actors} actor(s) attributed`,
+      );
+    }
+    void reapRobloxServer(server.serverId);
+  }
 }
 
 async function checkRobloxServer() {
@@ -347,53 +451,16 @@ async function checkRobloxServer() {
       );
     }
 
-    for (const server of Object.values(RobloxServers)) {
-      if (
-        !server.retiring &&
-        server.activeTaskIds.size === 0 &&
-        now - server.startedAt > SERVER_RUN_TIME_MAX
-      ) {
-        server.retiring = true;
-      }
-
-      if (now - server.lastPing <= SERVER_PING_TIMEOUT) continue;
-
-      if (server.retiring) {
-        void reapRobloxServer(server.serverId);
-        continue;
-      }
-
-      if (server.healthy && !server.outageRecorded) {
-        server.healthy = false;
-        server.unhealthySince = now;
-        server.outageRecorded = true;
-      }
-
-      // A busy script can delay heartbeats without killing the server, so only a
-      // server that stays silent for the whole grace period counts as a crash.
-      if (
-        now - (server.unhealthySince || server.lastPing) >=
-        SERVER_RECOVERY_GRACE_MS
-      ) {
-        if (!server.crashRecorded) {
-          server.crashRecorded = true;
-          const attributed = recordServerOutage(server.serverId);
-          logBot(
-            "Roblox Server Outage",
-            `${server.serverId}: ${attributed.unfinished} unfinished task(s), ` +
-              `${attributed.actors} actor(s) attributed`,
-          );
-        }
-        void reapRobloxServer(server.serverId);
-      }
-    }
+    for (const server of Object.values(RobloxServers)) checkServer(server, now);
 
     const workers = Object.values(RobloxServers);
     const pendingWorkers = state.PendingRobloxStarts.length;
     const lastCreationDebounce =
       now - state.LastServerCreation > creationDebounce();
     const maxWorkers = getMaxWorkers();
-    const belowWorkerCap = workers.length + pendingWorkers < maxWorkers;
+    // Studio workers are not Open Cloud servers, so they leave the cap alone.
+    const cloudWorkers = workers.filter((server) => server.kind !== "studio");
+    const belowWorkerCap = cloudWorkers.length + pendingWorkers < maxWorkers;
     const needsWorker = needsAdditionalWorker(
       workers,
       Object.values(ExecuteTasks),
@@ -405,18 +472,20 @@ async function checkRobloxServer() {
       console.log("Starting new Roblox server...");
       logBot(
         "Roblox Server",
-        `Starting worker ${workers.length + pendingWorkers + 1}/${maxWorkers}...`,
+        `Starting worker ${cloudWorkers.length + pendingWorkers + 1}/${maxWorkers}...`,
       );
       startFailed = !(await startAnyProfile());
     }
 
-    // Open Cloud accepting a launch is not the same as a worker existing, so
-    // an expired reservation counts as a failed start too. Only these two
-    // cases mean no worker is coming; a debounce gap does not.
+    // A failed start or an expired reservation (launch accepted, no worker)
+    // means no worker is coming; a debounce gap doesn't. Silent or draining
+    // servers take no tasks, so they don't hold the queue back.
     if (
       (startFailed || abandonedStarts.length > 0) &&
       Object.keys(ExecuteTasks).length > 0 &&
-      Object.keys(RobloxServers).length === 0 &&
+      !Object.values(RobloxServers).some(
+        (server) => server.healthy && !server.retiring,
+      ) &&
       state.PendingRobloxStarts.length === 0
     ) {
       logBot(
@@ -435,11 +504,13 @@ async function checkRobloxServer() {
 
 module.exports = {
   checkRobloxServer,
+  checkServer,
   failPendingTasks,
   fallbackPendingTasksToLune,
   luneActorKey,
   needsAdditionalWorker,
   profileAttemptOrder,
+  reapLostWorker,
   reapRobloxServer,
   recordServerOutage,
 };

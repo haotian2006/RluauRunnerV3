@@ -13,33 +13,16 @@ The bot ships its own code to each execution session as a base64-encoded rbxm,
 so the target place needs nothing installed in it. **The bot will not start
 without `luauBot.b64` in the project root.**
 
-Copy the files in `roblox/` into `workspace` as module scripts:
+Build it from the files in `roblox/` (`bundle.project.json` says which file is
+which ModuleScript) with [Lune](https://github.com/lune-org/lune):
 
 ```
-workspace
-    - LuauBot        (roblox/LuauBot.luau)
-      - LoadEnv      (roblox/LoadEnv.luau)
-        - Sandbox    (roblox/Sandbox.luau)
+bin/lune run scripts/bundle
 ```
 
-Then run this in Studio and save the output into `luauBot.b64`:
-
-```lua
-local EncodingService = game:GetService("EncodingService")
-local ToEncode = workspace.LuauBot
-
-
-local Ser = game:GetService("SerializationService"):SerializeInstancesAsync({ToEncode})
-Ser = EncodingService:CompressBuffer(Ser,Enum.CompressionAlgorithm.Zstd,22)
-local encodedString = buffer.tostring(EncodingService:Base64Encode(Ser))
-if not workspace:FindFirstChild("Output") then
-	Instance.new("ModuleScript",workspace).Name = "Output"
-end
-game:GetService("ScriptEditorService"):UpdateSourceAsync(workspace.Output,
-	function() return encodedString end )
-```
-
-Re-generate it whenever `roblox/LuauBot.luau` changes.
+`npm run fetch-tools` puts Lune in `bin/`. Rebuild the bundle whenever anything under
+`roblox/` changes. `bin/lune run scripts/bundle list <b64>` prints a bundle's tree, and
+`unpack <b64> <dir>` writes its sources out.
 
 ### 2. Execution profiles
 
@@ -103,6 +86,11 @@ COMPILE_SOURCE_MAX_BYTES=1048576(OPTIONAL, default 1 MB per source)
 COMPILE_SOURCE_TOTAL_BYTES=209715200(OPTIONAL, default 200 MB for all stored sources)
 PLAYGROUND_URL=https://haotian2006.github.io/LuauBotSite/playground.html(OPTIONAL, blank disables the redirect)
 TRUST_PROXY=false(OPTIONAL, default false)
+WORKER_SOCKET=/run/luau-bot/worker.sock(OPTIONAL, blank disables; Unix socket with only the worker routes)
+WORKER_SECRET_FILE=/run/luau-bot/secret(OPTIONAL, default next to WORKER_SOCKET; read by the worker supervisor)
+STUDIO_ACCEPT_SECONDS=120(OPTIONAL, a Studio session's least time taking tasks before it hands over)
+STUDIO_SESSION_SECONDS=240(OPTIONAL, must match the workers' SESSION_MAX_SECONDS)
+STUDIO_DRAIN_SECONDS=60(OPTIONAL, least time a session's runs get before the session ends)
 FORM_ID=Google_Form_Id(OPTIONAL)
 FORM_ENTRY_NAME=entry.0000000000(OPTIONAL)
 FORM_ENTRY_USER_ID=entry.0000000000(OPTIONAL)
@@ -112,6 +100,21 @@ FORM_ENTRY_DATA=entry.0000000000(OPTIONAL)
 
 `CALLBACK_URL` is the address the Roblox session sends its requests back to.
 It must include the scheme and no trailing slash.
+
+`WORKER_SOCKET` is for headless Studio workers on the same host. Their network
+can't reach the host's localhost, so luau-bot-headless' `linux/bot-relay.py` forwards
+`127.0.0.1:25628` inside it to this socket, which serves only the routes a worker
+uses, plus `GET /workerEvents`: an SSE stream of `task` and `input` wake-ups. A
+worker opts in with `start(url, secret, { stream = true })`; without it LuauBot
+polls as before. The open stream is the worker's heartbeat: when it closes and
+the worker doesn't come back within 8 s, its unstarted tasks are requeued and its
+running ones fail. The bot writes its secret to `WORKER_SECRET_FILE` (mode 600)
+for luau-bot-headless' `linux/supervise.sh`, which keeps two workers running and
+restarts them when the secret changes.
+
+While a Studio session takes tasks, sandboxed runs go only to Studio workers.
+With none, the bot starts Open Cloud servers, then falls back to Lune if those
+fail. `--!nosandbox` runs always go to Open Cloud.
 
 `STORE_COMPILE_SOURCE` is covered in [Source links](#source-links-optional).
 

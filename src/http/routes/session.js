@@ -6,7 +6,12 @@ const {
   hasChunk,
   toWirePayload,
 } = require("../../chunks");
-const { SERVER_RUN_TIME_MAX } = require("../../config");
+const {
+  SERVER_RUN_TIME_MAX,
+  STUDIO_ACCEPT_MS,
+  STUDIO_DRAIN_MS,
+  STUDIO_SESSION_MS,
+} = require("../../config");
 const { closeSession, getSession } = require("../../core/sessions");
 const { logBot } = require("../../log");
 const { getMaxWorkers } = require("../../profiles");
@@ -21,8 +26,10 @@ const {
   retireRobloxServer,
   state,
   touchRobloxServer,
+  attachWorkerStream,
   waitForInput,
 } = require("../../state");
+const { openWorkerStream } = require("../../workerEvents");
 const { requireSecret } = require("../middleware");
 
 const SERVER_NUMBER_MODULO = 256;
@@ -59,8 +66,26 @@ async function reserveNextAllowedTask(serverId) {
   }
 }
 
+// A Studio session hands over once a younger one is taking tasks (so one of two
+// warm workers always accepts); alone, it accepts until the drain window.
+function studioSessionDone(server, now) {
+  const age = now - server.startedAt;
+  if (age >= STUDIO_SESSION_MS - STUDIO_DRAIN_MS) return true;
+  if (age < STUDIO_ACCEPT_MS) return false;
+  return Object.values(RobloxServers).some(
+    (other) =>
+      other.kind === "studio" &&
+      other.healthy &&
+      !other.retiring &&
+      other.startedAt > server.startedAt,
+  );
+}
+
 function heartbeatServer(serverId, now = Date.now()) {
   const server = RobloxServers[serverId];
+  if (server?.kind === "studio" && studioSessionDone(server, now)) {
+    server.retiring = true;
+  }
   if (
     server &&
     !server.healthy &&
@@ -94,16 +119,19 @@ function registerSessionRoutes(app) {
       return res.status(400).json({ message: "ServerId is required" });
     }
     const existing = RobloxServers[serverId];
-    if (!existing && Object.keys(RobloxServers).length >= getMaxWorkers()) {
+    const studio = req.studioWorker === true;
+    const cloudServers = Object.values(RobloxServers).filter((s) => s.kind !== "studio").length;
+    if (!existing && !studio && cloudServers >= getMaxWorkers()) {
       logBot(
         "Roblox Server",
-        `${serverId} refused: pool already holds ${Object.keys(RobloxServers).length}/${getMaxWorkers()}`,
+        `${serverId} refused: pool already holds ${cloudServers}/${getMaxWorkers()}`,
       );
       return res.status(429).json({ message: "Worker pool is full" });
     }
 
-    registerRobloxServer(serverId);
-    if (!existing && state.PendingRobloxStarts.length) {
+    const server = registerRobloxServer(serverId);
+    if (studio) server.kind = "studio";
+    if (!existing && !studio && state.PendingRobloxStarts.length) {
       state.PendingRobloxStarts.shift();
     }
     state.SERVER_NUMBERS += 1;
@@ -111,6 +139,13 @@ function registerSessionRoutes(app) {
       message: "Server started",
       id: state.SERVER_NUMBERS % SERVER_NUMBER_MODULO,
     });
+  });
+
+  // Workers pass their ServerId so the open stream counts as their heartbeat.
+  app.get("/workerEvents", requireSecret, (req, res) => {
+    const detach = attachWorkerStream(req.query?.ServerId);
+    openWorkerStream(req, res);
+    res.on("close", detach);
   });
 
   app.post("/ping", requireSecret, (req, res) => {
@@ -146,8 +181,8 @@ function registerSessionRoutes(app) {
     };
 
     let data = collect();
-    // Long poll: with nothing queued, hold the request until an input arrives so
-    // clicks reach Roblox in one round trip instead of on its next poll.
+    // Long poll: with nothing queued, wait for an input so clicks reach Roblox
+    // in one round trip.
     const wait = Number(req.body.wait);
     if (data.length === 0 && wait > 0) {
       const aborted = new AbortController();

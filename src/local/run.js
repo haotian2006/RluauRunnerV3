@@ -24,10 +24,9 @@ const { stripHostPaths } = require("../sanitize");
 const SANDBOX_PATH = path.join(ROOT_DIR, "src", "local", "sandbox.luau");
 const KILL_GRACE_MS = 1000;
 const HEARTBEAT_STALE_MS = 1500;
-// After SIGKILL, how long to wait for 'close' before giving up on it entirely.
+// After SIGKILL, how long to wait for 'close' before giving up on it.
 const HARD_SETTLE_GRACE_MS = 5000;
-// After the process exits, how long to let the stdio pipes drain before
-// settling without them.
+// After exit, how long the stdio pipes get to drain before settling anyway.
 const EXIT_DRAIN_MS = 1500;
 
 // Capped, not unbounded: this box shares few cores with the Discord client.
@@ -89,6 +88,8 @@ function buildChildEnv(tmpDir) {
           HOME: tmpDir,
           TMPDIR: tmpDir,
           LANG: process.env.LANG || "C.UTF-8",
+          // ulimit -v counts each glibc arena's 64 MB reservation; Lune 0.11 tipped past 256 MB.
+          MALLOC_ARENA_MAX: "2",
           DBUS_SYSTEM_BUS_ADDRESS: process.env.DBUS_SYSTEM_BUS_ADDRESS,
           XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR,
         };
@@ -98,19 +99,15 @@ function buildChildEnv(tmpDir) {
   }
   return env;
 }
-// A --scope is only a cgroup: same uid, same filesystem, same /home as the
-// bot, so it caps resources and nothing else. A transient service has an exec
-// context and can also take the filesystem and privilege restrictions below.
-//
-// Nothing here may reach into /home: ProtectHome=yes makes it inaccessible,
-// and a BindReadOnlyPaths for a file underneath does NOT punch back through
-// (verified on the box - the unit dies with 203/EXEC). Hence the staged binary
-// and the per-job copy of sandbox.luau that the caller drops in tmpDir.
+// A --scope is only a cgroup (same uid, filesystem and /home as the bot), so it
+// only caps resources; a transient service also takes the restrictions below.
+// Nothing may reach into /home: ProtectHome=yes hides it and BindReadOnlyPaths
+// can't punch through (203/EXEC). Hence the staged binary and per-job sandbox.luau.
 function buildServiceArgs(jobPath, tmpDir, sandboxPath, timeoutMs, unitName) {
   const properties = [
-    // Transient units default to root. Without this the sandbox would run with
-    // MORE privilege than scope mode, and an empty CapabilityBoundingSet then
-    // costs root CAP_DAC_OVERRIDE, so it cannot even enter its own 0700 tmpdir.
+    // Transient units default to root: more privilege than scope mode, and the
+    // empty CapabilityBoundingSet drops CAP_DAC_OVERRIDE, so root can't enter
+    // the 0700 tmpdir.
     `User=${LOCAL_SANDBOX_USER}`,
     `WorkingDirectory=${tmpDir}`,
     `ReadWritePaths=${tmpDir}`,
@@ -227,7 +224,7 @@ function isCpuQuotaAvailable() {
 }
 
 /**
- * Run one script in the Lune sandbox. onEvent receives {t, v} objects, where t is the type (out, warn, error, heartbeat) and v is the value.
+ * Runs one script in the Lune sandbox. onEvent gets {t, v}; t is out/warn/error/heartbeat.
  */
 async function runLocal(source, options = {}) {
   const {
@@ -288,8 +285,7 @@ async function runLocal(source, options = {}) {
     LOCAL_ISOLATION === "service" ? `luau-${randomUUID()}` : null;
 
   let command, args;
-  // Declared out here on purpose: cleanup() below lives in the promise
-  // executor's scope and cannot see consts block-scoped to this try.
+  // Outside the try on purpose: cleanup() in the promise executor must see these.
   let tmpDir = null;
   let jobPath = null;
   try {
@@ -311,9 +307,8 @@ async function runLocal(source, options = {}) {
       "utf8",
     );
 
-    // Service mode cannot read the repo copy: ProtectHome=yes hides /home from
-    // the unit. Copying per job (rather than staging it next to the binary)
-    // keeps it impossible for the sandbox to go stale against the repo.
+    // Service mode can't read the repo copy (ProtectHome=yes). Copying per job,
+    // not staging it with the binary, keeps it from going stale.
     let sandboxPath = SANDBOX_PATH;
     if (LOCAL_ISOLATION === "service") {
       sandboxPath = path.join(tmpDir, "sandbox.luau");
@@ -397,11 +392,8 @@ async function runLocal(source, options = {}) {
 
       killTimer = setTimeout(() => child.kill("SIGKILL"), KILL_GRACE_MS);
 
-      // 'close' only fires once the process has exited AND every stdio pipe
-      // has hit EOF. A grandchild that inherited stdout can hold that pipe
-      // open after the direct child is gone, and then 'close' never arrives
-      // and this promise hangs forever, leaking its execution slot. Settle on
-      // our own clock instead of trusting the event.
+      // 'close' needs every stdio pipe at EOF; a grandchild holding stdout can
+      // stall it forever and leak the slot, so settle on our own clock.
       hardSettleTimer = setTimeout(() => {
         if (settled) return;
         abandoned = true;
@@ -546,9 +538,8 @@ async function runLocal(source, options = {}) {
 
     child.on("close", finish);
 
-    // 'close' additionally waits for every copy of the stdio pipes to be
-    // closed, which a surviving grandchild can stall indefinitely. The exit
-    // code is already final here, so drain briefly and then settle regardless.
+    // A surviving grandchild can stall 'close'; the exit code is final here, so
+    // drain briefly and settle regardless.
     child.on("exit", (code) => {
       if (settled) return;
       const drain = setTimeout(() => {

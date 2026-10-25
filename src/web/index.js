@@ -18,10 +18,11 @@ const { ROBLOX_KEY, limiterKey } = require("../origin");
 const { safeMessage } = require("../sanitize");
 const { log } = require("../log");
 const { record } = require("../metrics");
-const { ExecuteTasks, Inputs, putInput } = require("../state");
+const { ExecuteTasks, Inputs, putInput, serverForToken } = require("../state");
 const { getByteCodeOptions } = require("../tools/bytecode");
 const { compileLuau, formatLuau, generateAST } = require("../tools/luau");
 const { generateUUID } = require("../util");
+const { notifyWorkers } = require("../workerEvents");
 const {
   POLL_RATE_LIMIT,
   RUN_RATE_LIMIT,
@@ -53,13 +54,11 @@ const PendingInputUploads = {};
 
 const WebTasks = new Map();
 
-// A polling client has no socket to hang up, so its last GET /result stands in
-// for one: stop asking and the run is torn down the way a closed tab tears down
-// an SSE run.
+// Last GET /result per polling client. With no socket to close, it hangs up by
+// no longer polling, and the run is torn down like a closed SSE tab.
 const PollSessions = new Map();
 
-// The session is gone the moment a run finishes, so its last snapshot outlives
-// it here - long enough for the client's next poll to collect the result.
+// A finished run's last snapshot, kept for the client's next poll.
 const WebResults = new Map();
 
 function rememberResult(token, snapshot) {
@@ -101,9 +100,8 @@ function queueInput(token, value) {
 
 function releaseWebRun(token, timeoutId) {
   clearTimeout(timeoutId);
-  // Runs on every session teardown - explicit /stop and a bare browser
-  // disconnect alike - so a closed tab doesn't leave a Lune process or an
-  // already-dispatched Roblox task running for a client that's gone.
+  // Runs on every teardown (/stop or a dropped browser), so a closed tab
+  // leaves no Lune process or dispatched Roblox task running.
   cancelLocalRun(token);
   queueInput(token, "STOP_ALL_SESSIONS_PLS");
   const taskId = WebTasks.get(token);
@@ -125,9 +123,8 @@ function endWebSession(token, reason) {
   }
 }
 
-// A compile or parse never needs the 100MB upload allowance; anything past this
-// is not a real script, and rejecting it early keeps a large-input flood from
-// tying up compiler processes.
+// A compile or parse never needs the 100MB upload allowance; rejecting larger
+// code early keeps a flood from tying up compiler processes.
 const MAX_TOOL_CODE_BYTES = 1024 * 1024;
 
 class InvalidBytecodeOptions extends Error {}
@@ -164,8 +161,7 @@ function bytecodeOptionsForRequest(code, overrides) {
   return options;
 }
 
-// Each entry owns the whole tool: how to run it, and what the JSON body calls
-// its output. The plain-text GET variant returns `output` on its own.
+// Each tool: how to run it and its JSON output field. GET returns plain `output`.
 const TOOLS = {
   bytecode: {
     field: "bytecode",
@@ -181,8 +177,8 @@ const TOOLS = {
   },
 };
 
-// All of Roblox shares one identity: one script looping over /run from a game
-// server would otherwise arrive as an endless supply of fresh datacenter IPs.
+// All of Roblox shares one identity, or a game server looping /run would look
+// like endless fresh datacenter IPs.
 function callerFor(req) {
   const key = limiterKey(req);
   return { key, label: key === ROBLOX_KEY ? ROBLOX_KEY : hashIp(req.ip) };
@@ -193,8 +189,7 @@ function readToolCode(req) {
   return typeof value === "string" ? value : null;
 }
 
-// A tool run costs a compiler process, so it is limited the way /format is -
-// no back-to-back calls - plus a per-minute ceiling.
+// A tool run costs a compiler process: debounced like /format, plus a per-minute cap.
 async function handleTool(req, res, name, { raw }) {
   const tool = TOOLS[name];
   const code = readToolCode(req);
@@ -236,8 +231,7 @@ async function handleTool(req, res, name, { raw }) {
     return fail(500, safeMessage(err));
   }
 
-  // -1 is the tool timeout; anything else non-zero is the tool rejecting the
-  // source, and its own message is the useful part of the answer.
+  // -1 is a timeout; other non-zero codes reject the source, so return its message.
   if (result.code !== 0) {
     return fail(result.code === -1 ? 504 : 400, result.output);
   }
@@ -379,6 +373,7 @@ function registerWebRoutes(app) {
       }
       ExecuteTasks[taskId] = task;
       WebTasks.set(token, taskId);
+      notifyWorkers("task");
     })();
   });
 
@@ -434,8 +429,8 @@ function registerWebRoutes(app) {
     session.responder.attach(res);
   });
 
-  // Serves a live session from its responder and a finished one from the
-  // retained snapshot, so a client that polls a moment late still gets output.
+  // Live sessions answer from the responder, finished ones from the retained
+  // snapshot, so a slightly late poll still gets output.
   app.get("/result/:token", (req, res) => {
     record("web", "result");
     if (!checkPollRate(callerFor(req).key)) {
@@ -480,7 +475,8 @@ function registerWebRoutes(app) {
     }
 
     const anonIp = callerFor(req).label;
-    const rate = checkInputRate(`web:${anonIp}`, "input");
+    const studio = serverForToken(token)?.kind === "studio";
+    const rate = checkInputRate(`web:${anonIp}`, studio ? "studio" : "input");
     if (!rate.allowed) {
       record("limited", "input");
       return res.status(429).json({
@@ -494,8 +490,7 @@ function registerWebRoutes(app) {
       return res.status(410).json({ error: "This button has expired" });
     }
 
-    // The clicker is the page that owns the token, the same identity the run
-    // sees as user.UserId / user.Name.
+    // The clicker is the token's page, which the run sees as user.UserId / user.Name.
     const click = { buttonId, userId: token, username: anonIp };
     if (typeof target.onClick === "function") {
       target.onClick(click);
@@ -524,9 +519,10 @@ function registerWebRoutes(app) {
     }
 
     const anonIp = callerFor(req).label;
+    const studio = serverForToken(token)?.kind === "studio";
     const rate = checkInputRate(
       `web:${anonIp}`,
-      isFileChunk ? "chunk" : "input",
+      isFileChunk ? "chunk" : studio ? "studio" : "input",
     );
     if (!rate.allowed) {
       record("limited", "input");

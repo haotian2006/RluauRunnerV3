@@ -76,8 +76,7 @@ function loadCallbackUrl() {
   return { url: trimmed.replace(/\/+$/, "") };
 }
 
-// Missing tools are not fatal: /compile still works, since that runs in
-// Roblox. Only bytecode, analyze, ast and format need them.
+// Not fatal: /compile runs in Roblox; only bytecode, analyze, ast and format need these.
 function missingTools() {
   const tools = [
     ["luau-compile", resolveExec("luau-compile")],
@@ -146,8 +145,8 @@ const ENABLE_WEB = envFlag("ENABLE_WEB", false);
 
 const STORE_COMPILE_SOURCE = envFlag("STORE_COMPILE_SOURCE", false);
 
-// The status page is only served when this is set. There is deliberately no
-// default: an unset password leaves the page off rather than open.
+// The status page is served only when this is set. No default on purpose:
+// unset leaves the page off, not open.
 function loadStatsPassword() {
   const raw = process.env.STATS_PASSWORD;
   if (raw === undefined || raw.trim() === "") return null;
@@ -222,17 +221,15 @@ if (!LOCAL_ISOLATION_MODES.includes(LOCAL_ISOLATION)) {
 }
 if (process.platform === "win32") LOCAL_ISOLATION = "none";
 
-// Transient units run as root unless told otherwise, which would hand the
-// sandbox more privilege than scope mode gives it. Default to whoever the bot
-// runs as, since that user owns the per-job tmpdir.
+// Transient units run as root by default, more privilege than scope mode gives.
+// Use the bot's user instead; it owns the per-job tmpdir.
 const LOCAL_SANDBOX_USER = (
   process.env.LOCAL_SANDBOX_USER || os.userInfo().username
 ).trim();
 
-// ProtectHome=yes makes /home inaccessible to the unit, and a BindReadOnlyPaths
-// for a file underneath it does NOT punch back through (verified on the box:
-// execve fails with 203/EXEC). So service mode runs a copy of lune staged
-// outside /home; sandbox.luau is copied into the job's tmpdir per run.
+// ProtectHome=yes hides /home, and BindReadOnlyPaths can't punch a file back
+// through (execve fails with 203/EXEC). So service mode runs lune staged outside
+// /home; sandbox.luau is copied into each job's tmpdir.
 const LOCAL_LUNE_STAGED_PATH = (
   process.env.LOCAL_LUNE_STAGED_PATH || "/opt/luau-runner/bin/lune"
 ).trim();
@@ -259,8 +256,7 @@ if (!ENABLE_DISCORD && !ENABLE_WEB) {
   process.exit(1);
 }
 
-// BOT_TOKEN only matters when the bot itself runs; a web-only deployment
-// should not need Discord credentials at all.
+// A web-only deployment needs no Discord credentials.
 if (ENABLE_DISCORD && !process.env.BOT_TOKEN) {
   console.error(
     "Fatal: BOT_TOKEN is not set.\n" +
@@ -281,18 +277,27 @@ module.exports = {
   DISCORD_TOKEN: process.env.BOT_TOKEN,
   DISCORD_APP_ID: process.env.CLIENT_ID,
   PORT: process.env.PORT || 3000,
+  // Unix socket serving only the worker routes, for workers on this host.
+  WORKER_SOCKET: process.env.WORKER_SOCKET || "",
+  // Secret file for the worker supervisor (luau-bot-headless' supervise.sh),
+  // readable only by the bot's user and root.
+  WORKER_SECRET_FILE:
+    process.env.WORKER_SECRET_FILE ||
+    (process.env.WORKER_SOCKET
+      ? path.join(path.dirname(process.env.WORKER_SOCKET), "secret")
+      : ""),
   CALLBACK_URL,
   ENABLE_DISCORD,
   ENABLE_WEB,
   TRUST_PROXY,
 
-  // Keeps the exact source of each Discord compile on disk so the result embed
-  // can link to it. Off by default: it is user code sitting on the host.
+  // Stores each Discord compile's source on disk for the embed to link to.
+  // Off by default: it is user code sitting on the host.
   STORE_COMPILE_SOURCE,
   STATS_PASSWORD,
   PLAYGROUND_URL,
-  // The link lives in a Discord message forever, so a short TTL means most
-  // clicks 404. A day covers "why did my script break" without unbounded growth.
+  // Links live in Discord forever, so a short TTL means most clicks 404. A day
+  // covers "why did my script break" without unbounded growth.
   COMPILE_SOURCE_TTL_MS: envNumber(
     "COMPILE_SOURCE_TTL_MS",
     1000 * 60 * 60 * 24,
@@ -311,8 +316,7 @@ module.exports = {
   LOCAL_HEARTBEAT_TIMEOUT_MS: envNumber("LOCAL_HEARTBEAT_TIMEOUT_MS", 11000),
   // Enforced by ulimit on Linux only; ignored on Windows.
   LOCAL_MEMORY_LIMIT_MB: envNumber("LOCAL_MEMORY_LIMIT_MB", 256),
-  // Percent of one core, enforced via systemd-run --scope on Linux only.
-  // 0 disables the quota. 100 = 1 full core.
+  // Percent of one core (100 = 1 core, 0 = off), via systemd-run --scope on Linux only.
   LOCAL_CPU_QUOTA_PERCENT,
   LOCAL_ISOLATION,
   LOCAL_LUNE_STAGED_PATH,
@@ -343,8 +347,21 @@ module.exports = {
   ),
 
   SERVER_RUN_TIME_MAX: 1000 * 60 * 3,
+  // A Studio session takes tasks at least this long before handing over to a
+  // younger session and draining.
+  STUDIO_ACCEPT_MS: envNumber("STUDIO_ACCEPT_SECONDS", 120) * 1000,
+  // Must match SESSION_MAX_SECONDS in luau-bot-headless' bot-worker.sh, when
+  // the session ends itself and cuts off its runs.
+  STUDIO_SESSION_MS: envNumber("STUDIO_SESSION_SECONDS", 240) * 1000,
+  // Even with no one to hand over to, stop taking tasks this long before the
+  // end, so every run gets at least this long.
+  STUDIO_DRAIN_MS: envNumber("STUDIO_DRAIN_SECONDS", 60) * 1000,
   SERVER_CHECK_INTERVAL: 1000,
   SERVER_PING_TIMEOUT: 1000 * 5,
+  // Workers with an open /workerEvents stream poll only every 10 s.
+  WORKER_STREAM_PING_TIMEOUT: 1000 * 30,
+  // How long a worker whose stream closed has to reopen it or poll before it counts as gone.
+  WORKER_STREAM_GRACE_MS: 1000 * 8,
   SERVER_RECOVERY_GRACE_MS: 1000 * 40,
 
   SERVER_TIME_OUT: "300s",

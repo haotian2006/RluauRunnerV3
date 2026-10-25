@@ -5,6 +5,7 @@ const {
   INPUT_CHUNK_MAX_PER_WINDOW,
   INPUT_MAX_PER_WINDOW,
   INPUT_WINDOW_MS,
+  STUDIO_INPUT_MAX_PER_WINDOW,
   checkInputRate,
 } = require("../src/abuse");
 
@@ -29,18 +30,34 @@ test("chunk uploads get their own, far larger budget", () => {
   const actor = `web:chunks:${Date.now()}`;
   const startedAt = 6_000_000;
 
-  // A 100MB file at the 1MB chunk cap is 100 posts - it must not be throttled.
+  // A 100MB file in 1MB chunks is 100 posts; none may be throttled.
   for (let index = 0; index < 100; index++) {
     assert.equal(checkInputRate(actor, "chunk", startedAt).allowed, true);
   }
 
-  // Text budget is untouched by the chunk traffic.
+  // Chunks don't use the text budget.
   assert.equal(checkInputRate(actor, "input", startedAt).allowed, true);
 
   for (let index = 100; index < INPUT_CHUNK_MAX_PER_WINDOW; index++) {
     assert.equal(checkInputRate(actor, "chunk", startedAt).allowed, true);
   }
   assert.equal(checkInputRate(actor, "chunk", startedAt).allowed, false);
+});
+
+test("inputs to runs on Studio workers get their own, larger budget", () => {
+  const actor = `web:studio:${Date.now()}`;
+  const startedAt = 6_500_000;
+
+  assert.ok(STUDIO_INPUT_MAX_PER_WINDOW > INPUT_MAX_PER_WINDOW);
+  for (let index = 0; index < STUDIO_INPUT_MAX_PER_WINDOW; index++) {
+    assert.equal(checkInputRate(actor, "studio", startedAt).allowed, true);
+  }
+  const blocked = checkInputRate(actor, "studio", startedAt);
+  assert.equal(blocked.allowed, false);
+  assert.equal(blocked.limit, STUDIO_INPUT_MAX_PER_WINDOW);
+
+  // Studio inputs don't use the text budget.
+  assert.equal(checkInputRate(actor, "input", startedAt).allowed, true);
 });
 
 test("actors are limited independently", () => {
