@@ -664,8 +664,9 @@ local function executeCode(id, code, env, thread, delay, m, asFunction)
 	-- caller's globals, so without its own table each run would overwrite the others'.
 	local chunk, compileError = (loadstring :: any)(src)
 	if not chunk then
-		-- The compile error itself, not ChunkEnv's complaint about a nil chunk.
-		error(compileError, 0)
+		-- The compile error itself, not ChunkEnv's complaint about a nil chunk, and without the
+		-- generated wrapper as its chunk name.
+		error((string.gsub(tostring(compileError), '^%[string ".-"%]:', "", 1)), 0)
 	end
 	if isolateChunk then
 		isolateChunk(chunk)
@@ -1709,7 +1710,10 @@ local function handleInputs()
 				end
 			else
 				for _, process in ProcessesByUser[id] or {} do
-					process.forceStop()
+					-- A run that failed before it started has no forceStop.
+					if process.forceStop then
+						process.forceStop()
+					end
 				end
 			end
 		end)
@@ -1860,6 +1864,11 @@ local function start(ip, secretToken, options)
 	end
 	if options and typeof(options.capabilities) == "Instance" and options.capabilities:IsA("BindableFunction") then
 		Capabilities = options.capabilities
+	end
+	-- On a Studio worker the Sandbox needs luau_native to tell runs from the worker's own instances;
+	-- without it every run that touches an Instance fails, so fail here and the worker restarts.
+	if Capabilities and not NativeLibrary then
+		error("luau_native is not loaded in this session's VM; the worker must restart")
 	end
 	-- options.memory: budgets; the bootstrap opened a one-time claim, taken here before any run exists.
 	if options and type(options.memory) == "table" and NativeLibrary and NativeLibrary.claimMemoryAccounting then
