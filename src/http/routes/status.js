@@ -2,8 +2,9 @@ const crypto = require("crypto");
 const os = require("os");
 
 const { listActorBlocks } = require("../../abuse");
-const { LOCAL_MAX_CONCURRENT } = require("../../config");
+const { ENABLE_LOCAL_EXEC, LOCAL_MAX_CONCURRENT } = require("../../config");
 const { sessionBreakdown } = require("../../core/sessions");
+const { dataStoreStats } = require("../../dataStores");
 const { client } = require("../../discord/client");
 const {
   covers,
@@ -36,8 +37,7 @@ const {
 
 const HOUR_MS = 60 * 60 * 1000;
 const DAY_MS = 24 * HOUR_MS;
-// Servers the page lists before it stops and says how many are left. The JSON
-// view carries all of them.
+// Guild rows shown on the page; the JSON view has all.
 const GUILD_ROWS = 25;
 const REFRESH_SECONDS = 1;
 const CHART_BUCKETS = 24;
@@ -64,8 +64,7 @@ function formatBytes(bytes) {
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
-// A 24h total on a box that started an hour ago is an hour's worth. Say that
-// next to the number rather than letting it read as a full day.
+// Flags windows longer than uptime so a 24h total isn't read as a full day.
 function windowNote(windowMs, now) {
   return covers(windowMs, now) ? "" : " (since start)";
 }
@@ -84,15 +83,17 @@ function collect(now = Date.now()) {
   const errors = windows("error", now);
 
   const workers = Object.values(RobloxServers);
+  const studio = workers.filter((worker) => worker.kind === "studio");
+  const cloud = workers.filter((worker) => worker.kind !== "studio");
+  const taking = (list) =>
+    list.filter((worker) => worker.healthy && !worker.retiring).length;
   const memory = process.memoryUsage();
   const store = storeStats();
   const load = getLoad();
   const totalMem = os.totalmem();
   const freeMem = os.freemem();
 
-  // Server metadata the gateway already handed us, largest first. Held in
-  // memory only - never written to disk or to the log - and shown behind the
-  // login, never on the public /stats.
+  // Guild metadata stays in memory (never logged or written) and only behind the login.
   const discord = client?.isReady?.()
     ? {
         guilds: client.guilds.cache.size,
@@ -138,13 +139,21 @@ function collect(now = Date.now()) {
       healthy: workers.filter((worker) => worker.healthy && !worker.retiring)
         .length,
       retiring: workers.filter((worker) => worker.retiring).length,
+      // Studio workers are headless Studio on this host; maxWorkers caps Open Cloud only.
+      studioWorkers: studio.length,
+      studioTaking: taking(studio),
+      studioDraining: studio.filter((worker) => worker.retiring).length,
+      cloudWorkers: cloud.length,
+      cloudHealthy: taking(cloud),
       queued: Object.keys(ExecuteTasks).length,
       dispatched: Object.keys(DispatchedTasks).length,
       active: Object.keys(ActiveRobloxTasks).length,
       created: state.SERVERS_CREATED,
       pendingStarts: state.PendingRobloxStarts.length,
+      localExec: ENABLE_LOCAL_EXEC,
       localMaxConcurrent: LOCAL_MAX_CONCURRENT,
     },
+    dataStores: dataStoreStats(now),
     charts: {
       runsPerHour: histogram("run", HOUR_MS, CHART_BUCKETS, now),
       webPerHour: histogram("web", HOUR_MS, CHART_BUCKETS, now),
@@ -224,8 +233,12 @@ function rows(stats) {
         ],
         ["Discord sessions", String(stats.sessions.discord)],
         [
-          "Roblox workers",
-          `${stats.pool.workers} / ${stats.pool.maxWorkers} (${stats.pool.healthy} healthy)`,
+          "Studio workers",
+          `${stats.pool.studioWorkers} (${stats.pool.studioTaking} taking runs)`,
+        ],
+        [
+          "Open Cloud servers",
+          `${stats.pool.cloudWorkers} / ${stats.pool.maxWorkers} (${stats.pool.cloudHealthy} healthy)`,
         ],
         ["Roblox tasks running", String(stats.pool.active)],
         ["Tasks queued", String(stats.pool.queued)],
@@ -259,15 +272,38 @@ function rows(stats) {
     [
       "Worker pool",
       [
-        ["Workers", `${stats.pool.workers} / ${stats.pool.maxWorkers}`],
-        ["Healthy", String(stats.pool.healthy)],
-        ["Retiring", String(stats.pool.retiring)],
+        ["Studio workers", String(stats.pool.studioWorkers)],
+        ["Studio sessions taking runs", String(stats.pool.studioTaking)],
+        ["Studio sessions draining", String(stats.pool.studioDraining)],
+        [
+          "Open Cloud servers",
+          `${stats.pool.cloudWorkers} / ${stats.pool.maxWorkers}`,
+        ],
+        ["Open Cloud healthy", String(stats.pool.cloudHealthy)],
+        ["Open Cloud starts", String(stats.pool.created)],
+        ["Open Cloud pending starts", String(stats.pool.pendingStarts)],
         ["Tasks queued", String(stats.pool.queued)],
         ["Tasks dispatched", String(stats.pool.dispatched)],
         ["Tasks active", String(stats.pool.active)],
-        ["Servers created", String(stats.pool.created)],
-        ["Pending starts", String(stats.pool.pendingStarts)],
-        ["Lune max concurrent", String(stats.pool.localMaxConcurrent)],
+        [
+          "Lune",
+          stats.pool.localExec
+            ? `on, ${stats.pool.localMaxConcurrent} at once`
+            : "off",
+        ],
+      ],
+    ],
+    [
+      "DataStores",
+      [
+        ["Users with data", String(stats.dataStores.users)],
+        ["On disk", formatBytes(stats.dataStores.bytesOnDisk)],
+        ["Quota per user", formatBytes(stats.dataStores.quotaBytes)],
+        [
+          "Removed after",
+          `${Math.round(stats.dataStores.expiryMs / DAY_MS)} days unused`,
+        ],
+        ["Runs holding a token", String(stats.dataStores.liveGrants)],
       ],
     ],
     [
@@ -300,10 +336,6 @@ function rows(stats) {
   ];
 }
 
-// --- charts -----------------------------------------------------------------
-// Server-rendered SVG: the page ships no script, so the marks are drawn here
-// and the only interaction is the native tooltip an SVG <title> gives for free.
-
 const CHART_WIDTH = 720;
 const CHART_HEIGHT = 96;
 const BAR_GAP = 2;
@@ -335,15 +367,13 @@ function barChart(series, { label, describe }) {
       const y = plotHeight - height;
       const title = `<title>${escapeHtml(describe(point))}</title>`;
       if (point.count === 0) {
-        // An empty bucket still needs a hit target, and a hairline reads as
-        // "measured, nothing happened" rather than "no data".
+        // Hairline keeps a hover target and reads as zero instead of missing data.
         return `<g>${title}<rect x="${x.toFixed(1)}" y="${plotHeight - 1}" width="${width.toFixed(1)}" height="1" class="empty"/></g>`;
       }
       return `<g>${title}<path d="${barPath(x, y, width, height)}"/></g>`;
     })
     .join("");
 
-  // Selective labels only: the ends and the middle, never one per bar.
   const ticks = [0, Math.floor(series.length / 2), series.length - 1]
     .map((index) => {
       const x = index * (width + BAR_GAP) + width / 2;
@@ -449,14 +479,11 @@ const STYLE = `
     .peak { color: #777; }
     .axis { stroke: #333; }
     .bars rect.empty { fill: #3a3a3a; }
-    /* Stepped for the dark surface, not an inverted light value. */
     :root { --series: #3987e5; }
   }
 `;
 
 function page(title, body, { noScriptRefresh = false } = {}) {
-  // Only for a browser with script off: a slow whole-page reload, which is the
-  // behaviour the in-place updater exists to avoid.
   const fallback = noScriptRefresh
     ? `<noscript><meta http-equiv="refresh" content="10"></noscript>`
     : "";
@@ -482,11 +509,7 @@ ${message ? `<p class="err">${escapeHtml(message)}</p>` : ""}
   );
 }
 
-/**
- * Every live value on the page, addressed by a stable key. The page renders
- * from this and the updater rewrites from it, so the two can never disagree
- * about what a cell should say.
- */
+/** Live values by stable key; render and updater share it so they agree. */
 function liveValues(stats) {
   const values = {};
   rows(stats).forEach(([heading, entries], section) => {
@@ -514,8 +537,7 @@ function errorList(stats) {
     .join("")}</ul>`;
 }
 
-// Patches only the cells whose text actually changed, so a selection anywhere
-// else on the page survives - which a whole-document reload cannot do.
+// Patches only changed cells so a text selection elsewhere survives.
 const UPDATE_SCRIPT = `
 (function () {
   var timer = null;
@@ -541,8 +563,7 @@ const UPDATE_SCRIPT = `
   }
   var ticks = 0;
   function tick() {
-    // The charts are most of the payload and move slowly, so they ride along
-    // once every five seconds rather than every second.
+    // Charts are heavy and slow-moving; fetch them every 5th tick.
     var wantCharts = ticks++ % 5 === 0;
     fetch("/status/data" + (wantCharts ? "?charts=1" : ""), { credentials: "same-origin" })
       .then(function (r) {
@@ -553,7 +574,6 @@ const UPDATE_SCRIPT = `
       .catch(function () {})
       .then(function () { timer = setTimeout(tick, ${REFRESH_SECONDS * 1000}); });
   }
-  // Nothing to update while the tab is in the background.
   document.addEventListener("visibilitychange", function () {
     if (document.hidden) { clearTimeout(timer); }
     else if (!document.hidden) { clearTimeout(timer); tick(); }
@@ -595,10 +615,7 @@ function statusPage(stats, nonce) {
 function registerStatusRoutes(app) {
   if (!enabled()) return;
 
-  // The page is not for anyone else's origin, and must never be cached by
-  // something in between.
-  // `nonce` is per response, so only the updater this server just wrote can
-  // run - an injected <script> still has nothing to quote.
+  // Per-response nonce so an injected <script> can't run.
   function lockDown(res, nonce = null) {
     res.removeHeader("Access-Control-Allow-Origin");
     res.setHeader("Cache-Control", "private, no-store");
@@ -626,8 +643,7 @@ function registerStatusRoutes(app) {
     sendHtml(res, 200, statusPage(stats, nonce));
   });
 
-  // What the page polls: the same values it was rendered from, plus the
-  // freshly drawn charts. Session-gated like everything else here.
+  // Polled by the page: live values, plus charts with ?charts=1.
   app.get("/status/data", (req, res) => {
     lockDown(res);
     if (!hasSession(req)) {

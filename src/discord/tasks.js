@@ -3,13 +3,14 @@ const { parseHotComments } = require("../local/hotComments");
 const { codeHash, getActorBlock } = require("../abuse");
 const { closeSession, getSession, openSession } = require("../core/sessions");
 const { selectRuntime, tryRunLocally } = require("../local/dispatch");
-const { logBot } = require("../log");
+const { logBot, tokenTag } = require("../log");
 const { record } = require("../metrics");
 const { createPendingResponseEmbed } = require("./embeds");
 const { createDiscordResponder } = require("./responder");
 const { CompilingTasks, ExecuteTasks } = require("../state");
 const { getSourceUrl, storeSource } = require("../sourceStore");
 const { generateUUID } = require("../util");
+const { notifyWorkers } = require("../workerEvents");
 const { cleanupScriptButtons } = require("./scriptButtons");
 
 const TASK_TTL_MS = 1000 * 60 * 6; //How long a task can last
@@ -28,8 +29,8 @@ async function sendCompileRequestToRoblox(
   const selection = await selectRuntime(code);
   record("run", `discord:${selection.runtime}`);
 
-  // Stored before dispatch so the pending embed already carries the link. The
-  // local runtime rewrites the source and stores its own copy over this one.
+  // Stored first so the pending embed has the link; the local runtime later
+  // stores its rewritten copy over it.
   storeSource(interaction.token, code);
 
   await interaction.editReply({
@@ -59,7 +60,7 @@ async function sendCompileRequestToRoblox(
   const timeoutId = setTimeout(async () => {
     logBot(
       "Task Expired",
-      `${interaction.token} hit the ${TASK_TTL_MS / 1000}s TTL still unfinished ` +
+      `${tokenTag(interaction.token)} hit the ${TASK_TTL_MS / 1000}s TTL still unfinished ` +
         `(queued=${Boolean(ExecuteTasks[uuid])})`,
     );
     const expired = getSession(interaction.token);
@@ -77,8 +78,7 @@ async function sendCompileRequestToRoblox(
     } else {
       interaction.editReply({ components: [] }).catch(() => {});
     }
-    // closeSession runs the responder's cleanup, which clears the button map
-    // and drops the CompilingTasks entry.
+    // closeSession's cleanup clears the button map and the CompilingTasks entry.
     closeSession(interaction.token);
     cleanupScriptButtons(CompilingTasks[interaction.token]?.[7]);
     delete CompilingTasks[interaction.token];
@@ -146,6 +146,7 @@ async function sendCompileRequestToRoblox(
     isCommand: isCommand,
     nosandbox: parseHotComments(code).nosandbox,
   };
+  notifyWorkers("task");
 }
 
 module.exports = { sendCompileRequestToRoblox };

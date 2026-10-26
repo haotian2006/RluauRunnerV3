@@ -655,4 +655,31 @@ else
 	fail("unknown mode")
 end
 
-stdio.write(roblox.serializeModel({ root }))
+if config.format == "tree" then
+	-- The playground's { name, className, source?, value?, children? } nodes, for types.
+	-- Empty children are left out: serde would write them as {}.
+	local count = 0
+	local function toNode(inst: any): any
+		count += 1
+		if count > 20000 then
+			fail("the model has more than 20000 instances")
+		end
+		local out: any = { name = inst.Name, className = inst.ClassName }
+		if inst:IsA("LuaSourceContainer") then
+			out.source = inst.Source
+		elseif inst.ClassName == "StringValue" then
+			out.value = inst.Value
+		end
+		local children = inst:GetChildren()
+		if #children > 0 then
+			out.children = {}
+			for _, child in children do
+				table.insert(out.children, toNode(child))
+			end
+		end
+		return out
+	end
+	stdio.write(serde.encode("json", toNode(root)))
+else
+	stdio.write(roblox.serializeModel({ root }))
+end

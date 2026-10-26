@@ -1,13 +1,8 @@
-// Uses luau-analyze's unknown-global report, not a regex, so "game" in a
-// string does not match. Every failure falls back to Roblox, which only costs
-// latency; the reverse fails confusingly.
-
 const { ROBLOX_MEMBERS, classifyGlobal } = require("./keywords");
 const { parseHotComments } = require("./hotComments");
 const { findUnknownGlobals, generateAST } = require("../tools/luau");
 
-// Uses of Roblox-only members of local globals (io.import), and require() of anything
-// but a string path, which only Roblox can resolve.
+// Roblox-only members of local globals (io.import), and non-string require(), which only Roblox resolves.
 function robloxOnlyUses(ast) {
   const found = new Set();
   const walk = (n) => {
@@ -37,8 +32,8 @@ function robloxOnlyUses(ast) {
 
 const MEMBER_HINT = /\b(require|import|writeimage)\b/;
 
+// Analyzer failures route to Roblox: that only costs latency, the reverse fails confusingly.
 async function classify(source) {
-  // Skips analysis if the user explicitly opts in to local execution.
   if (parseHotComments(source).lune) {
     return {
       eligible: true,

@@ -54,3 +54,26 @@ test("an unused server can take either kind", () => {
   assert.equal(needsAdditionalWorker(workers, [{ nosandbox: true }], 0), false);
   assert.equal(needsAdditionalWorker(workers, [{}], 0), false);
 });
+
+test("a headless Studio worker never takes a nosandbox task", () => {
+  const studio = `studio:${Date.now()}`;
+  registerRobloxServer(studio).kind = "studio";
+  ExecuteTasks.studioNo = { token: "studio-no", nosandbox: true };
+
+  assert.equal(reserveNextTask(studio), null);
+  assert.ok(ExecuteTasks.studioNo);
+  assert.equal(RobloxServers[studio].mode, null);
+
+  ExecuteTasks.studioYes = { token: "studio-yes" };
+  assert.equal(reserveNextTask(studio), "studioYes");
+
+  delete ExecuteTasks.studioNo;
+  settleTasksForToken("studio-yes", true);
+  unregisterRobloxServer(studio);
+});
+
+test("Studio workers don't count toward serving queued nosandbox tasks", () => {
+  const workers = [{ healthy: true, retiring: false, mode: null, kind: "studio" }];
+  assert.equal(needsAdditionalWorker(workers, [{ nosandbox: true }], 0), true);
+  assert.equal(needsAdditionalWorker(workers, [{}], 0), false);
+});

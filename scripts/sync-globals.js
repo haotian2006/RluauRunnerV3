@@ -1,13 +1,17 @@
-// Regenerates the globals table in roblox/Sandbox.luau from luau-lsp's Roblox
-// definitions, so a global Roblox adds later is wrapped instead of leaking real
+// Regenerates the globals table in Sandbox.luau (private luau-bot-headless, sandbox/) from
+// luau-lsp's Roblox definitions, so a global Roblox adds later is wrapped instead of leaking real
 // Instances. Run before deploying; `--check` exits 1 if the table is stale.
 
 const fs = require("fs");
-const path = require("path");
+
+const { ROBLOX_SANDBOX_PATH: SANDBOX } = require("../src/privateFiles");
 
 const SOURCE =
   "https://raw.githubusercontent.com/JohnnyMorganz/luau-lsp/main/scripts/globalTypes.d.luau";
-const SANDBOX = path.join(__dirname, "..", "roblox", "Sandbox.luau");
+if (!SANDBOX) {
+  console.error("Sandbox.luau is in the private luau-bot-headless checkout; set LUAU_BOT_PRIVATE_DIR.");
+  process.exit(1);
+}
 const BEGIN = "--[[GLOBALS]]";
 const END = "--[[/GLOBALS]]";
 

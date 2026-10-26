@@ -70,7 +70,6 @@ function validateProfile(raw, file) {
 /** Files that could not be loaded, as human-readable reasons. */
 const skipped = [];
 
-/** Names of profiles present but turned off. */
 const disabled = [];
 
 /** @type {Profile[]|null} */
@@ -88,8 +87,6 @@ function loadProfiles() {
   for (const file of files) {
     const full = path.join(PROFILES_DIR, file);
 
-    // A single malformed profile must not take the bot down: name it, skip it,
-    // and keep running on whatever else is configured.
     let raw;
     try {
       raw = JSON.parse(fs.readFileSync(full, "utf-8"));
@@ -117,10 +114,6 @@ function loadProfiles() {
   return profiles;
 }
 
-/**
- * Print what was loaded, what was skipped and why. Called once at startup so a
- * broken profile is visible instead of silently reducing the rotation.
- */
 function reportProfiles() {
   const loaded = getProfiles();
 

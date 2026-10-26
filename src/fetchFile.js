@@ -1,14 +1,6 @@
 const { https } = require("follow-redirects");
 
-/**
- * Hard ceiling on anything we pull down from Discord.
- *
- * Aligned with `MAX_DATA_TO_SEND` in config.js, which is the limit that
- * actually governs this path: an input is zstd-compressed and then gated on
- * its *compressed* size, so the raw file is allowed to be as large as the
- * compressed budget. This is a bound on memory per download, not the real
- * admission check.
- */
+/** Memory bound per download, matching MAX_DATA_TO_SEND; the real gate is on compressed size. */
 const MAX_DOWNLOAD_BYTES = 100 * 1024 * 1024;
 
 const MAX_REDIRECTS = 3;

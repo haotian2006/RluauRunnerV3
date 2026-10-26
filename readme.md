@@ -1,7 +1,7 @@
 A discord bot that executes Luau code in a Roblox game.
 
 Check out the site here:
-https://haotian2006.github.io/LuauBotSite/
+https://rluwa.com/
 
 Add the bot here:  https://discord.com/oauth2/authorize?client_id=1271610114062811176
 
@@ -13,33 +13,16 @@ The bot ships its own code to each execution session as a base64-encoded rbxm,
 so the target place needs nothing installed in it. **The bot will not start
 without `luauBot.b64` in the project root.**
 
-Copy the files in `roblox/` into `workspace` as module scripts:
+Build it from the files in `roblox/` (`bundle.project.json` says which file is
+which ModuleScript) with [Lune](https://github.com/lune-org/lune):
 
 ```
-workspace
-    - LuauBot        (roblox/LuauBot.luau)
-      - LoadEnv      (roblox/LoadEnv.luau)
-        - Sandbox    (roblox/Sandbox.luau)
+bin/lune run scripts/bundle
 ```
 
-Then run this in Studio and save the output into `luauBot.b64`:
-
-```lua
-local EncodingService = game:GetService("EncodingService")
-local ToEncode = workspace.LuauBot
-
-
-local Ser = game:GetService("SerializationService"):SerializeInstancesAsync({ToEncode})
-Ser = EncodingService:CompressBuffer(Ser,Enum.CompressionAlgorithm.Zstd,22)
-local encodedString = buffer.tostring(EncodingService:Base64Encode(Ser))
-if not workspace:FindFirstChild("Output") then
-	Instance.new("ModuleScript",workspace).Name = "Output"
-end
-game:GetService("ScriptEditorService"):UpdateSourceAsync(workspace.Output,
-	function() return encodedString end )
-```
-
-Re-generate it whenever `roblox/LuauBot.luau` changes.
+`npm run fetch-tools` puts Lune in `bin/`. Rebuild the bundle whenever anything under
+`roblox/` changes. `bin/lune run scripts/bundle list <b64>` prints a bundle's tree, and
+`unpack <b64> <dir>` writes its sources out.
 
 ### 2. Execution profiles
 
@@ -70,7 +53,7 @@ permission `luau-execution-sessions` and Experience Operations of
 
 ### 3. Tool binaries
 
-`luau-compile`, `luau-analyze`, `luau-ast`, `stylua` and `lune` live in `bin/`
+`luau-compile`, `luau-analyze`, `luau-lsp`, `luau-ast`, `stylua` and `lune` live in `bin/`
 and are downloaded from the upstream GitHub releases:
 
 ```
@@ -80,6 +63,29 @@ npm run fetch-tools -- --force # re-download, e.g. to pick up a new Luau release
 
 This runs automatically on `npm install`. Windows, Linux and macOS (x64 and
 arm64) are all handled;
+
+The analyze command uses `luau-lsp analyze` with Roblox API definitions, without
+starting Studio. The fetcher pins luau-lsp and its Roblox definitions to 1.70.1;
+update both with `npm run fetch-tools -- --force --lsp-version <release>`.
+Replies include `{ code, output }`, annotated Luau source, and
+`script.luau(line,column)` diagnostics. Discord replies use code blocks or files.
+Valid Roblox globals and members are recognized;
+invalid property names and incompatible values are reported.
+
+This checks a single snippet, not a live place's Instance tree. Required modules
+have unknown types: the analysis adapter adds `:: any` to require arguments so
+the analyzer cannot follow them into host files. Returned diagnostics retain
+the original line/column locations. Bot-specific Image/io/Lune extensions are
+not yet described by these standard Roblox definitions. The execution router
+still uses plain `luau-analyze` to detect Roblox-only globals; analysis types
+do not change execution routing.
+
+Local validation: `node --test test/analysis.test.js test/router.test.js`.
+On the development Windows machine Roblox-aware calls took roughly 3.1 seconds
+each, including startup and definition loading. No running Studio is used;
+keeping Studio open does not reduce that cost. A persistent analysis process
+would be separate follow-up work. See the upstream
+[luau-lsp documentation](https://github.com/JohnnyMorganz/luau-lsp#standalone).
 
 ### 4. `.env`
 
@@ -101,8 +107,17 @@ STORE_COMPILE_SOURCE=false(OPTIONAL, default false, adds a "see raw" link to res
 COMPILE_SOURCE_TTL_MS=86400000(OPTIONAL, default 86400000 / 24 hours)
 COMPILE_SOURCE_MAX_BYTES=1048576(OPTIONAL, default 1 MB per source)
 COMPILE_SOURCE_TOTAL_BYTES=209715200(OPTIONAL, default 200 MB for all stored sources)
-PLAYGROUND_URL=https://haotian2006.github.io/LuauBotSite/playground.html(OPTIONAL, blank disables the redirect)
+PLAYGROUND_URL=https://rluwa.com/playground.html(OPTIONAL, blank disables the redirect)
 TRUST_PROXY=false(OPTIONAL, default false)
+WORKER_SOCKET=/run/luau-bot/worker.sock(OPTIONAL, blank disables; Unix socket with only the worker routes)
+WORKER_SECRET_FILE=/run/luau-bot/secret(OPTIONAL, default next to WORKER_SOCKET; read by the worker supervisor)
+STUDIO_ACCEPT_SECONDS=120(OPTIONAL, a Studio session's least time taking tasks before it hands over)
+STUDIO_SESSION_SECONDS=240(OPTIONAL, must match the workers' SESSION_MAX_SECONDS)
+STUDIO_DRAIN_SECONDS=60(OPTIONAL, least time a session's runs get before the session ends)
+DATASTORE_DIR=./data/datastores(OPTIONAL, where each Discord user's saved DataStores and MemoryStores live)
+DATASTORE_QUOTA_BYTES=1048576(OPTIONAL, default 1 MB per user)
+DATASTORE_EXPIRY_DAYS=30(OPTIONAL, a user's saved stores are deleted after this long unused)
+LUAU_BOT_PRIVATE_DIR=../luau-bot-headless(OPTIONAL, the private checkout holding the sandboxes; default beside this one)
 FORM_ID=Google_Form_Id(OPTIONAL)
 FORM_ENTRY_NAME=entry.0000000000(OPTIONAL)
 FORM_ENTRY_USER_ID=entry.0000000000(OPTIONAL)
@@ -112,6 +127,42 @@ FORM_ENTRY_DATA=entry.0000000000(OPTIONAL)
 
 `CALLBACK_URL` is the address the Roblox session sends its requests back to.
 It must include the scheme and no trailing slash.
+
+`WORKER_SOCKET` is for headless Studio workers on the same host. Their network
+can't reach the host's localhost, so luau-bot-headless' `linux/bot-relay.py` forwards
+`127.0.0.1:25628` inside it to this socket, which serves only the routes a worker
+uses, plus `GET /workerEvents`: an SSE stream of `task` and `input` wake-ups. A
+worker opts in with `start(url, secret, { stream = true })`; without it LuauBot
+polls as before. The open stream is the worker's heartbeat: when it closes and
+the worker doesn't come back within 8 s, its unstarted tasks are requeued and its
+running ones fail. The bot writes its secret to `WORKER_SECRET_FILE` (mode 600)
+for luau-bot-headless' `linux/supervise.sh`, which keeps two workers running and
+restarts them when the secret changes.
+
+While a Studio session takes tasks, sandboxed runs go only to Studio workers.
+With none, the bot starts Open Cloud servers, then falls back to Lune if those
+fail. `--!nosandbox` runs always go to Open Cloud.
+
+The sandboxes (`Sandbox.luau` for Roblox runs, `lune-sandbox.luau` for local Lune runs)
+are in the private luau-bot-headless repository, under `sandbox/`. Building
+`luauBot.b64` and local runs need that checkout (`LUAU_BOT_PRIVATE_DIR`, or beside
+this one); without it the bundle refuses to build, local runs refuse to start,
+and a bundle without a Sandbox refuses sandboxed runs.
+
+On Studio workers with luau-bot-headless' luau_native, each run has a memory
+budget and a native brake: a run past its share, or one that keeps the worker
+busy longer than `stepSeconds` between LuauBot's watcher ticks, is stopped at
+its next loop or call even if it never yields ("Memory limit exceeded" /
+"CPU limit exceeded").
+
+Sandboxed Discord runs keep their DataStores and MemoryStores: the bot saves
+them per user under `DATASTORE_DIR`, key by key, up to `DATASTORE_QUOTA_BYTES`,
+and deletes a user's after `DATASTORE_EXPIRY_DAYS` unused. A worker reaches them
+only through `/dataStore/load` and `/dataStore/save` with the worker secret and
+a private token the bot mints for each run and hands to LuauBot, never to run
+code; the token picks the user. Runs on two workers at once only race on the
+same key, and see each other's writes in their next run. Web runs have no
+lasting user, so their stores last as long as their world, as before.
 
 `STORE_COMPILE_SOURCE` is covered in [Source links](#source-links-optional).
 

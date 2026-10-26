@@ -1,8 +1,3 @@
-// Counters for the status page. Nothing here is persisted: the process is the
-// window, which is why the page shows uptime next to every total. A 24h figure
-// on a box that restarted an hour ago means "in that hour", and the page says
-// so rather than pretending otherwise.
-
 const os = require("os");
 
 const MAX_EVENTS = 20000;
@@ -12,7 +7,7 @@ const HOUR_MS = 60 * 60 * 1000;
 
 const startedAt = Date.now();
 
-/** Ring buffer of { at, kind, name } - one entry per counted thing. */
+/** Ring buffer of { at, kind, name }. */
 const events = [];
 /** Recent logBot failures, newest last. */
 const errors = [];
@@ -32,7 +27,6 @@ function recordError(name, message) {
   push("error", name);
 }
 
-/** Totals for one kind over a window, broken down by name. */
 function countBy(kind, windowMs, now = Date.now()) {
   const since = now - windowMs;
   const totals = {};
@@ -53,7 +47,7 @@ function countBy(kind, windowMs, now = Date.now()) {
  */
 function histogram(kind, bucketMs, buckets, now = Date.now()) {
   const series = [];
-  // The newest bucket ends now, so the last one is partial - that is the point.
+  // The newest bucket ends now, so it is partial.
   const firstStart = now - bucketMs * buckets;
   for (let index = 0; index < buckets; index++) {
     series.push({ at: firstStart + index * bucketMs, count: 0 });
@@ -79,11 +73,8 @@ function windows(kind, now = Date.now()) {
   };
 }
 
-// CPU percentages are deltas between two readings, so they only exist once the
-// sampler has run twice. Until then the page shows them as unknown rather than
-// as zero, which would read as an idle box.
+// CPU percentages need two samples; null until then.
 let load = { systemPercent: null, processPercent: null };
-// Rolling CPU readings for the sparkline: 120 samples at 5s is the last 10min.
 const MAX_LOAD_HISTORY = 120;
 const loadHistory = [];
 let lastCpuTimes = null;
@@ -152,10 +143,7 @@ function uptimeMs(now = Date.now()) {
   return now - startedAt;
 }
 
-/**
- * True once the process has been up longer than the window, i.e. the window is
- * actually a full window.
- */
+/** True once uptime exceeds the window, so the window is full. */
 function covers(windowMs, now = Date.now()) {
   return uptimeMs(now) >= windowMs;
 }

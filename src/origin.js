@@ -1,8 +1,3 @@
-// Roblox game servers can reach the public web API - a script running on a
-// worker has HttpService - so a single script can call /run in a loop and every
-// call arrives from a different Roblox datacenter address. Per-IP limits do
-// nothing against that, so the whole of Roblox counts as one caller here.
-
 const ROBLOX_UA = /roblox/i;
 const ROBLOX_KEY = "roblox";
 const MAX_WORKER_IPS = 1000;
@@ -17,7 +12,6 @@ function normalizeIp(ip) {
   return ip.startsWith("::ffff:") ? ip.slice(7) : ip;
 }
 
-/** The /24 an IPv4 address sits in, or null for anything else. */
 function prefixOf(ip) {
   const parts = ip.split(".");
   if (parts.length !== 4 || parts.some((part) => !/^\d{1,3}$/.test(part))) {
@@ -30,11 +24,7 @@ function forget(set) {
   if (set.size >= MAX_WORKER_IPS) set.delete(set.values().next().value);
 }
 
-/**
- * Remember an address the worker pool authenticated from. Roblox publishes no
- * stable range list, so the pool's own traffic is what teaches us where it
- * lives - a backstop for the case where the user agent is not the giveaway.
- */
+/** Learn worker-pool addresses (Roblox publishes no range list); backstop for the user agent check. */
 function noteWorkerIp(ip) {
   const address = normalizeIp(ip);
   if (!address) return;
@@ -49,11 +39,7 @@ function noteWorkerIp(ip) {
   }
 }
 
-/**
- * Roblox stamps its own user agent on HttpService requests and in-game code
- * cannot remove it. Forging it from outside Roblox only moves the caller into
- * the stricter shared bucket, so the heuristic can only fail safe.
- */
+/** Roblox stamps a user agent game code can't remove; forging it only lands in the shared bucket. */
 function isRobloxOrigin(req) {
   const agent = req?.headers?.["user-agent"];
   if (typeof agent === "string" && ROBLOX_UA.test(agent)) return true;
@@ -65,10 +51,7 @@ function isRobloxOrigin(req) {
   return prefix ? workerPrefixes.has(prefix) : false;
 }
 
-/**
- * What the rate limiters count against: one key for all of Roblox, the address
- * itself for everyone else.
- */
+/** One key for all of Roblox: a worker script with HttpService can loop /run from many Roblox IPs. */
 function limiterKey(req) {
   return isRobloxOrigin(req) ? ROBLOX_KEY : req.ip;
 }

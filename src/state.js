@@ -1,12 +1,12 @@
 const crypto = require("crypto");
 const { closeSession, getSession } = require("./core/sessions");
 const { logBot } = require("./log");
+const { notifyWorkers } = require("./workerEvents");
 
 const state = {
   CallbackUrl: "",
 
-  // Legacy single-server fields are kept for compatibility with older tests
-  // and integrations. New scheduling uses RobloxServers below.
+  // Legacy single-server fields for old tests; scheduling uses RobloxServers.
   RunningServer: "",
   RunningServerTime: 0,
   LastServerPing: 0,
@@ -33,6 +33,7 @@ function putInput(entry) {
   Inputs[entry.uid] = entry;
   for (const wake of inputWaiters) wake();
   inputWaiters.clear();
+  notifyWorkers("input");
 }
 
 /** Resolves on the next putInput, after `ms`, or when `signal` aborts. */
@@ -61,15 +62,7 @@ const ActiveRobloxTasks = {};
 
 const RobloxServers = {};
 
-/**
- * Tasks already requeued once, so a lost handoff is retried exactly one time.
- *
- * Keyed by the task object rather than its uuid, and weak on purpose: a task
- * is abandoned down several paths (the retry timer giving up, the six-minute
- * expiry, /stopall, failPendingTasks) and only one of them used to clean up.
- * Holding the object weakly means the entry disappears with the task itself,
- * so no path can leak. Do not swap this for a Set of uuids.
- */
+/** Tasks requeued once. Weak and keyed by task object so every drop path frees it. */
 const retriedTasks = new WeakSet();
 
 const DISPATCH_RETRY_MS = 60 * 1000;
@@ -87,9 +80,13 @@ function registerRobloxServer(serverId, now = Date.now()) {
     outageRecorded: false,
     retiring: false,
     activeTaskIds: new Set(),
-    // Set by the first task it takes. --!nosandbox runs get the real DataModel,
-    // so they never share a server with sandboxed runs.
+    // Set by its first task; --!nosandbox runs never share a server with sandboxed ones.
     mode: null,
+    // "studio" for a headless Studio worker on this host, else an Open Cloud server.
+    kind: "cloud",
+    // Open GET /workerEvents streams, and when the last one closed.
+    streams: 0,
+    streamLostAt: null,
   };
   RobloxServers[serverId] = server;
   return server;
@@ -103,6 +100,20 @@ function touchRobloxServer(serverId, now = Date.now()) {
   server.unhealthySince = null;
   server.outageRecorded = false;
   return server;
+}
+
+// An open /workerEvents stream is a heartbeat between polls; it closes when the
+// worker process does. Returns a detach function.
+function attachWorkerStream(serverId, now = Date.now()) {
+  const server = RobloxServers[serverId];
+  if (!server) return () => {};
+  server.streams += 1;
+  server.streamLostAt = null;
+  touchRobloxServer(serverId, now);
+  return () => {
+    server.streams -= 1;
+    if (server.streams === 0) server.streamLostAt = Date.now();
+  };
 }
 
 function retireRobloxServer(serverId) {
@@ -160,6 +171,7 @@ function dispatchTask(uuid, serverId = state.RunningServer) {
 
     retriedTasks.add(task);
     ExecuteTasks[uuid] = task;
+    notifyWorkers("task");
     logBot("Roblox Handoff", `task ${uuid} requeued for another worker`);
   }, DISPATCH_RETRY_MS);
 
@@ -176,8 +188,15 @@ function taskMode(task) {
   return task?.nosandbox ? "nosandbox" : "sandbox";
 }
 
+// A server keeps its first task's mode. Studio workers never take --!nosandbox:
+// unsandboxed code there would run on the bot's own host, so it goes to Open Cloud.
+function canServeMode(server, mode) {
+  if (mode === "nosandbox" && server.kind === "studio") return false;
+  return !server.mode || server.mode === mode;
+}
+
 function canServe(server, task) {
-  return !server.mode || server.mode === taskMode(task);
+  return canServeMode(server, taskMode(task));
 }
 
 function nextTaskFor(serverId) {
@@ -204,6 +223,15 @@ function getDispatchedTask(uuid) {
   return DispatchedTasks[uuid]?.task || null;
 }
 
+function serverForToken(token) {
+  for (const tasks of [DispatchedTasks, ActiveRobloxTasks]) {
+    for (const entry of Object.values(tasks)) {
+      if (entry?.task?.token === token) return RobloxServers[entry.serverId] || null;
+    }
+  }
+  return null;
+}
+
 function settleTasksForToken(token, finished = true) {
   for (const uuid of Object.keys(DispatchedTasks)) {
     const entry = DispatchedTasks[uuid];
@@ -211,8 +239,7 @@ function settleTasksForToken(token, finished = true) {
       clearTimeout(entry.timer);
       delete DispatchedTasks[uuid];
       if (!finished) {
-        // The retry timer is dropped here. From now on only a server reap can
-        // recover this task, so record where it went.
+        // No retry timer now; only a server reap can recover it, so record where it went.
         ActiveRobloxTasks[uuid] = {
           ...entry,
           timer: null,
@@ -255,6 +282,30 @@ function unfinishedTasksForServer(serverId, removeActive) {
   return tasks;
 }
 
+/**
+ * Requeues tasks a lost server claimed but never started. One retry each, as
+ * with the dispatch timer; already-retried ones are returned as `exhausted`.
+ */
+function requeueUnstartedTasksForServer(serverId) {
+  const exhausted = [];
+  let requeued = 0;
+  for (const [uuid, entry] of Object.entries(DispatchedTasks)) {
+    if (entry?.serverId !== serverId) continue;
+    clearTimeout(entry.timer);
+    delete DispatchedTasks[uuid];
+    releaseServerTask(serverId, uuid);
+    if (retriedTasks.has(entry.task)) {
+      exhausted.push(entry.task);
+      continue;
+    }
+    retriedTasks.add(entry.task);
+    ExecuteTasks[uuid] = entry.task;
+    requeued += 1;
+  }
+  if (requeued) notifyWorkers("task");
+  return { requeued, exhausted };
+}
+
 function getUnfinishedTasksForServer(serverId) {
   return unfinishedTasksForServer(serverId, false);
 }
@@ -265,6 +316,7 @@ function takeUnfinishedTasksForServer(serverId) {
 
 module.exports = {
   canServe,
+  canServeMode,
   nextTaskFor,
   taskMode,
   state,
@@ -282,12 +334,15 @@ module.exports = {
   RobloxServers,
   registerRobloxServer,
   touchRobloxServer,
+  attachWorkerStream,
   retireRobloxServer,
   unregisterRobloxServer,
   dispatchTask,
   reserveNextTask,
   getDispatchedTask,
+  serverForToken,
   settleTasksForToken,
   getUnfinishedTasksForServer,
+  requeueUnstartedTasksForServer,
   takeUnfinishedTasksForServer,
 };

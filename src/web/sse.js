@@ -20,9 +20,7 @@ function sendSSE(res, event, data) {
 
 /**
  * @param {(reason?: string) => void} [onClose]
- * @param {{ requireStream?: boolean }} [options] `requireStream: false` serves a
- *   polling client: the run proceeds with no socket, and every update lands in
- *   the snapshot for `GET /result/:token` to read.
+ * @param {{ requireStream?: boolean }} [options] false: polling client, runs with no socket, reads the snapshot via `GET /result/:token`.
  */
 function createSseResponder(onClose, options = {}) {
   const requireStream = options.requireStream !== false;
@@ -36,9 +34,7 @@ function createSseResponder(onClose, options = {}) {
     markReady = resolve;
   });
 
-  // The last state the caller was told about, kept whether or not anyone is
-  // listening. `content` is cumulative - every deliver carries the whole output
-  // so far - so the newest one is the whole answer.
+  // Last state sent, kept even with no listener. `content` is cumulative, so the newest is complete.
   const snapshot = {
     status: "running",
     content: "",
@@ -165,7 +161,6 @@ function createSseResponder(onClose, options = {}) {
       publishButtons();
     },
 
-    /** The click target for an enabled button, or null if it is gone or disabled. */
     clickButton(buttonId) {
       const definition = buttons.get(buttonId);
       if (!definition || definition.disabled) return null;
@@ -205,8 +200,7 @@ function createSseResponder(onClose, options = {}) {
       }
 
       if (!stream) {
-        // Nothing left to push the run along once it is over, so a polling
-        // session tears itself down here instead of waiting for the timeout.
+        // Polling sessions close here instead of waiting for the timeout.
         if (isLast) close();
         return;
       }

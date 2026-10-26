@@ -17,9 +17,7 @@ const { generateUUID } = require("./util");
 const STORE_DIR = path.join(os.tmpdir(), "rluau-sources");
 const SWEEP_INTERVAL_MS = 1000 * 60 * 5;
 const SOURCE_EXT = ".luau.zst";
-// Sources written before the store packed them. Nothing writes this shape any
-// more, and readSource cannot make sense of one, so any that survive a restart
-// are unreadable by definition.
+// Pre-packing format: nothing writes it and readSource can't read it.
 const LEGACY_EXT = ".luau";
 const COMPRESSION_LEVEL = 10;
 
@@ -27,8 +25,7 @@ const COMPRESSION_LEVEL = 10;
 const entries = new Map();
 /** token -> id, so a live run can replace what it stored earlier. */
 const tokenIndex = new Map();
-// Ids whose file is gone because time or the byte budget took it, kept so a
-// stale link can say "expired" rather than "never existed". Ids only.
+// Ids removed by TTL or budget, so a stale link can say "expired" instead of "never existed".
 const expiredIds = new Set();
 const MAX_EXPIRED_IDS = 10000;
 let totalBytes = 0;
@@ -62,8 +59,7 @@ function sweep() {
   }
 }
 
-// Map iteration is insertion-ordered, and every write appends, so the first
-// live entry is always the oldest one.
+// Every write appends, so Map insertion order is age order.
 function evictUntilUnderBudget() {
   for (const id of entries.keys()) {
     if (totalBytes <= COMPILE_SOURCE_TOTAL_BYTES) return;
@@ -72,11 +68,8 @@ function evictUntilUnderBudget() {
 }
 
 /**
- * Drop files on disk that no live entry points at. Entries live in memory only,
- * so a restart orphans every file it left behind; the periodic sweep can only
- * see what this process stored. Age decides, because another process may be
- * sharing the directory and its recent files are still somebody's link. Files
- * in the pre-packed format go regardless: no version still serves them.
+ * Remove files no live entry points at (a restart orphans them all). Age decides, since another
+ * process may share the dir; pre-packed files always go.
  * @returns {{ removed: number, bytes: number }}
  */
 function purgeStaleFiles(now = Date.now()) {
@@ -140,8 +133,7 @@ function rawUrlFor(id) {
   return `${CALLBACK_URL}/raw/${id}`;
 }
 
-// Only the id travels. The playground already knows this host's address, so it
-// builds the /raw URL itself and nothing here has to survive a domain change.
+// Only the id travels; the playground builds the /raw URL itself, so links survive a domain change.
 function playgroundUrlFor(id) {
   if (!PLAYGROUND_URL) return null;
   const separator = PLAYGROUND_URL.includes("?") ? "&" : "?";
@@ -149,17 +141,13 @@ function playgroundUrlFor(id) {
 }
 
 /**
- * Persist the source a run is about to execute and return the link to show.
- * Returns null when the feature is off or the source is too big to be worth
- * reading in a browser. Called again for the same token (the local runtime
- * rewrites the source before running it) replaces the earlier copy.
+ * Store the source a run executes and return its link, or null when off or too big.
+ * Calling again with the same token replaces the copy (the local runtime rewrites it).
  */
 function storeSource(token, source) {
   if (!enabled() || typeof source !== "string" || !token) return null;
 
   const buffer = Buffer.from(source, "utf8");
-  // The cap is on the source the user wrote, not on how well it happens to
-  // compress, so it is checked before the source is packed.
   if (buffer.length === 0 || buffer.length > COMPILE_SOURCE_MAX_BYTES) {
     releaseToken(token);
     return null;
@@ -175,7 +163,6 @@ function storeSource(token, source) {
 
   ensureSweeping();
   sweep();
-  // The earlier copy is superseded, not expired: it is the same run.
   releaseToken(token, { expired: false });
 
   const id = generateUUID();
@@ -223,12 +210,10 @@ function getSourceUrl(token) {
   return sourceUrlFor(id);
 }
 
-/** True when this id held a source that time or the byte budget removed. */
 function wasExpired(id) {
   return expiredIds.has(id);
 }
 
-/** The stored file, or null when it never existed or has expired. */
 function getSource(id) {
   const entry = entries.get(id);
   if (!entry) return null;
@@ -240,7 +225,6 @@ function getSource(id) {
 }
 
 /**
- * The source behind an entry, unpacked. Callers never see the stored form.
  * @param {{ filePath: string }} entry
  * @returns {Promise<Buffer>}
  */
@@ -248,7 +232,6 @@ async function readSource(entry) {
   return zstd.decompress(await fs.promises.readFile(entry.filePath));
 }
 
-/** What the store is holding, for the status page. */
 function storeStats() {
   return {
     entries: entries.size,

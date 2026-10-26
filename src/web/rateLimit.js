@@ -4,9 +4,6 @@ const RUN_RATE_LIMIT = 10;
 const RUN_RATE_WINDOW_MS = 60_000;
 const FORMAT_DEBOUNCE_MS = 500;
 const TOOL_DEBOUNCE_MS = 500;
-// Matches the debounce ceiling (2/sec): the rate cap now governs sustained
-// throughput, and the debounce is what stops a burst. A compile is milliseconds
-// on a normal script, so the cost is the process spawn, not CPU.
 const TOOL_RATE_LIMIT = 120;
 const TOOL_RATE_WINDOW_MS = 60_000;
 const POLL_RATE_LIMIT = 120;
@@ -34,15 +31,12 @@ function checkRunRate(ip) {
   return true;
 }
 
-// How long until a limited caller's run window resets; 0 when they aren't limited.
 function runRateRetryMs(ip) {
   const entry = runRates.get(ip);
   if (!entry || entry.count < RUN_RATE_LIMIT) return 0;
   return Math.max(0, entry.resetAt - Date.now());
 }
 
-// One caller may not hold a compiler slot back to back, and may not spend more
-// than TOOL_RATE_LIMIT of them a minute. Each tool carries its own budget.
 function checkToolDebounce(ip, tool) {
   const now = Date.now();
   const key = toolKey(tool, ip);
@@ -52,7 +46,7 @@ function checkToolDebounce(ip, tool) {
   return true;
 }
 
-function checkToolRate(ip, tool) {
+function checkToolRate(ip, tool, limit = TOOL_RATE_LIMIT) {
   const now = Date.now();
   const key = toolKey(tool, ip);
   let entry = toolRates.get(key);
@@ -60,7 +54,7 @@ function checkToolRate(ip, tool) {
     entry = { count: 0, resetAt: now + TOOL_RATE_WINDOW_MS };
     toolRates.set(key, entry);
   }
-  if (entry.count >= TOOL_RATE_LIMIT) return false;
+  if (entry.count >= limit) return false;
   entry.count++;
   return true;
 }
@@ -69,8 +63,6 @@ function checkFormatDebounce(ip) {
   return checkToolDebounce(ip, "format");
 }
 
-// Result polling is meant to be repeated, so the ceiling only exists to stop a
-// caller from hammering it faster than a run ever produces new output.
 function checkPollRate(ip) {
   const now = Date.now();
   let entry = pollRates.get(ip);
@@ -83,7 +75,6 @@ function checkPollRate(ip) {
   return true;
 }
 
-/** Salt via IP_SALT. */
 function hashIp(ip) {
   return crypto
     .createHash("sha256")

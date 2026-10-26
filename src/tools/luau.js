@@ -12,6 +12,8 @@ function missingToolError(executablePath) {
 
 const {
   PATH_TO_ANALYZER,
+  PATH_TO_ROBLOX_ANALYZER,
+  ROBLOX_TYPES_PATH,
   PATH_TO_AST,
   PATH_TO_COMPILER,
   PATH_TO_FORMATTER,
@@ -38,6 +40,7 @@ function stripTempPaths(output, tmpDir, inputPath) {
   for (const variant of variants(tmpDir)) {
     result = result.split(variant).join(".");
   }
+  result = result.replace(/^Code\.luau(?=\(\d+,\d+\):)/gm, DISPLAY_NAME);
   return result;
 }
 
@@ -54,10 +57,9 @@ async function execute(executablePath, code, args) {
 
     const outputStream = fs.createWriteStream(outputPath);
 
-    const child = spawn(executablePath, args);
+    const child = spawn(executablePath, args, { cwd: tmpDir, windowsHide: true });
 
-    // Both child streams share one destination. Neither pipe may close it on
-    // its own, because the other stream can still have buffered data to write.
+    // Shared destination: neither pipe may end it while the other has buffered data.
     child.stdout.pipe(outputStream, { end: false });
     child.stderr.pipe(outputStream, { end: false });
 
@@ -106,11 +108,31 @@ async function execute(executablePath, code, args) {
 }
 
 async function analyzeLuau(code, options) {
-  const args = [];
-  args.push("--annotate");
-  args.push("--fflags=LuauSolverV2=true");
-
-  return await execute(PATH_TO_ANALYZER, code, args);
+  if (!fs.existsSync(ROBLOX_TYPES_PATH)) {
+    throw new Error("Roblox type definitions are missing. Run `npm run fetch-tools`.");
+  }
+  // Annotated output for the Discord analyze handler; plain luau-analyze stays for routing.
+  let ast = null;
+  if (code.includes("require")) {
+    const parsed = await generateAST(code);
+    if (parsed.code !== 0) {
+      const messages = [...parsed.output.matchAll(/^\s*\((\d+),\s*(\d+)\) - \(\d+,\s*\d+\) - (.+)$/gm)];
+      return { code: 1, output: messages.length
+        ? messages.map(([, line, column, message]) => `script.luau(${Number(line) + 1},${Number(column) + 1}): SyntaxError: ${message.trimEnd()}`).join("\n")
+        : "script.luau: SyntaxError: unable to parse snippet for analysis" };
+    }
+    ast = JSON.parse(parsed.output);
+  }
+  const { source, remap } = require("./analysisSource").prepareAnalysisSource(code, ast);
+  const result = await execute(PATH_TO_ROBLOX_ANALYZER, source, [
+    "analyze",
+    "--platform=roblox",
+    `--definitions=${ROBLOX_TYPES_PATH}`,
+    "--annotate",
+  ]);
+  result.output = result.output.replace(/^\[INFO\][^\r\n]*(?:\r?\n|$)/gm, "");
+  result.output = remap(result.output);
+  return result;
 }
 
 async function generateAST(code) {
@@ -207,6 +229,7 @@ async function compileLuau(code, options) {
   args.push("--vector-lib=Vector3");
   args.push("--vector-ctor=new");
   args.push("--vector-type=Vector3");
+  args.push("--fflags=DebugLuauUserDefinedClasses=true,DebugLuauUserDefinedClassesRuntime=true");
 
   return await execute(PATH_TO_COMPILER, code, args);
 }

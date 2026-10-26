@@ -1,11 +1,36 @@
---Put this under LuauBot
+local eTable = script:FindFirstChild("ExtendedTableLibrary")
+if eTable then
+	eTable = eTable:Clone()
+end
+local misc =  script:FindFirstChild("misc")
+if misc then
+	misc = misc:Clone()
+end
+local bench = script:FindFirstChild("Bench")
+if bench then
+	bench = bench:Clone()
+end
+local image = script:FindFirstChild("image")
+if image then
+	image = image:Clone()
+end
+local nativeExports = if image and image:FindFirstChild("native") then require(image.native).exports else nil
+local ask = script:FindFirstChild("Ask")
+if ask then
+	ask = require(ask)
+end
 
+local packetProfiler = script:FindFirstChild("PacketProfiler")
+if packetProfiler then
+	packetProfiler = packetProfiler:Clone()
+end
 local sandboxModule = script:FindFirstChild("Sandbox")
 if sandboxModule then
 	sandboxModule = sandboxModule:Clone()
 end
 
--- The engine creates these on every fresh server; destroying them would make each boot look dirty.
+-- A run may have saved a polluted place with SavePlaceAsync.
+-- Engine-created on every boot; destroying them would make each boot look dirty.
 local ENGINE_CREATED = {
 	Camera = true,
 	StarterPlayerScripts = true,
@@ -92,26 +117,273 @@ end
 
 if #changes > 0 then
 	warn(`[LoadEnv] reset {#changes} change(s): {table.concat(changes, ", ", 1, math.min(#changes, 20))}`)
+end
+-- Studio workers reopen their place each session, so there's nothing to save.
+if #changes > 0 and not game:GetService("RunService"):IsStudio() then
 	local ok, err = pcall(game:GetService("AssetService").SavePlaceAsync, game:GetService("AssetService"))
 	if not ok then
 		warn(`[LoadEnv] SavePlaceAsync failed: {err}`)
 	end
 end
 
+-- required after the reset so the sandbox baseline is the clean DataModel
 local bootReset = table.concat(changes, ", ")
 local Sandbox = sandboxModule and require(sandboxModule)
+-- LuauBot destroys this module's children after requiring it.
+local luneImportsModule = script:FindFirstChild("LuneImports")
+local createLuneImports = luneImportsModule and require(luneImportsModule:Clone())
 
 return function(thread, env, hooks)
-	if Sandbox and hooks and hooks.sandbox ~= false then
+	if createLuneImports and hooks then
+		hooks.luneRequire = createLuneImports(type(native) == "table" and native.lune or nil, env, nil, hooks)
+	end
+	local sandboxBridge = {}
+	-- Expected even when the bundle has no Sandbox (it's private), so LuauBot refuses the run.
+	if hooks and hooks.sandbox ~= false then
 		hooks.sandboxExpected = true
 	end
-	-- you can add custom environment variables here
-	-- these will be global variables thats loaded into the environment (imported as module globals)
+	-- Custom environment variables go here.
 	env.GLOBAL = {}
+	-- Unset, `native` falls through to luau_native's real table, whose hooks change Instances Studio-wide.
+	env.native = false
+	env._native = nativeExports
+	local aibot = ask.new(env._execute,env.print,env.io.read,env)
+	local firstTime = true
+	local userid = env.user.UserId
+	local function save(sec,data,time)
+		local success, result = pcall(function()	
+			local mmms = game:GetService("MemoryStoreService")
+			local hashMap = mmms:GetHashMap(sec)
+			hashMap:SetAsync(userid,data,time)
+			return true
+		end)
+	end
+	local function _tryGetMem()
+		if not env._G.AI_CONTEXT_TOKEN then
+			local success, result = pcall(function()	
+				local mmms = game:GetService("MemoryStoreService")
+				local hashMap = mmms:GetHashMap("AI_CONTEXT")
+				env._G.AI_CONTEXT_TOKEN = hashMap:GetAsync(userid)
+			end)
+		end
+		aibot.contextToken = env._G.AI_CONTEXT_TOKEN or ""
+	end
+	env.ask = function(question,context)
+		if firstTime then
+			_tryGetMem()
+		end
+		firstTime = false
+		if context == true then
+			aibot:reset()
+			env._G.AI_CONTEXT_TOKEN = nil
+		elseif type(context) == "string" then
+			aibot.contextToken = context
+		end
+		local start = #env.thread.output
+		aibot:chat(question)
+		
+		local str = ""
+		for i= start+1,#env.thread.output do
+			str ..= '\n'..env.thread.output[i]
+		end
+		local _,ct = str:gsub("\r?\n", "")
+		if ct > (env.thread.isweb and 100 or 28) then
+			env.OUTPUT_LOGS = true
+		end
+		
+		env._G.AI_CONTEXT_TOKEN = aibot.contextToken
+		task.spawn(function()
+			save("AI_CONTEXT",aibot.contextToken,60*60*24)
+		end)
+		return aibot.contextToken
+	end
+	env.matchcodeblock = function(content)
+		local a,b = content:match("```(%w*)\n([%s%S]-)```") 
+		if not (a or b) then
+			return nil,content
+		end
+		return a,b
+	end
+	env.etable = if eTable then require(eTable:Clone()) else table
+	env.misc = if misc
+		then require(misc:Clone()) else nil
+	if env.misc then
+		local inspectModule = misc:FindFirstChild("Inspect")
+		local inspectValue = type(native) == "table" and native.inspectValue
+		if inspectModule and type(inspectValue) == "function" then
+			env.misc.inspect = require(inspectModule)(function(value)
+				if sandboxBridge.inspect then return sandboxBridge.inspect(value) end
+				return inspectValue(value)
+			end, function(value)
+				return if sandboxBridge.kindOf then sandboxBridge.kindOf(value) else typeof(value)
+			end)
+		end
+		local c = env.misc.calculate
+		env.misc.calculate = function(...)
+			return c(env.print,...)
+		end
+	end
+	env.PacketSizeCounter = if packetProfiler then require(packetProfiler:Clone()) else nil
+	env.Image = if image then require(image:Clone())(env.println,env.io,hooks and hooks.fetchAsset,sandboxBridge) else nil
+	if hooks and env.Image then
+		hooks.editableImages = env.Image._editable
+	end
+	if env.Image and env.io then
+		local Img, writefile = env.Image, env.io.writefile
+		env.io.writeimage = function(value, name, options)
+			if name ~= nil and type(name) ~= "string" then
+				error("writeimage: arg 2 must be a file name string", 2)
+			end
+			if options ~= nil and type(options) ~= "table" then
+				error("writeimage: arg 3 must be a table of options", 2)
+			end
+			local data, ext
+			local editable = Img._editable and Img._editable.imageOf(value)
+			local recorder = type(value) == "table" and type(value.Wait) == "function" and value.Status ~= nil
+			if not recorder and Img.record and options and (options.Duration ~= nil or options.FrameRate ~= nil) then
+				local t = typeof(value)
+				if t == "userdata" or t == "Instance" then
+					local ok, rec = pcall(Img.record, value, options)
+					if not ok then
+						error("writeimage: " .. (string.gsub(tostring(rec), "^record: ", "")), 2)
+					end
+					value, recorder = rec, true
+				end
+			end
+			if recorder then
+				local result, extra = value:Wait()
+				if result == nil then
+					error("writeimage: " .. (string.gsub(tostring(extra), "^record: ", "")), 2)
+				end
+				data, ext = if type(result) == "string" then result else Img.toGif(result, extra, { loop = options and options.Loop or 0 }), "gif"
+			elseif editable then
+				data, ext = Img.toPng(editable), "png"
+			elseif type(value) == "table" and value.imageBuffer then
+				data, ext = Img.toPng(value), "png"
+			elseif type(value) == "table" and type(value[1]) == "table" and value[1].imageBuffer then
+				local delay = if options and options.Delay ~= nil then options.Delay else 0.1
+				local delays = {}
+				for i, frame in value do
+					if type(frame) ~= "table" or not frame.imageBuffer then
+						error(`writeimage: frame {i} is not an Image`, 2)
+					end
+					delays[i] = if type(delay) == "table" then delay[i] or 0.1 else delay
+				end
+				data, ext = Img.toGif(value, delays, { loop = options and options.Loop or 0 }), "gif"
+			else
+				local t = typeof(value)
+				if t ~= "userdata" and t ~= "Instance" then
+					error("writeimage: arg 1 must be an Image, a list of Images or an Instance", 2)
+				end
+				local ok, img = pcall(Img.fromInstance, value, options)
+				if not ok then
+					error("writeimage: " .. (string.gsub(tostring(img), "^fromInstance: ", "")), 2)
+				end
+				data, ext = Img.toPng(img), "png"
+			end
+			name = name or ("image." .. ext)
+			if not string.find(name, "%.%w+$") then
+				name ..= "." .. ext
+			end
+			writefile(data, name)
+			return name
+		end
+	end
+	if env.io then
+		env.io.import = function(url)
+			if type(url) == "number" and url >= 1 and url % 1 == 0 then
+				url = string.format("%d", url)
+			end
+			if type(url) ~= "string" then
+				error("import: arg 1 must be a GitHub or Wally URL, or a Roblox asset id", 2)
+			end
+			if not (hooks and hooks.fetchRepo) then
+				error("import: imports aren't available here", 2)
+			end
+			local ok, bytes = hooks.fetchRepo(url)
+			if not ok then
+				error(`import: {bytes}`, 2)
+			end
+			-- SerializationService is out of reach on Studio workers.
+			local deserialize = if hooks.luneRoblox and hooks.luneRoblox.deserializeModel
+				then hooks.luneRoblox.deserializeModel
+				else hooks.deserializeModel
+			if not deserialize then
+				error("import: imports aren't available here", 2)
+			end
+			local loaded, roots = pcall(deserialize, buffer.fromstring(bytes))
+			if not loaded or #roots ~= 1 then
+				error("import: the built model couldn't be loaded", 2)
+			end
+			return roots[1]
+		end
+	end
+	local benches = 0
+	env.bench = if bench
+		then function(data, printMode, iterations, waitPerIter)
+			local module = require((bench :: any):Clone())
+			benches += 1
+			thread.blocked = true
+			local running = true
+			local tracker = {} :: any
+			local line = env.println(`Benching: {0}/{0}`)
+			task.spawn(function()
+				while running do
+					env.println(
+						`Benching: {tracker.iterations}/{tracker.totalIterations} | FPS: {tracker.fps or 0}`,
+						line
+					)
+					task.wait(0.1)
+				end
+			end)
+			task.wait(1)
+			local info, str = module.Run(data, printMode, iterations, waitPerIter, tracker)
+			info.Native = env.native
+			info.Optimize = env.optimize
+			task.wait(0.1)
+			env.println(`Done Benching`, line)
+			running = false
+			if str then
+				table.insert(thread.output, `NATIVE: {env.native and "true" or "false"} | OPTIMIZE: {env.optimize}\n`)
+				table.insert(thread.output, str .. "\n")
+			end
+			task.delay(1, function()
+				benches -= 1
+				if benches <= 0 then
+					thread.blocked = false
+				end
+				
+			end)
+			local pass,err = pcall(function()
+				local image = module.generateBenchmarkVisualization(info, env.Image)
+				local img = env.Image.toPng(image)
+				env.io.writefile(img, 'bench.png')
+			end)
+			if not pass then
+				env.warn(err)
+			end
+			
+			return info
+		end
+		else nil
 
 	if Sandbox and hooks then
 		if hooks.sandbox ~= false then
-			Sandbox.getWorld(env.user.UserId):newContext(hooks, env):apply(env)
+			local ctx = Sandbox.getWorld(env.user.UserId):newContext(hooks, env)
+			sandboxBridge.inspect = function(value)
+				return ctx:inspectValue(value)
+			end
+			sandboxBridge.kindOf = Sandbox.typeof
+			sandboxBridge.resolve = function(v)
+				return ctx:renderTarget(v)
+			end
+			sandboxBridge.lighting = function()
+				return ctx:renderLighting()
+			end
+			sandboxBridge.adopt = function(inst)
+				return ctx:adopt(inst)
+			end
+			ctx:apply(env)
 		else
 			Sandbox.disabled(env, env.user.UserId, hooks)
 			env.BOOT_RESET = bootReset

@@ -1,0 +1,21 @@
+{
+  "name": "LuauBot",
+  "tree": {
+    "$path": "roblox/LuauBot.luau",
+    "ChunkEnv": { "$path": "roblox/ChunkEnv.luau" },
+    "LoadEnv": {
+      "$path": "roblox/LoadEnv.luau",
+      "Sandbox": { "$private": "sandbox/Sandbox.luau" },
+      "LuneImports": {
+        "$path": "roblox/LuneImports.luau",
+        "VirtualFs": { "$path": "roblox/VirtualFs.luau" }
+      },
+      "Ask": { "$path": "roblox/libs/Ask" },
+      "Bench": { "$path": "roblox/libs/Bench.luau" },
+      "ExtendedTableLibrary": { "$path": "roblox/libs/ExtendedTableLibrary.luau" },
+      "image": { "$path": "roblox/libs/image" },
+      "misc": { "$path": "roblox/libs/misc" },
+      "PacketProfiler": { "$path": "roblox/libs/PacketProfiler.luau" }
+    }
+  }
+}

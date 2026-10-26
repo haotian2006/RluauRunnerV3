@@ -11,9 +11,7 @@ function describe(reason) {
   }
 }
 
-// A rejected promise nobody awaited used to kill the process: an /input echo
-// over Discord's length limit took the bot down on 2026-09-14, dropping every
-// interaction in flight. One user's bad input must not do that.
+// An unawaited rejection used to kill the process and every in-flight interaction.
 function installSafetyNets(onFatal = () => process.exit(1)) {
   process.on("unhandledRejection", (reason) => {
     const text = describe(reason);

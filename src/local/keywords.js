@@ -121,19 +121,18 @@ const BOT_GLOBALS = new Set([
   "misc",
   "etable",
   "PacketSizeCounter",
-  "runpy",
-  "newpy",
+  "_native",
   "ask",
   "matchcodeblock",
   "GLOBAL",
-  // roblox/Sandbox.luau
+  // Sandbox.luau (luau-bot-headless sandbox/)
   "firesignal",
   "fireevent",
   // roblox/LoadEnv.luau (--!nosandbox only)
   "BOOT_RESET",
 ]);
 
-// Members of local globals that only the Roblox environment provides (the private LoadEnv).
+// Members of local globals that only Roblox's private LoadEnv provides.
 const ROBLOX_MEMBERS = {
   io: new Set(["import", "writeimage"]),
 };

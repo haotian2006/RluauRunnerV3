@@ -4,13 +4,7 @@ const { record, recordError } = require("./metrics");
 
 const MAX_LOG_LENGTH = 20000 - 10;
 
-/**
- * Report an event to the Google Form log
- * @param {string} userid
- * @param {string} name
- * @param {string} commandName
- * @param {string|number|undefined} data
- */
+/** @param {string|number|undefined} data */
 function log(userid, name, commandName, data) {
   if (data) {
     if (typeof data === "string" && data.length > MAX_LOG_LENGTH) {
@@ -36,11 +30,8 @@ function log(userid, name, commandName, data) {
     .catch(() => {});
 }
 
-// Also goes to stdout: the Google Form is write-only from here, so without
-// this every diagnostic (router decisions, Discord retries, delivery failures)
-// is invisible in `journalctl -u luau-bot`.
-// Anything a category names as a failure is worth surfacing on the status page;
-// the rest is routine chatter and only counted.
+// Also logged to stdout, since the Google Form is write-only. Failure categories
+// surface on the status page; the rest is only counted.
 const FAILURE = /fail|error|crash|reject|lost|timed out|discard/i;
 
 function logBot(name, data) {
@@ -50,4 +41,10 @@ function logBot(name, data) {
   log("0", "BOT", name, data);
 }
 
-module.exports = { log, logBot };
+// Logs and the status page show only a token's last 8 characters: a whole Discord interaction or
+// web run token lets its holder act on that run.
+function tokenTag(token) {
+  return String(token).slice(-8);
+}
+
+module.exports = { log, logBot, tokenTag };

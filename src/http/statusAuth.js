@@ -5,8 +5,6 @@ const { STATS_PASSWORD } = require("../config");
 const SESSION_TTL_MS = 1000 * 60 * 60 * 12;
 const COOKIE_NAME = "status_session";
 const MAX_SESSIONS = 100;
-// Slow enough that guessing is hopeless over a network, loose enough that a
-// fat-fingered password a few times running is not a lockout.
 const ATTEMPT_LIMIT = 8;
 const ATTEMPT_WINDOW_MS = 1000 * 60 * 15;
 
@@ -18,12 +16,7 @@ function enabled() {
   return typeof STATS_PASSWORD === "string" && STATS_PASSWORD.length > 0;
 }
 
-/**
- * Compare without leaking the answer through timing. Both sides are hashed
- * first so the comparison is over equal-length buffers whatever was submitted -
- * timingSafeEqual throws on a length mismatch, and the mismatch itself would
- * otherwise say how long the password is.
- */
+/** Timing-safe compare; hashing first keeps lengths equal so a mismatch can't leak the password length. */
 function matchesPassword(provided) {
   if (!enabled() || typeof provided !== "string") return false;
   const given = crypto.createHash("sha256").update(provided).digest();
@@ -98,7 +91,6 @@ function clearSessionCookie(res) {
   );
 }
 
-/** Attempts are counted per address so one guesser cannot lock everyone out. */
 function checkAttemptRate(ip, now = Date.now()) {
   let entry = attempts.get(ip);
   if (!entry || now > entry.resetAt) {

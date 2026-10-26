@@ -415,3 +415,28 @@ test("the data endpoint refuses a caller without a session", () => {
   assert.equal(res.statusCode, 401);
   assert.equal(res.body.values, undefined);
 });
+
+test("Studio workers and Open Cloud servers are counted apart", () => {
+  const { collect } = require("../src/http/routes/status");
+  const { RobloxServers, registerRobloxServer } = require("../src/state");
+
+  const studio = registerRobloxServer("status-studio");
+  studio.kind = "studio";
+  studio.healthy = true;
+  const draining = registerRobloxServer("status-draining");
+  draining.kind = "studio";
+  draining.retiring = true;
+  registerRobloxServer("status-cloud").healthy = true;
+
+  try {
+    const stats = collect();
+    assert.equal(stats.pool.studioWorkers, 2);
+    assert.equal(stats.pool.studioTaking, 1);
+    assert.equal(stats.pool.studioDraining, 1);
+    assert.equal(stats.pool.cloudWorkers, 1);
+    assert.equal(stats.pool.cloudHealthy, 1);
+    assert.equal(typeof stats.dataStores.users, "number");
+  } finally {
+    for (const id of ["status-studio", "status-draining", "status-cloud"]) delete RobloxServers[id];
+  }
+});

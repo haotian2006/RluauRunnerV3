@@ -1,6 +1,6 @@
 // Turns a GitHub URL into one .rbxm: a repository, a folder or file in it (built with
 // Rojo's sync rules by build.luau under Lune), or a release .rbxm/.rbxmx asset. Wally
-// packages go through wally.js and the same builder.
+// packages go through wally.js and Roblox asset ids through roblox.js, same builder.
 const path = require("path");
 const zlib = require("zlib");
 const { spawn } = require("child_process");
@@ -9,6 +9,7 @@ const { Readable } = require("stream");
 const { PATH_TO_LUNE } = require("../config");
 const { ImportError, SYNCED, MAX_FILE_BYTES, MAX_TOTAL_BYTES, MAX_FILES, FETCH_TIMEOUT_MS } = require("./common");
 const { parseWallyTarget, buildWally } = require("./wally");
+const { parseRobloxTarget, buildRoblox } = require("./roblox");
 
 const BUILD_SCRIPT = path.join(__dirname, "build.luau");
 const BUILD_TIMEOUT_MS = 20 * 1000;
@@ -59,7 +60,7 @@ function parseGithubUrl(raw) {
     return { mode: "path", owner, repo, candidates: refCandidates(rest).filter((c) => c.path) };
   }
   if (host !== "github.com" && host !== "www.github.com") {
-    throw new ImportError("only github.com and Wally URLs are supported", 400);
+    throw new ImportError("only github.com, Wally and Roblox asset URLs are supported", 400);
   }
   const [owner, repoRaw, kind, ...rest] = segs;
   const repo = (repoRaw ?? "").replace(/\.git$/i, "");
@@ -362,14 +363,24 @@ async function withSlot(fn) {
 
 const inflight = new Map();
 
+function parseTarget(rawUrl) {
+  return parseWallyTarget(rawUrl) ?? parseRobloxTarget(rawUrl) ?? parseGithubUrl(rawUrl);
+}
+
+function buildTarget(target) {
+  if (target.mode === "wally") return buildWally(target, runBuild);
+  if (target.mode === "roblox") return buildRoblox(target, runBuild);
+  return build(target);
+}
+
 async function importModel(rawUrl) {
-  const target = parseWallyTarget(rawUrl) ?? parseGithubUrl(rawUrl);
+  const target = parseTarget(rawUrl);
   const key = JSON.stringify(target);
   const hit = cache.get(key);
   if (hit && hit.expires > Date.now()) return hit.bytes;
   let pending = inflight.get(key);
   if (!pending) {
-    pending = withSlot(() => (target.mode === "wally" ? buildWally(target, runBuild) : build(target)))
+    pending = withSlot(() => buildTarget(target))
       .then((bytes) => {
         remember(key, bytes);
         return bytes;
@@ -380,4 +391,15 @@ async function importModel(rawUrl) {
   return pending;
 }
 
-module.exports = { importModel, parseGithubUrl, readArchive, runBuild, ImportError, _cache: cache };
+// The built model as the playground's JSON node tree, for its types.
+async function importTree(rawUrl) {
+  const key = `tree:${JSON.stringify(parseTarget(rawUrl))}`;
+  const hit = cache.get(key);
+  if (hit && hit.expires > Date.now()) return hit.bytes;
+  const model = await importModel(rawUrl);
+  const tree = await withSlot(() => runBuild({ mode: "model", name: "Model", format: "tree" }, new Map([["model", model]])));
+  remember(key, tree);
+  return tree;
+}
+
+module.exports = { importModel, importTree, parseTarget, parseGithubUrl, readArchive, runBuild, ImportError, _cache: cache };

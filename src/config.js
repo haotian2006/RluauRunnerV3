@@ -76,12 +76,13 @@ function loadCallbackUrl() {
   return { url: trimmed.replace(/\/+$/, "") };
 }
 
-// Missing tools are not fatal: /compile still works, since that runs in
-// Roblox. Only bytecode, analyze, ast and format need them.
+// Not fatal: /compile runs in Roblox; only bytecode, analyze, ast and format need these.
 function missingTools() {
   const tools = [
     ["luau-compile", resolveExec("luau-compile")],
     ["luau-analyze", resolveExec("luau-analyze")],
+    ["luau-lsp", resolveExec("luau-lsp")],
+    ["Roblox type definitions", path.join(ROOT_DIR, "bin", "robloxTypes.d.luau")],
     ["luau-ast", resolveExec("luau-ast")],
     ["stylua", resolveExec("stylua")],
   ];
@@ -146,8 +147,7 @@ const ENABLE_WEB = envFlag("ENABLE_WEB", false);
 
 const STORE_COMPILE_SOURCE = envFlag("STORE_COMPILE_SOURCE", false);
 
-// The status page is only served when this is set. There is deliberately no
-// default: an unset password leaves the page off rather than open.
+// Status page is off unless set; deliberately no default.
 function loadStatsPassword() {
   const raw = process.env.STATS_PASSWORD;
   if (raw === undefined || raw.trim() === "") return null;
@@ -181,8 +181,7 @@ function loadPlaygroundUrl() {
   return trimmed;
 }
 
-const DEFAULT_PLAYGROUND_URL =
-  "https://haotian2006.github.io/LuauBotSite/playground.html";
+const DEFAULT_PLAYGROUND_URL = "https://rluwa.com/playground.html";
 const PLAYGROUND_URL = loadPlaygroundUrl();
 
 const ENABLE_LOCAL_EXEC = envFlag("ENABLE_LOCAL_EXEC", false);
@@ -222,17 +221,13 @@ if (!LOCAL_ISOLATION_MODES.includes(LOCAL_ISOLATION)) {
 }
 if (process.platform === "win32") LOCAL_ISOLATION = "none";
 
-// Transient units run as root unless told otherwise, which would hand the
-// sandbox more privilege than scope mode gives it. Default to whoever the bot
-// runs as, since that user owns the per-job tmpdir.
+// Transient units default to root; use the bot's user, which owns the per-job tmpdir.
 const LOCAL_SANDBOX_USER = (
   process.env.LOCAL_SANDBOX_USER || os.userInfo().username
 ).trim();
 
-// ProtectHome=yes makes /home inaccessible to the unit, and a BindReadOnlyPaths
-// for a file underneath it does NOT punch back through (verified on the box:
-// execve fails with 203/EXEC). So service mode runs a copy of lune staged
-// outside /home; sandbox.luau is copied into the job's tmpdir per run.
+// ProtectHome=yes hides /home and BindReadOnlyPaths can't punch through (203/EXEC),
+// so service mode runs a staged lune with sandbox.luau copied per job.
 const LOCAL_LUNE_STAGED_PATH = (
   process.env.LOCAL_LUNE_STAGED_PATH || "/opt/luau-runner/bin/lune"
 ).trim();
@@ -259,8 +254,6 @@ if (!ENABLE_DISCORD && !ENABLE_WEB) {
   process.exit(1);
 }
 
-// BOT_TOKEN only matters when the bot itself runs; a web-only deployment
-// should not need Discord credentials at all.
 if (ENABLE_DISCORD && !process.env.BOT_TOKEN) {
   console.error(
     "Fatal: BOT_TOKEN is not set.\n" +
@@ -274,25 +267,41 @@ module.exports = {
 
   PATH_TO_COMPILER: resolveExec("luau-compile"),
   PATH_TO_ANALYZER: resolveExec("luau-analyze"),
+  PATH_TO_ROBLOX_ANALYZER: resolveExec("luau-lsp"),
+  ROBLOX_TYPES_PATH: path.join(ROOT_DIR, "bin", "robloxTypes.d.luau"),
   PATH_TO_AST: resolveExec("luau-ast"),
   PATH_TO_FORMATTER: resolveExec("stylua"),
   PATH_TO_LUNE: resolveExec("lune"),
 
   DISCORD_TOKEN: process.env.BOT_TOKEN,
   DISCORD_APP_ID: process.env.CLIENT_ID,
+  // Open Cloud key with legacy-asset:manage, for io.import of Roblox asset ids.
+  ROBLOX_ASSET_API_KEY: process.env.ROBLOX_ASSET_API_KEY || "",
   PORT: process.env.PORT || 3000,
+  // Unix socket serving only the worker routes, for workers on this host.
+  WORKER_SOCKET: process.env.WORKER_SOCKET || "",
+  // Worker supervisor secret (luau-bot-headless supervise.sh); readable only by the bot user and root.
+  WORKER_SECRET_FILE:
+    process.env.WORKER_SECRET_FILE ||
+    (process.env.WORKER_SOCKET
+      ? path.join(path.dirname(process.env.WORKER_SOCKET), "secret")
+      : ""),
+  // One DataStore file per Discord user (sandboxed runs), deleted after DATASTORE_EXPIRY_DAYS unused.
+  // Workers access it with a per-run token valid DATASTORE_GRANT_TTL_MS past its last use.
+  DATASTORE_DIR:
+    process.env.DATASTORE_DIR || path.join(ROOT_DIR, "data", "datastores"),
+  DATASTORE_QUOTA_BYTES: envNumber("DATASTORE_QUOTA_BYTES", 1024 * 1024),
+  DATASTORE_EXPIRY_MS:
+    envNumber("DATASTORE_EXPIRY_DAYS", 30) * 24 * 60 * 60 * 1000,
+  DATASTORE_GRANT_TTL_MS: envNumber("DATASTORE_GRANT_TTL_MS", 60 * 60 * 1000),
   CALLBACK_URL,
   ENABLE_DISCORD,
   ENABLE_WEB,
   TRUST_PROXY,
 
-  // Keeps the exact source of each Discord compile on disk so the result embed
-  // can link to it. Off by default: it is user code sitting on the host.
   STORE_COMPILE_SOURCE,
   STATS_PASSWORD,
   PLAYGROUND_URL,
-  // The link lives in a Discord message forever, so a short TTL means most
-  // clicks 404. A day covers "why did my script break" without unbounded growth.
   COMPILE_SOURCE_TTL_MS: envNumber(
     "COMPILE_SOURCE_TTL_MS",
     1000 * 60 * 60 * 24,
@@ -311,8 +320,7 @@ module.exports = {
   LOCAL_HEARTBEAT_TIMEOUT_MS: envNumber("LOCAL_HEARTBEAT_TIMEOUT_MS", 11000),
   // Enforced by ulimit on Linux only; ignored on Windows.
   LOCAL_MEMORY_LIMIT_MB: envNumber("LOCAL_MEMORY_LIMIT_MB", 256),
-  // Percent of one core, enforced via systemd-run --scope on Linux only.
-  // 0 disables the quota. 100 = 1 full core.
+  // Percent of one core (100 = 1 core, 0 = off), via systemd-run --scope on Linux only.
   LOCAL_CPU_QUOTA_PERCENT,
   LOCAL_ISOLATION,
   LOCAL_LUNE_STAGED_PATH,
@@ -324,7 +332,6 @@ module.exports = {
 
   RESOURCES_URL:
     "https://api.github.com/repos/haotian2006/luau-runner-bot-resources/contents/resources?ref=main",
-  // Logging is optional: without FORM_ID nothing is sent anywhere.
   FORM_URL: FORM_ID
     ? `https://docs.google.com/forms/d/e/${FORM_ID}/formResponse`
     : null,
@@ -343,14 +350,24 @@ module.exports = {
   ),
 
   SERVER_RUN_TIME_MAX: 1000 * 60 * 3,
+  // A Studio session takes tasks this long, then hands over to a younger session and drains.
+  STUDIO_ACCEPT_MS: envNumber("STUDIO_ACCEPT_SECONDS", 120) * 1000,
+  // When the session kills itself; must match SESSION_MAX_SECONDS in luau-bot-headless' bot-worker.sh.
+  STUDIO_SESSION_MS: envNumber("STUDIO_SESSION_SECONDS", 240) * 1000,
+  // Stop taking tasks this long before the end even with no successor, so every run gets this much.
+  STUDIO_DRAIN_MS: envNumber("STUDIO_DRAIN_SECONDS", 60) * 1000,
   SERVER_CHECK_INTERVAL: 1000,
   SERVER_PING_TIMEOUT: 1000 * 5,
+  // Workers with an open /workerEvents stream poll only every 10 s.
+  WORKER_STREAM_PING_TIMEOUT: 1000 * 30,
+  // How long a worker whose stream closed has to reopen it or poll before it counts as gone.
+  WORKER_STREAM_GRACE_MS: 1000 * 8,
   SERVER_RECOVERY_GRACE_MS: 1000 * 40,
 
   SERVER_TIME_OUT: "300s",
 
-  FILE_CHUNK_SIZE: 1024 * 1024 * 10, // 10 MB
-  MAX_DATA_TO_SEND: 1024 * 1024 * 100, // 100 MB
+  FILE_CHUNK_SIZE: 1024 * 1024 * 10,
+  MAX_DATA_TO_SEND: 1024 * 1024 * 100,
   MAX_RESPONSE_FILES: 8,
 
   BODY_LIMIT: "50mb",
