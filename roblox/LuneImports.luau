@@ -44,7 +44,17 @@ return function(backend, env, createFs, hooks)
 			local target = options.environment or env
 			assert(type(target) == "table", "environment must be a table")
 			assert(type(data) == "string", "expected source or same-job compiled bytecode")
-			local source = compiled[data] or data
+			local source = compiled[data]
+			if not source and #data > 0 then
+				local version, typesVersion = string.byte(data, 1, 2)
+				-- Studio uses version 100 followed by a binary types-version byte. Tabs/newlines
+				-- at the start of source are valid, so don't reject whitespace version bytes alone.
+				if version < 9 or (typesVersion and typesVersion < 9) then
+					error("luau.load: this bytecode wasn't produced by luau.compile in this run (or was changed), "
+						.. "and only unchanged bytecode from luau.compile can be loaded; pass source instead", 2)
+				end
+			end
+			source = source or data
 			-- Never send bytecode to Roblox's private loader; recompile this job's source in the sandbox.
 			local fn, err = sourceLoader(source, options.debugName)
 			if not fn then error(err, 2) end
@@ -184,12 +194,12 @@ return function(backend, env, createFs, hooks)
 		serializeModel = function(instances, xml)
 			assert(xml == nil or xml == false, "XML model export is not supported by the Studio engine adapter")
 			local result = contextOperation("serializeModel", instances)
-			assert(typeof(result) == "buffer" and buffer.len(result) <= 16 * 1024 * 1024, "model output exceeds 16 MiB")
+			assert(typeof(result) == "buffer" and buffer.len(result) <= 64 * 1024 * 1024, "model output exceeds 64 MiB")
 			return buffer.tostring(result)
 		end,
 		deserializeModel = function(contents)
 			contents = bytes(contents)
-			assert(#contents <= 16 * 1024 * 1024, "model input exceeds 16 MiB")
+			assert(#contents <= 64 * 1024 * 1024, "model input exceeds 64 MiB")
 			return contextOperation("deserializeModel", buffer.fromstring(contents))
 		end,
 		implementMethod = function(class, name, callback) return contextOperation("implementMethod", class, name, callback) end,

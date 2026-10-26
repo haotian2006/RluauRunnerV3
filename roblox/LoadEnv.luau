@@ -208,6 +208,16 @@ return function(thread, env, hooks)
 	env.misc = if misc
 		then require(misc:Clone()) else nil
 	if env.misc then
+		local inspectModule = misc:FindFirstChild("Inspect")
+		local inspectValue = type(native) == "table" and native.inspectValue
+		if inspectModule and type(inspectValue) == "function" then
+			env.misc.inspect = require(inspectModule)(function(value)
+				if sandboxBridge.inspect then return sandboxBridge.inspect(value) end
+				return inspectValue(value)
+			end, function(value)
+				return if sandboxBridge.kindOf then sandboxBridge.kindOf(value) else typeof(value)
+			end)
+		end
 		local c = env.misc.calculate
 		env.misc.calculate = function(...)
 			return c(env.print,...)
@@ -360,6 +370,10 @@ return function(thread, env, hooks)
 	if Sandbox and hooks then
 		if hooks.sandbox ~= false then
 			local ctx = Sandbox.getWorld(env.user.UserId):newContext(hooks, env)
+			sandboxBridge.inspect = function(value)
+				return ctx:inspectValue(value)
+			end
+			sandboxBridge.kindOf = Sandbox.typeof
 			sandboxBridge.resolve = function(v)
 				return ctx:renderTarget(v)
 			end

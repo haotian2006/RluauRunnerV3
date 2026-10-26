@@ -930,7 +930,7 @@ local function runCode(compCode, data)
 		return instance.Source
 	end
 	hooks.deserializeModel = function(contents)
-		assert(typeof(contents) == "buffer" and buffer.len(contents) <= 16 * 1024 * 1024, "model input exceeds 16 MiB")
+		assert(typeof(contents) == "buffer" and buffer.len(contents) <= 64 * 1024 * 1024, "model input exceeds 64 MiB")
 		local broker = RunBrokers[thread]
 		if broker then return capability(broker, "deserialize", contents) end
 		local roots = game:GetService("SerializationService"):DeserializeInstancesAsync(contents)

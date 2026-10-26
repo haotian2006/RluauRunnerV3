@@ -73,6 +73,7 @@ return {
 - button:Update(changes: table): DiscordButton -- Updates the button in the existing Discord response.
 - button:Destroy() -- Removes the button from the Discord response and disconnects its internal callback.
 - misc.truth(vars:{any}):{} -- creates a truth table for the given variables
+- misc.inspect(value:any):{} -- estimates shallow and recursive storage; shows TValue, table and safe metatable metadata
 - misc.calculate(vars:string,...string}) -- calculates the given boolean expression with the given variables and outputs it.
 - misc.uwuify(text:string):string -- Hi
 - etable: stats, getAllocatedArraySize, getAllocatedHashSize, getTableMemorySize, getTableSize, mergeTables, mergeTablesWith, accumulateTables, diffTables, syncTable, mapTable, filterTable, reduceTable, groupTableBy, tableToPairs, invertTable, tableIntersection, tableDifference, removeAll, extendArraySize, setArraySize, truncateArray, concatArrays, unionArrays, flattenArray, compactArray, fillWithValue, fillWithPattern, reverseArray, rotateArray, sliceArray, shuffleArray, sampleArray, sampleValue, removeDuplicate, swapRemove, getAndRemove, findAndRemove, zipArray, unzipArray, partitionArray, partitionArrayBy, binarySearch, getKeys, getValues, isContiguousArray, isSparseArray, isArray, isEmpty, hasKey, hasValue, countOccurences, countKeysByType, countValuesByType, keysOfValue, deepCopy, deepEqual, deepFreeze, findMatch, every, some, toSet, prettyPrint, toCSV]],
@@ -683,6 +684,30 @@ end)
 		{ key = "misc.truth", text = [[
 ### misc.truth(vars:{any}):{}
 creates a truth table for the given variables]] },
+		{ key = "misc.inspect", text = [[
+### misc.inspect(value:any):{}
+Returns shallowBytes for the object's own storage and estimatedTotalBytes including
+table keys/values and visible Instance descendants. Shared objects count once and
+cycles are supported. TValue fields/offsets, table capacities, closure/class/object
+and Instance layouts, and safe metatable summaries are included. Booleans,
+numbers, integers and Vector3 values show active payload bytes and encoding.
+Integers use decimal strings to retain all 64 bits. Table entries include up to
+64 key/value summaries. Protected metatables stay protected; process addresses,
+object memory bytes and live function references are not exposed.
+
+Instance estimates include the known base and userdata only; derived fields and
+engine allocations are unknown. estimatePartial flags incomplete estimates.
+Traversal stops after 10,000 references or allocated table slots with
+truncated=true. scannedTableSlots reports the slot budget used. Oversized table
+entry summaries are skipped with entriesTruncated=true. Metatable scans are
+also capped; an unchecked protection state is conservatively reported as
+protected=true, protectionUnknown=true. Totals exclude
+metatables, shared prototypes, class member graphs, function captures and allocator overhead.
+
+```lua
+local info = misc.inspect({1, 2, child = {3}})
+print(info.shallowBytes, info.estimatedTotalBytes)
+```]] },
 		{ key = "misc.calculate", text = [[
 ### misc.calculate(vars:string,...string})
 calculates the given boolean expression with the given variables and outputs it.
