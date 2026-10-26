@@ -91,8 +91,6 @@ end
 Note: The maximum time a session can run for is 5 minutes before it shuts down. In Studio a session lasts up to 4 minutes, and code still running when it ends stops with `Session ended.`
 
 ### Limits
-- Code can run for at most 7 seconds without yielding: `Script timeout: exhausted allowed execution time`.
-- Code that keeps the server busy for 8 seconds without a break is stopped: `CPU limit exceeded`.
 - Each run can use the memory left of 1 GB, and at least 128 MB: `Memory limit exceeded`.
 - At most 8 files can be written, 10 MB each.]] },
 		{ key = "OUTPUT_LOGS", text = [[
@@ -271,6 +269,7 @@ Builds a GitHub repository, a Wally package or a public Roblox model into an Ins
 - `.../releases/download//.rbxm` or `.../releases/latest/download/.rbxm` (`.rbxmx` works too)
 - `raw.githubusercontent.com////`
 - `wally:/@` 
+- ``, `rbxassetid://`, `roblox.com/library/` or `create.roblox.com/store/asset/`: a public Roblox model
 
 Only public repositories work, and a build is cached for 10 minutes. A repository can be up to 80 MB, with up to 5000 files (32 MB in all) and 4 MB per file.
 
@@ -286,7 +285,7 @@ local Knit = require(io.import("wally:sleitnick/knit@1.7"))
 local Signal = require(io.import("https://wally.run/package/sleitnick/signal?version=2.0.1"))
 ```
 
-Roblox example: a public model's asset id, `rbxassetid://` id, or `roblox.com/library/` / `create.roblox.com/store/asset/` link.
+Roblox example:
 ```lua
 local Packet = require(io.import(104116977416770))
 ```]] },
@@ -321,7 +320,7 @@ Renders Roblox instances into an Image.
 - **3D**: `workspace` (uses `workspace.CurrentCamera`), a Model, Part, Folder or ViewportFrame. Models and parts are framed automatically.
 - **UI**: a ScreenGui or any GuiObject. Supports UICorner, UIStroke, UIGradient, layouts, images and text.
 
-`options`: `Size: Vector2`, `Camera: Camera | CFrame`, `FieldOfView: number`, `Background: Color3 | false`, `LightDirection: Vector3`, `AntiAliasing: boolean` (default `true`), `Materials: boolean` (`false` draws plain colours instead of material textures).
+`options`: `Size: Vector2`, `Camera: Camera | CFrame`, `FieldOfView: number`, `Background: Color3 | false`, `LightDirection: Vector3`, `AntiAliasing: boolean` (default `true`), `Materials: boolean` (`false` draws plain colors instead of material textures).
 
 ```lua
 local part = Instance.new("Part")
