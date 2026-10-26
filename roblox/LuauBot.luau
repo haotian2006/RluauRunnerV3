@@ -662,7 +662,11 @@ local function executeCode(id, code, env, thread, delay, m, asFunction)
 	table.insert(thread.output, colorsLower.yellow .. "[WARNING] Failed To initialize module. Using loadstring!\n")
 	-- The generated source sets the run's env (print, user, ...) as globals, and a chunk shares its
 	-- caller's globals, so without its own table each run would overwrite the others'.
-	local chunk = (loadstring :: any)(src)
+	local chunk, compileError = (loadstring :: any)(src)
+	if not chunk then
+		-- The compile error itself, not ChunkEnv's complaint about a nil chunk.
+		error(compileError, 0)
+	end
 	if isolateChunk then
 		isolateChunk(chunk)
 	end
