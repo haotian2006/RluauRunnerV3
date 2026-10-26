@@ -202,6 +202,98 @@ return function(backend, env, createFs, hooks)
 		end
 		modules["@lune/task"] = table.freeze(tasks)
 	end
+	do
+		-- Through the run's own game (set once the sandbox applies), so its host checks and stream
+		-- limits apply.
+		local function http()
+			assert(env.game, "net is unavailable before the run starts")
+			return env.game:GetService("HttpService")
+		end
+		local MAX_QUEUED = 4 * 1024 * 1024
+		local function request(config)
+			if type(config) == "string" then config = {url = config} end
+			assert(type(config) == "table" and type(config.url) == "string", "net.request expects a url or a config table")
+			local url = config.url
+			if config.query ~= nil then
+				assert(type(config.query) == "table", "query must be a table")
+				local parts = {}
+				for k, v in config.query do
+					table.insert(parts, http():UrlEncode(tostring(k)) .. "=" .. http():UrlEncode(tostring(v)))
+				end
+				if #parts > 0 then url ..= (if string.find(url, "?", 1, true) then "&" else "?") .. table.concat(parts, "&") end
+			end
+			local res = http():RequestAsync({
+				Url = url,
+				Method = config.method or "GET",
+				Headers = config.headers,
+				Body = if config.body ~= nil then bytes(config.body) else nil,
+			})
+			return {
+				ok = res.Success, statusCode = res.StatusCode, statusMessage = res.StatusMessage,
+				headers = res.Headers, body = res.Body,
+			}
+		end
+		local function socket(url)
+			assert(type(url) == "string", "net.socket expects a url")
+			local client = http():CreateWebStreamClient(Enum.WebStreamClientType.WebSocket, {Url = url, Method = "GET"})
+			local queue, queued, state, failure = {}, 0, "connecting", nil
+			local ws = {closeCode = nil}
+			client.Opened:Connect(function() if state == "connecting" then state = "open" end end)
+			client.MessageReceived:Connect(function(message)
+				queued += #message
+				if queued > MAX_QUEUED then
+					failure = "more than 4 MiB of unread messages"
+					pcall(client.Close, client)
+					return
+				end
+				table.insert(queue, message)
+			end)
+			client.Error:Connect(function(code, message)
+				failure = failure or `{code} {message}`
+				state = "closed"
+			end)
+			client.Closed:Connect(function()
+				state = "closed"
+				ws.closeCode = ws.closeCode or 1000
+			end)
+			local deadline = os.clock() + 15
+			while state == "connecting" and os.clock() < deadline do env.task.wait() end
+			if state ~= "open" then
+				pcall(client.Close, client)
+				error("net.socket: could not connect" .. (if failure then ": " .. failure else ""), 2)
+			end
+			function ws.send(message)
+				assert(state == "open", "the socket is closed")
+				client:Send(bytes(message))
+			end
+			function ws.next()
+				while #queue == 0 and state == "open" do env.task.wait() end
+				local message = table.remove(queue, 1)
+				if message then queued -= #message end
+				return message
+			end
+			function ws.close(code)
+				ws.closeCode = if type(code) == "number" then code else 1000
+				state = "closed"
+				pcall(client.Close, client)
+			end
+			return ws
+		end
+		modules["@lune/net"] = table.freeze({
+			request = request,
+			socket = socket,
+			serve = function() error("net.serve is not available on this worker", 2) end,
+			jsonEncode = function(value, pretty)
+				local serdeModule = modules["@lune/serde"]
+				return if serdeModule then serdeModule.encode("json", value, pretty) else HttpService:JSONEncode(value)
+			end,
+			jsonDecode = function(text) return HttpService:JSONDecode(bytes(text)) end,
+			urlEncode = function(text) return HttpService:UrlEncode(bytes(text)) end,
+			urlDecode = function(text)
+				return (string.gsub(string.gsub(bytes(text), "%+", " "), "%%(%x%x)", function(h) return string.char(tonumber(h, 16)) end))
+			end,
+		})
+	end
 	local loadFs = script and script:FindFirstChild("VirtualFs")
 	-- A supplied factory is used by source-embedded worker bootstraps/tests.
 	createFs = createFs or (loadFs and require(loadFs))
