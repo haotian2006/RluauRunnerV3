@@ -208,7 +208,7 @@ async function handleSlashCommand(interaction) {
     return handlePing(interaction);
   } else if (interaction.commandName === "help") {
     return interaction.reply({
-      content: `Check out the documentation at https://haotian2006.github.io/LuauBotSite/`,
+      content: `Check out the documentation at https://rluwa.com/`,
     });
   } else if (
     interaction.commandName === "input" ||

@@ -1,16 +1,26 @@
--- luau_native's C++ image encoders and filters, where a headless Studio worker loads the mod (the
--- `native` global): same results as the Luau code, several times faster. A native call can't
--- yield, so it blocks every run on that Studio; work past these limits stays in Luau.
--- Runs get `exports` as _native, never the native table (its hookMethod/defineProperty change
--- Instances for every script in the Studio).
+-- A native call can't yield and blocks every run on that Studio, so work past these limits stays in Luau.
+-- Runs get `exports` as _native, never `native` (its hookMethod/defineProperty affect every script in the Studio).
 local MAX_PIXEL_BYTES = 16 * 1024 * 1024 -- RGBA bytes of one PNG, or of all of a GIF's frames
 local MAX_FILTER_WORK = 2 ^ 26 -- width * height * kernel weights
 
 local lib = if type(native) == "table" then native else {}
 local encodePng, encodeGif = lib.encodePng, lib.encodeGif
 local convolveSeparable, convolve2D = lib.convolveSeparable, lib.convolve2D
+local rasterize = lib.rasterize
 
 local Native = {}
+
+-- MeshPart / EditableMesh triangles (native.readMeshGeometry), where the mod can read them.
+Native.readMesh = lib.readMeshGeometry
+
+-- Runs a raster.luau writer's commands at width x height and box-filters them by scale into color;
+-- false when Luau has to. Native validates before drawing, so a refusal leaves color untouched.
+function Native.raster(writer, width: number, height: number, color: buffer, scale: number?): boolean
+	if not rasterize then
+		return false
+	end
+	return (pcall(rasterize, width, height, writer.buf, writer.n, writer.textures, color, scale or 1))
+end
 
 -- PNG bytes for an Image, or nil when the Luau encoder has to do it.
 function Native.png(image): string?

@@ -28,7 +28,6 @@ const HARD_SETTLE_GRACE_MS = 5000;
 // After exit, how long the stdio pipes get to drain before settling anyway.
 const EXIT_DRAIN_MS = 1500;
 
-// Capped, not unbounded: this box shares few cores with the Discord client.
 let active = 0;
 const waiting = [];
 
@@ -98,15 +97,12 @@ function buildChildEnv(tmpDir) {
   }
   return env;
 }
-// A --scope is only a cgroup (same uid, filesystem and /home as the bot), so it
-// only caps resources; a transient service also takes the restrictions below.
-// Nothing may reach into /home: ProtectHome=yes hides it and BindReadOnlyPaths
-// can't punch through (203/EXEC). Hence the staged binary and per-job sandbox.luau.
+// --scope only caps resources (same uid and /home); a transient service adds the restrictions
+// below. ProtectHome hides /home and can't be punched through, hence the staged binary.
 function buildServiceArgs(jobPath, tmpDir, sandboxPath, timeoutMs, unitName) {
   const properties = [
-    // Transient units default to root: more privilege than scope mode, and the
-    // empty CapabilityBoundingSet drops CAP_DAC_OVERRIDE, so root can't enter
-    // the 0700 tmpdir.
+    // Units default to root, and the empty CapabilityBoundingSet drops CAP_DAC_OVERRIDE,
+    // so root couldn't even enter the 0700 tmpdir.
     `User=${LOCAL_SANDBOX_USER}`,
     `WorkingDirectory=${tmpDir}`,
     `ReadWritePaths=${tmpDir}`,
@@ -284,11 +280,11 @@ async function runLocal(source, options = {}) {
     LOCAL_ISOLATION === "service" ? `luau-${randomUUID()}` : null;
 
   let command, args;
-  // Outside the try on purpose: cleanup() in the promise executor must see these.
+  // Declared outside the try so cleanup() in the promise executor sees them.
   let tmpDir = null;
   let jobPath = null;
   try {
-    // The sandbox is in the private checkout; without it nothing runs.
+    // The sandbox lives in the private checkout.
     if (!SANDBOX_PATH || !fs.existsSync(SANDBOX_PATH)) {
       throw new Error("Local runs are unavailable on this host.");
     }
@@ -310,8 +306,7 @@ async function runLocal(source, options = {}) {
       "utf8",
     );
 
-    // Service mode can't read the repo copy (ProtectHome=yes). Copying per job,
-    // not staging it with the binary, keeps it from going stale.
+    // Service mode can't read the repo copy (ProtectHome=yes); copying per job keeps it fresh.
     let sandboxPath = SANDBOX_PATH;
     if (LOCAL_ISOLATION === "service") {
       sandboxPath = path.join(tmpDir, "sandbox.luau");

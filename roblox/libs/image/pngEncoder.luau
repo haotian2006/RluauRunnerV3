@@ -1,7 +1,6 @@
 --!native
 --!optimize 2
 
--- CRC32 slice-by-4 tables, stored in buffers (u32 reads are fastcalls)
 local crc0 = buffer.create(1024)
 local crc1 = buffer.create(1024)
 local crc2 = buffer.create(1024)
@@ -86,8 +85,7 @@ local function createChunk(chunkType: string, data: string): string
 	return pack32be(#data) .. typeAndData .. pack32be(crc32str(typeAndData))
 end
 
--- Adler-32 with deferred modulo (doubles hold 53 bits, so 2^20 bytes per chunk
--- cannot overflow s2) and four bytes per read.
+-- Deferred modulo: 2^20-byte chunks can't overflow s2 in a double.
 local function adler32buf(buf: buffer, len: number): number
 	local s1 = 1
 	local s2 = 0
@@ -121,11 +119,8 @@ local function adler32buf(buf: buffer, len: number): number
 	return s2 * 65536 + s1
 end
 
--- ── DEFLATE (fixed Huffman, RFC 1951 §3.2.6) ────────────────────────────
-
--- Huffman codes go out most-significant bit first, while everything else in a
--- DEFLATE stream is least-significant bit first, so the codes are pre-reversed
--- and emitted like any other LSB-first field.
+-- DEFLATE (RFC 1951 §3.2.6) sends Huffman codes MSB-first and everything else LSB-first, so the
+-- fixed codes are pre-reversed and written like any other field.
 local litCode = buffer.create(288 * 2)
 local litBits = buffer.create(288)
 local distCode = buffer.create(30 * 2)
@@ -163,7 +158,6 @@ local LEN_EXTRA = { 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 
 local DST_BASE = { 1, 2, 3, 4, 5, 7, 9, 13, 17, 25, 33, 49, 65, 97, 129, 193, 257, 385, 513, 769, 1025, 1537, 2049, 3073, 4097, 6145, 8193, 12289, 16385, 24577 }
 local DST_EXTRA = { 0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13, 13 }
 
--- length 3..258 -> symbol / extra bits / extra value
 local lenSym = buffer.create(259 * 2)
 local lenExtraBits = buffer.create(259)
 local lenExtraVal = buffer.create(259)
@@ -179,7 +173,6 @@ for i = 1, 29 do
 	end
 end
 
--- distance 1..32768 -> symbol / extra bits / extra value
 local distSym = buffer.create(32769)
 local distExtraBits = buffer.create(32769)
 local distExtraVal = buffer.create(32769 * 2)
@@ -201,29 +194,25 @@ local HASH_MASK = HASH_SIZE - 1
 local MAX_DIST = 32768
 local MAX_MATCH = 258
 local MIN_MATCH = 3
-local MAX_CHAIN = 8 -- candidates probed per position
-local NICE_MATCH = 64 -- accept immediately at or above this length
+local MAX_CHAIN = 8
+local NICE_MATCH = 64
 
--- Reused across calls; both are overwritten before use in a run.
 local head = buffer.create(HASH_SIZE * 4)
 local prev: buffer = buffer.create(4)
 
--- Writes a zlib stream (fixed-Huffman single block) for raw[0..rawLen-1] into
--- `out` starting at `outPos`. Returns the position just past the stream.
 local function deflateFixed(raw: buffer, rawLen: number, out: buffer, outPos: number): number
 	if buffer.len(prev) < rawLen * 4 then
 		prev = buffer.create(math.max(rawLen, 1) * 4)
 	end
 	buffer.fill(head, 0, 0, HASH_SIZE * 4)
 
-	buffer.writeu8(out, outPos, 0x78) -- CMF: deflate, 32K window
-	buffer.writeu8(out, outPos + 1, 0x01) -- FLG
+	buffer.writeu8(out, outPos, 0x78)
+	buffer.writeu8(out, outPos + 1, 0x01)
 	local wp = outPos + 2
 
 	local acc = 0
 	local accBits = 0
 
-	-- BFINAL = 1, BTYPE = 01 (fixed Huffman)
 	acc = 3
 	accBits = 3
 
@@ -255,7 +244,6 @@ local function deflateFixed(raw: buffer, rawLen: number, out: buffer, outPos: nu
 					break
 				end
 
-				-- Cheap reject: the byte that would extend the current best.
 				if buffer.readu8(raw, p + matchLen) == buffer.readu8(raw, i + matchLen) then
 					local n = 0
 					while n < maxLen and buffer.readu8(raw, p + n) == buffer.readu8(raw, i + n) do
@@ -325,7 +313,6 @@ local function deflateFixed(raw: buffer, rawLen: number, out: buffer, outPos: nu
 				end
 			end
 
-			-- Insert the positions the match covered so later matches can find them.
 			local stop = math.min(i + matchLen, lastHash + 1)
 			local j = i + 1
 			while j < stop do
@@ -359,7 +346,6 @@ local function deflateFixed(raw: buffer, rawLen: number, out: buffer, outPos: nu
 		end
 	end
 
-	-- End-of-block symbol 256
 	acc = bit32.bor(acc, bit32.lshift(buffer.readu16(litCode, 256 * 2), accBits))
 	accBits += buffer.readu8(litBits, 256)
 	while accBits >= 8 do
@@ -377,11 +363,6 @@ local function deflateFixed(raw: buffer, rawLen: number, out: buffer, outPos: nu
 	return wp + 4
 end
 
--- ── Scanline filtering (PNG spec §9) ────────────────────────────────
-
--- Filter choice per row by minimum sum of absolute signed values (the heuristic
--- libpng uses), evaluated on a 1-in-4 pixel sample so only the winning filter
--- is computed over the whole row.
 local function filterRows(src: buffer, width: number, height: number, raw: buffer)
 	local rowBytes = width * 4
 	local stride = rowBytes + 1
@@ -481,11 +462,11 @@ return function(image, println, timmeout)
 	local ihdr = pack32be(width)
 		.. pack32be(height)
 		.. string.char(
-			8, -- bit depth
-			6, -- color type (RGBA)
-			0, -- compression method
-			0, -- filter method
-			0 -- interlace method
+			8,
+			6,
+			0,
+			0,
+			0
 		)
 
 	println("PNG: Filtering scanlines...", line)
@@ -499,8 +480,7 @@ return function(image, println, timmeout)
 	println("PNG: Compressing...", line)
 	task.wait()
 
-	-- Fixed Huffman can expand incompressible data by at most 9/8, plus the
-	-- zlib header, block header and Adler-32.
+	-- Fixed Huffman expands incompressible data by at most 9/8, plus zlib header, block header and Adler-32.
 	local idat = buffer.create(4 + 2 + math.ceil(rawLen * 9 / 8) + 16)
 	buffer.writestring(idat, 0, "IDAT")
 	local idatLen = deflateFixed(raw, rawLen, idat, 4)

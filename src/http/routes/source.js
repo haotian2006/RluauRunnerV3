@@ -21,23 +21,17 @@ function missBody(res, reason) {
   return reason === "expired" ? EXPIRED_SOURCE : UNKNOWN_SOURCE;
 }
 
-// The playground only exists as a front end for this host's web API, so it can
-// only load the source when that API is serving.
 function playgroundActive() {
   return ENABLE_WEB && Boolean(PLAYGROUND_URL);
 }
 
 function registerSourceRoutes(app) {
-  // Served as plain text from our own origin, so pin the type and forbid
-  // anything the page might try to pull in. The store holds the source packed,
-  // so it is unpacked here and the caller never sees the stored form.
   async function sendRaw(res, entry, id) {
     let source;
     try {
       source = await readSource(entry);
     } catch (err) {
-      // The file was swept or truncated between the lookup and the read, which
-      // leaves the same hole in the editor an expired id does.
+      // Swept or truncated between lookup and read; answer like an expired id.
       logBot("Source Store", `failed to read ${entry.id}: ${err.message}`);
       return sendMiss(res, id);
     }
@@ -48,18 +42,15 @@ function registerSourceRoutes(app) {
     res.send(source);
   }
 
-  // The id is the only thing guarding the source, so keep it out of referrers
-  // and out of caches. The wildcard CORS header stays on /raw because the
-  // playground is on another origin and has to fetch it.
+  // The id is the only guard, so no referrer or caching. Wildcard CORS stays on /raw
+  // because the playground fetches it from another origin.
   function lockDown(res, { cors }) {
     if (!cors) res.removeHeader("Access-Control-Allow-Origin");
     res.setHeader("Referrer-Policy", "no-referrer");
     res.setHeader("Cache-Control", "private, no-store");
   }
 
-  // A miss is still a 200 carrying runnable Luau. The playground loads the body
-  // into the editor either way, and X-Source-Status is there for callers that
-  // want to tell a real source from a placeholder.
+  // A miss is still a 200 with runnable Luau for the editor; X-Source-Status tells them apart.
   function sendMiss(res, id) {
     const reason = enabled() && wasExpired(id) ? "expired" : "unknown";
     res.setHeader("Content-Type", "text/plain; charset=utf-8");
@@ -79,8 +70,7 @@ function registerSourceRoutes(app) {
     lockDown(res, { cors: false });
     const { id } = req.params;
 
-    // The playground fetches the source itself, so a dead id can still open
-    // there: it will show the error("EXPIRED") placeholder in the editor.
+    // Redirect even dead ids; the playground shows the error("EXPIRED") placeholder.
     if (playgroundActive() && ID_PATTERN.test(id)) {
       return res.redirect(302, playgroundUrlFor(id));
     }

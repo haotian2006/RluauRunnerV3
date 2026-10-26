@@ -14,7 +14,6 @@ local image = script:FindFirstChild("image")
 if image then
 	image = image:Clone()
 end
--- luau_native's capped image functions (image/native.luau), on Studios that load the mod.
 local nativeExports = if image and image:FindFirstChild("native") then require(image.native).exports else nil
 local ask = script:FindFirstChild("Ask")
 if ask then
@@ -30,7 +29,7 @@ if sandboxModule then
 	sandboxModule = sandboxModule:Clone()
 end
 
--- Reset the place to a fresh server; a run may have saved a polluted place with SavePlaceAsync.
+-- A run may have saved a polluted place with SavePlaceAsync.
 -- Engine-created on every boot; destroying them would make each boot look dirty.
 local ENGINE_CREATED = {
 	Camera = true,
@@ -130,8 +129,7 @@ end
 -- required after the reset so the sandbox baseline is the clean DataModel
 local bootReset = table.concat(changes, ", ")
 local Sandbox = sandboxModule and require(sandboxModule)
--- Cloned like the libraries above: LuauBot destroys this module's children after requiring it,
--- and each run's importer needs LuneImports' VirtualFs child.
+-- LuauBot destroys this module's children after requiring it.
 local luneImportsModule = script:FindFirstChild("LuneImports")
 local createLuneImports = luneImportsModule and require(luneImportsModule:Clone())
 
@@ -139,16 +137,14 @@ return function(thread, env, hooks)
 	if createLuneImports and hooks then
 		hooks.luneRequire = createLuneImports(type(native) == "table" and native.lune or nil, env, nil, hooks)
 	end
-	-- filled once the sandbox context exists; lets libraries hand back sandboxed instances
 	local sandboxBridge = {}
 	-- Expected even when the bundle has no Sandbox (it's private), so LuauBot refuses the run.
 	if hooks and hooks.sandbox ~= false then
 		hooks.sandboxExpected = true
 	end
-	-- Custom environment variables go here; they become every run's globals (and module globals).
+	-- Custom environment variables go here.
 	env.GLOBAL = {}
-	-- `native` (true under --!native, set by LuauBot) must always be set: unset, it falls through to
-	-- luau_native's real `native` table, whose hookMethod/defineProperty change Instances Studio-wide.
+	-- Unset, `native` falls through to luau_native's real table, whose hooks change Instances Studio-wide.
 	env.native = false
 	env._native = nativeExports
 	local aibot = ask.new(env._execute,env.print,env.io.read,env)
@@ -222,7 +218,6 @@ return function(thread, env, hooks)
 	if hooks and env.Image then
 		hooks.editableImages = env.Image._editable
 	end
-	-- Writes an Image as .png, a list of Images as .gif, or renders an Instance first.
 	if env.Image and env.io then
 		local Img, writefile = env.Image, env.io.writefile
 		env.io.writeimage = function(value, name, options)
@@ -234,7 +229,24 @@ return function(thread, env, hooks)
 			end
 			local data, ext
 			local editable = Img._editable and Img._editable.imageOf(value)
-			if editable then
+			local recorder = type(value) == "table" and type(value.Wait) == "function" and value.Status ~= nil
+			if not recorder and Img.record and options and (options.Duration ~= nil or options.FrameRate ~= nil) then
+				local t = typeof(value)
+				if t == "userdata" or t == "Instance" then
+					local ok, rec = pcall(Img.record, value, options)
+					if not ok then
+						error("writeimage: " .. (string.gsub(tostring(rec), "^record: ", "")), 2)
+					end
+					value, recorder = rec, true
+				end
+			end
+			if recorder then
+				local result, extra = value:Wait()
+				if result == nil then
+					error("writeimage: " .. (string.gsub(tostring(extra), "^record: ", "")), 2)
+				end
+				data, ext = if type(result) == "string" then result else Img.toGif(result, extra, { loop = options and options.Loop or 0 }), "gif"
+			elseif editable then
 				data, ext = Img.toPng(editable), "png"
 			elseif type(value) == "table" and value.imageBuffer then
 				data, ext = Img.toPng(value), "png"
@@ -268,10 +280,12 @@ return function(thread, env, hooks)
 		end
 	end
 	if env.io then
-		-- Builds a GitHub repo, folder or file (Rojo's rules), a release .rbxm, or a Wally package into an Instance.
 		env.io.import = function(url)
+			if type(url) == "number" and url >= 1 and url % 1 == 0 then
+				url = string.format("%d", url)
+			end
 			if type(url) ~= "string" then
-				error("import: arg 1 must be a GitHub or Wally URL string", 2)
+				error("import: arg 1 must be a GitHub or Wally URL, or a Roblox asset id", 2)
 			end
 			if not (hooks and hooks.fetchRepo) then
 				error("import: imports aren't available here", 2)
@@ -280,8 +294,7 @@ return function(thread, env, hooks)
 			if not ok then
 				error(`import: {bytes}`, 2)
 			end
-			-- SerializationService is out of reach on Studio workers; these go through the run's broker.
-			-- The sandbox's own deserializeModel also adopts what it loads.
+			-- SerializationService is out of reach on Studio workers.
 			local deserialize = if hooks.luneRoblox and hooks.luneRoblox.deserializeModel
 				then hooks.luneRoblox.deserializeModel
 				else hooks.deserializeModel
@@ -349,6 +362,9 @@ return function(thread, env, hooks)
 			local ctx = Sandbox.getWorld(env.user.UserId):newContext(hooks, env)
 			sandboxBridge.resolve = function(v)
 				return ctx:renderTarget(v)
+			end
+			sandboxBridge.lighting = function()
+				return ctx:renderLighting()
 			end
 			sandboxBridge.adopt = function(inst)
 				return ctx:adopt(inst)

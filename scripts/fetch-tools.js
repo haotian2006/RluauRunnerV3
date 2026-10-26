@@ -1,18 +1,4 @@
 #!/usr/bin/env node
-/**
- * Download the luau CLI tools, StyLua and Lune from their upstream GitHub
- * releases into bin/, where src/config.js expects to find them.
- *
- * Usage:
- *   node scripts/fetch-tools.js            # fetch anything missing
- *   node scripts/fetch-tools.js --force    # re-download even if present
- *   node scripts/fetch-tools.js --build    # compile luau from source (aarch64)
- *   node scripts/fetch-tools.js --no-lune    # skip the local-sandbox runtime
- *   node scripts/fetch-tools.js --luau-version 0.735 --stylua-version v2.5.2
- *
- * Archives are unpacked in-process: GNU tar (Linux) cannot read zip files, so
- * shelling out to tar/unzip would work on Windows and fail on Linux.
- */
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
@@ -37,6 +23,16 @@ const LUAU_VERSION = flag("--luau-version", "latest");
 const STYLUA_VERSION = flag("--stylua-version", "latest");
 const LUNE_VERSION = flag("--lune-version", "latest");
 const SKIP_LUNE = args.includes("--no-lune");
+// Keep the executable and Roblox definition snapshot on the same release.
+const LSP_VERSION = flag("--lsp-version", "1.70.1");
+
+function lspAsset() {
+  if (process.platform === "win32") return "luau-lsp-win64.zip";
+  if (process.platform === "darwin") return "luau-lsp-macos.zip";
+  if (process.platform === "linux" && ["x64", "arm64"].includes(process.arch))
+    return `luau-lsp-linux-${process.arch === "arm64" ? "arm64" : "x86_64"}.zip`;
+  return null;
+}
 
 /** The prebuilt StyLua gnu binaries import GLIBC_2.34. */
 const MIN_GLIBC = [2, 34];
@@ -51,24 +47,14 @@ function glibcVersion() {
   }
 }
 
-/**
- * True on musl distros (Alpine) or where glibc is too old for the prebuilt
- * gnu binaries — in both cases the statically linked musl build is the one
- * that will actually run.
- */
+/** Musl distros and glibc older than the prebuilt needs both get the static musl build. */
 function needsStaticBuild() {
   const v = glibcVersion();
   if (!v) return true; // musl
   return v[0] < MIN_GLIBC[0] || (v[0] === MIN_GLIBC[0] && v[1] < MIN_GLIBC[1]);
 }
 
-/**
- * Which release archive to pull for this platform.
- *
- * Upstream luau publishes x86_64 builds only — there is no aarch64 Linux
- * asset — and the Linux build needs glibc >= 2.34, so it will not run on
- * Ubuntu 20.04, Debian 11, RHEL 8, or Alpine.
- */
+/** Upstream luau ships x86_64 only, and its Linux build needs glibc >= 2.34. */
 function luauAsset() {
   switch (process.platform) {
     case "win32":
@@ -89,8 +75,7 @@ function styluaAsset() {
       // Upstream ships x86_64 only for Windows; it runs under emulation on arm.
       return "stylua-windows-x86_64.zip";
     case "linux": {
-      // The musl builds are statically linked, so they also cover distros
-      // whose glibc predates 2.34 (Oracle Linux 8, RHEL 8, Ubuntu 20.04).
+      // Static musl builds also cover glibc < 2.34 (Oracle Linux 8, RHEL 8, Ubuntu 20.04).
       const suffix = needsStaticBuild() ? "-musl" : "";
       return arm
         ? `stylua-linux-aarch64${suffix}.zip`
@@ -103,9 +88,7 @@ function styluaAsset() {
   }
 }
 
-// Lune ships prebuilt for every platform this bot targets, aarch64 Linux
-// included, so unlike luau there is never a source build to fall back to.
-// The asset name embeds the version, so the tag has to be resolved first.
+// Lune's asset name embeds the version, so the tag is resolved first.
 function luneAsset(version) {
   const arch = process.arch === "arm64" ? "aarch64" : "x86_64";
   const osName = {
@@ -132,8 +115,7 @@ async function download(url) {
 }
 
 /**
- * Minimal zip reader: walks the central directory and inflates the entries we
- * want. Handles stored (0) and deflate (8), which is all these archives use.
+ * Minimal zip reader, stored (0) and deflate (8) only. In-process because GNU tar can't read zips.
  * @param {Buffer} buf
  * @returns {Map<string, Buffer>} entry name -> contents
  */
@@ -185,7 +167,6 @@ function readZip(buf) {
   return out;
 }
 
-/** Pull `wanted` out of the archive at `url` and write them into the root. */
 async function install(label, url, wanted) {
   console.log(`Downloading ${label} from ${url}`);
   fs.mkdirSync(BIN_DIR, { recursive: true });
@@ -209,7 +190,6 @@ async function install(label, url, wanted) {
   }
 }
 
-/** The three luau CLI targets, as CMake target name -> produced binary. */
 const LUAU_CMAKE_TARGETS = {
   "Luau.Compile.CLI": "luau-compile",
   "Luau.Analyze.CLI": "luau-analyze",
@@ -225,13 +205,7 @@ function haveCommand(cmd) {
   }
 }
 
-/**
- * Build the luau CLI tools from source.
- *
- * Needed on aarch64 Linux, where upstream publishes no prebuilt binary. Uses
- * the release source tarball rather than git, and hands the .tar.gz to system
- * tar — unlike zip, every tar handles gzip.
- */
+/** Build the luau CLI from the release tarball, for aarch64 Linux which has no prebuilt. */
 async function buildLuauFromSource(version) {
   for (const cmd of ["cmake", "tar"]) {
     if (!haveCommand(cmd)) {
@@ -315,7 +289,6 @@ async function latestTag(repo) {
   return (await res.json()).tag_name;
 }
 
-/** Ask a freshly installed binary for its version, as a smoke test. */
 function verify(name, versionArg) {
   const p = path.join(BIN_DIR, name);
   if (!fs.existsSync(p)) return `${name}: MISSING`;
@@ -334,9 +307,7 @@ function verify(name, versionArg) {
 async function main() {
   const luauZip = luauAsset();
   const styluaZip = styluaAsset();
-  // Build luau from source when no prebuilt applies: aarch64 has no asset at
-  // all, and the x86_64 asset needs glibc 2.34+, so on an older distro the
-  // download would install something that cannot run.
+  // No usable prebuilt: aarch64 has no asset, and the x86_64 one needs glibc 2.34+.
   const buildLuau =
     BUILD || (process.platform === "linux" && (!luauZip || needsStaticBuild()));
 
@@ -360,6 +331,24 @@ async function main() {
     names.filter((n) => !fs.existsSync(path.join(BIN_DIR, n)));
 
   try {
+    // Only analysis needs luau-lsp, so its failure mustn't stop the other tools.
+    try {
+      const lspVersion = LSP_VERSION === "latest" ? await latestTag("JohnnyMorganz/luau-lsp") : LSP_VERSION;
+      const lspZip = lspAsset();
+      const lspBins = [`luau-lsp${EXE}`];
+      if (!lspZip) throw new Error(`No luau-lsp build for ${process.platform}/${process.arch}`);
+      if (FORCE || missing(lspBins).length) {
+        await install("luau-lsp", releaseUrl("JohnnyMorganz/luau-lsp", lspVersion, lspZip), lspBins);
+      }
+      const definitions = path.join(BIN_DIR, "robloxTypes.d.luau");
+      if (FORCE || !fs.existsSync(definitions)) {
+        const data = await download(`https://raw.githubusercontent.com/JohnnyMorganz/luau-lsp/${lspVersion}/scripts/globalTypes.d.lua`);
+        fs.writeFileSync(definitions, data);
+        console.log(`  wrote Roblox type definitions from luau-lsp ${lspVersion}`);
+      }
+    } catch (err) {
+      console.warn(`luau-lsp install failed, analysis will be unavailable: ${err.message}`);
+    }
     if (FORCE || missing(luauBins).length) {
       if (buildLuau) {
         await buildLuauFromSource(LUAU_VERSION);
@@ -386,8 +375,7 @@ async function main() {
       console.log("stylua already present, skipping (use --force to refetch)");
     }
 
-    // Only needed for the local Lune sandbox (ENABLE_LOCAL_EXEC). Skippable so
-    // a Roblox-only deployment does not pull a binary it never runs.
+    // Lune is only for ENABLE_LOCAL_EXEC; --no-lune skips it on Roblox-only hosts.
     if (!SKIP_LUNE && (FORCE || missing(luneBins).length)) {
       const luneVersion =
         LUNE_VERSION === "latest"
@@ -410,8 +398,7 @@ async function main() {
     }
   } catch (err) {
     console.error(`\nFailed: ${err.message}`);
-    // Running as an npm postinstall hook: a download failure must not fail the
-    // whole install. Missing tools are reported clearly at bot startup instead.
+    // Don't fail npm install from postinstall; startup reports missing tools.
     if (process.env.npm_lifecycle_event === "postinstall") {
       console.error(
         "Continuing anyway. Run `npm run fetch-tools` once you have network access.",
@@ -425,6 +412,7 @@ async function main() {
   for (const line of [
     verify(`luau-compile${EXE}`, "--version"),
     verify(`luau-analyze${EXE}`, "--version"),
+    verify(`luau-lsp${EXE}`, "--version"),
     verify(`luau-ast${EXE}`, "--help"),
     verify(`stylua${EXE}`, "--version"),
     ...(SKIP_LUNE ? [] : [verify(`lune${EXE}`, "--version")]),

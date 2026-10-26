@@ -1,34 +1,3 @@
---[[
-	Plots a mathematical function and outputs it as an image file.
-	
-	@param func function - A function that:
-		- If isParametric: takes t and returns either:
-			- A table of {x,y} pairs: {{x1,y1}, {x2,y2}, ...}
-			- Multiple x,y values: x1, y1, x2, y2, ...
-		- If isXFunction: takes y and returns one or more x values
-		- Otherwise: takes x and returns one or more y values
-	@param options table - Configuration table with:
-		- offset: Vector2 - The origin point offset (default: center of image)
-		- size: Vector2 - The axis ranges in units (x,y) - image will be auto-sized to fit within maxPixelSize (default: Vector2.new(10, 8))
-		- scale: number - Pixels per unit (auto-calculated to fit within maxPixelSize, but can be overridden)
-		- maxPixelSize: number - Maximum pixel size for either axis (default: 1024)
-		- isXFunction: boolean - If true, function returns x from y input (default: false)
-		- isParametric: boolean - If true, function takes t and returns x, y pairs (default: false)
-		- tRange: {number, number} - Range for parametric t parameter (default: {0, 2*pi})
-		- color: {Color3} | Color3 - List of colors for each curve, or single color (default: list of red, green, blue, etc.)
-		- backgroundColor: Color3 - Background color (default: black)
-		- showAxes: boolean - Whether to draw axes (default: true)
-		- axesColor: Color3 - Color of the axes (default: gray)
-		- showGrid: boolean - Whether to draw grid lines (default: false)
-		- gridColor: Color3 - Color of the grid (default: dark gray)
-		- gridSpacing: number - Units between grid lines (default: 1)
-		- showLabels: boolean - Whether to show axis labels (default: true)
-		- labelColor: Color3 - Color of the labels (default: white)
-		- labelSpacing: number - Units between labels (default: 1)
-		- labelSize: number - Text scale for labels (default: 1)
-		- thickness: number - Line thickness in pixels (default: 1)
-		- filename: string - Output filename (default: "graph.png")
-]]
 local function plotFunction(func: (number) -> number, options: {
 	offset: Vector2?,
 	size: Vector2?,
@@ -51,17 +20,14 @@ local function plotFunction(func: (number) -> number, options: {
 	thickness: number?,
 	filename: string?,
 	},Image,io)
-	-- Default options
 	options = options or {}
-	local axisSize = options.size or Vector2.new(10, 8) -- Axis ranges in units
-	local scale = options.scale or 50 -- Default scale, will be adjusted to fit within maxPixelSize
-	local maxPixelSize = options.maxPixelSize or 1024 -- Maximum pixel size for either axis
+	local axisSize = options.size or Vector2.new(10, 8)
+	local scale = options.scale or 50 -- shrunk to fit maxPixelSize
+	local maxPixelSize = options.maxPixelSize or 1024
 	axisSize*=2
-	-- Calculate pixel dimensions based on axis ranges
 	local pixelWidth = axisSize.X * scale
 	local pixelHeight = axisSize.Y * scale
 
-	-- Ensure pixel dimensions don't exceed maxPixelSize
 	if pixelWidth > maxPixelSize then
 		scale = maxPixelSize / axisSize.X
 		pixelWidth = maxPixelSize
@@ -71,22 +37,21 @@ local function plotFunction(func: (number) -> number, options: {
 		pixelHeight = maxPixelSize
 	end
 
-	local size = Vector2.new(pixelWidth, pixelHeight) -- Final pixel dimensions
+	local size = Vector2.new(pixelWidth, pixelHeight)
 	local offset = options.offset or Vector2.new(size.X / 2, size.Y / 2)
 	local isXFunction = options.isXFunction or false
 	local isParametric = options.isParametric or false
 	local tRange = options.tRange or {0, 2 * math.pi}
 	local colors = options.color or {
-		Color3.new(1, 0, 0),     -- Red
-		Color3.new(0, 1, 0),     -- Green
-		Color3.new(0, 0, 1),     -- Blue
-		Color3.new(1, 1, 0),     -- Yellow
-		Color3.new(1, 0, 1),     -- Magenta
-		Color3.new(0, 1, 1),     -- Cyan
-		Color3.new(1, 0.5, 0),   -- Orange
-		Color3.new(0.5, 0, 1),   -- Purple
+		Color3.new(1, 0, 0),
+		Color3.new(0, 1, 0),
+		Color3.new(0, 0, 1),
+		Color3.new(1, 1, 0),
+		Color3.new(1, 0, 1),
+		Color3.new(0, 1, 1),
+		Color3.new(1, 0.5, 0),
+		Color3.new(0.5, 0, 1),
 	}
-	-- Convert single color to table if needed
 	if type(colors.r) == "number" then
 		colors = {colors}
 	end
@@ -98,10 +63,8 @@ local function plotFunction(func: (number) -> number, options: {
 	local gridSpacing = options.gridSpacing or 1
 	local showLabels = options.showLabels ~= false
 	local labelColor = options.labelColor or Color3.new(0, 0, 0)
-	-- Adaptive label spacing based on axis size
 	local baseLabelSpacing = options.labelSpacing or 1
 	local labelSpacing = baseLabelSpacing
-	-- Adjust spacing for larger axis ranges to avoid overcrowding
 	if axisSize.X > 20 then
 		labelSpacing = math.ceil(axisSize.X / 10)
 	elseif axisSize.X > 10 then
@@ -111,18 +74,15 @@ local function plotFunction(func: (number) -> number, options: {
 	local thickness = options.thickness or 1
 	local filename = options.filename or "graph.png"
 
-	-- Create image
 	local image = Image.new(size)
 	image:Fill(backgroundColor, 0)
 
-	-- Draw grid if enabled
 	if showGrid then
 		local startX = math.floor(-offset.X / scale / gridSpacing) * gridSpacing
 		local endX = math.ceil((size.X - offset.X) / scale / gridSpacing) * gridSpacing
 		local startY = math.floor(-offset.Y / scale / gridSpacing) * gridSpacing
 		local endY = math.ceil((size.Y - offset.Y) / scale / gridSpacing) * gridSpacing
 
-		-- Vertical grid lines
 		for x = startX, endX, gridSpacing do
 			local screenX = offset.X + x * scale
 			if screenX >= 0 and screenX <= size.X then
@@ -135,7 +95,6 @@ local function plotFunction(func: (number) -> number, options: {
 			end
 		end
 
-		-- Horizontal grid lines
 		for y = startY, endY, gridSpacing do
 			local screenY = offset.Y - y * scale
 			if screenY >= 0 and screenY <= size.Y then
@@ -149,24 +108,21 @@ local function plotFunction(func: (number) -> number, options: {
 		end
 	end
 
-	local isXY = type(func(0,0)) == "boolean" -- this is a function that takes x y and returns a/list of boolean
+	local isXY = type(func(0,0)) == "boolean" -- f(x, y) returning booleans
 
-	-- Plot the function
-	local step = 0.01 / scale -- Adaptive step size based on scale
-	local plottedCurves = {} -- Track which curves were actually plotted
+	local step = 0.01 / scale
+	local plottedCurves = {}
 	local startTime = os.clock()
 
 	if isXY then
-		-- Boolean XY mode: f(x, y) -> boolean(s)
 		local startX = -offset.X / scale
 		local endX = (size.X - offset.X) / scale
 		local startY = -(size.Y - offset.Y) / scale
 		local endY = offset.Y / scale
 
-		local pixelStep = 1 / scale -- Step size in world units for each pixel
+		local pixelStep = 1 / scale
 
 		for x = startX, endX, pixelStep do
-			-- Yield periodically to prevent timeout
 			if os.clock() - startTime > 1/160 then
 				task.wait()
 				startTime = os.clock()
@@ -177,16 +133,13 @@ local function plotFunction(func: (number) -> number, options: {
 				local success = table.remove(results, 1)
 
 				if success and #results > 0 then
-					-- Process each boolean result as a separate region
 					for i, value in ipairs(results) do
 						if type(value) == "boolean" and value then
-							plottedCurves[i] = true -- Mark this region as plotted
+							plottedCurves[i] = true
 
-							-- Convert to screen coordinates
 							local screenX = offset.X + x * scale
-							local screenY = offset.Y - y * scale -- Flip Y axis
+							local screenY = offset.Y - y * scale
 
-							-- Only draw if within bounds
 							if screenX >= 0 and screenX < size.X and screenY >= 0 and screenY < size.Y then
 								local regionColor = colors[((i - 1) % #colors) + 1]
 								image:SetPixel(math.floor(screenX), math.floor(screenY), regionColor, 0)
@@ -200,15 +153,13 @@ local function plotFunction(func: (number) -> number, options: {
 		end
 
 	elseif isParametric then
-		-- Parametric mode: t -> (x, y)
 		local tStart = tRange[1]
 		local tEnd = tRange[2]
-		local tStep = (tEnd - tStart) / (size.X * 2) -- More samples for smoother curves
+		local tStep = (tEnd - tStart) / (size.X * 2)
 
-		local prevScreenPositions = {} -- Track previous positions for each curve
+		local prevScreenPositions = {}
 
 		for t = tStart, tEnd, tStep do
-			-- Yield periodically to prevent timeout
 			if os.clock() - startTime > 1/160 then
 				task.wait()
 				startTime = os.clock()
@@ -218,7 +169,6 @@ local function plotFunction(func: (number) -> number, options: {
 			local success = table.remove(results, 1)
 
 			if success and #results >= 1 then
-				-- Check if results are in table format or flat format
 				local curveData = {}
 				if type(results[1]) == "table" then
 					-- Table format: {{x1,y1}, {x2,y2}, ...}
@@ -231,23 +181,18 @@ local function plotFunction(func: (number) -> number, options: {
 					end
 				end
 
-				-- Process each curve
 				for i, point in ipairs(curveData) do
 					local x, y = point[1], point[2]
 					if type(x) == "number" and type(y) == "number" and x == x and y == y then
-						plottedCurves[i] = true -- Mark this curve as plotted
-						-- Convert to screen coordinates
+						plottedCurves[i] = true
 						local screenX = offset.X + x * scale
-						local screenY = offset.Y - y * scale -- Flip Y axis
+						local screenY = offset.Y - y * scale
 
-						-- Only draw if within bounds
 						if screenX >= -thickness and screenX <= size.X + thickness and screenY >= -thickness and screenY <= size.Y + thickness then
 							local screenPos = Vector2.new(screenX, screenY)
 
-							-- Draw line from previous point if it exists
 							if prevScreenPositions[i] then
 								local curveColor = colors[((i - 1) % #colors) + 1]
-								-- Draw with thickness if specified
 								if thickness > 1 then
 									for k = 0, thickness - 1 do
 										image:DrawLine(
@@ -276,14 +221,12 @@ local function plotFunction(func: (number) -> number, options: {
 		end
 
 	elseif not isXFunction then
-		-- y = f(x), iterate over x values
 		local startX = -offset.X / scale
 		local endX = (size.X - offset.X) / scale
 
-		local prevScreenPositions = {} -- Track previous positions for each curve
+		local prevScreenPositions = {}
 
 		for x = startX, endX, step do
-			-- Yield periodically to prevent timeout
 			if os.clock() - startTime > 1/160 then
 				task.wait()
 				startTime = os.clock()
@@ -293,22 +236,17 @@ local function plotFunction(func: (number) -> number, options: {
 			local success = table.remove(results, 1)
 
 			if success and #results > 0 then
-				-- Plot each returned value as a separate curve
 				for i, y in ipairs(results) do
 					if type(y) == "number" and y == y then -- Check for NaN
-						plottedCurves[i] = true -- Mark this curve as plotted
-						-- Convert to screen coordinates
+						plottedCurves[i] = true
 						local screenX = offset.X + x * scale
-						local screenY = offset.Y - y * scale -- Flip Y axis
+						local screenY = offset.Y - y * scale
 
-						-- Only draw if within bounds
 						if screenX >= 0 and screenX <= size.X and screenY >= -thickness and screenY <= size.Y + thickness then
 							local screenPos = Vector2.new(screenX, screenY)
 
-							-- Draw line from previous point if it exists
 							if prevScreenPositions[i] then
 								local curveColor = colors[((i - 1) % #colors) + 1]
-								-- Draw with thickness if specified
 								if thickness > 1 then
 									for t = 0, thickness - 1 do
 										image:DrawLine(
@@ -338,14 +276,12 @@ local function plotFunction(func: (number) -> number, options: {
 		end
 
 	else
-		-- x = f(y), iterate over y values
 		local startY = -(size.Y - offset.Y) / scale
 		local endY = offset.Y / scale
 
-		local prevScreenPositions = {} -- Track previous positions for each curve
+		local prevScreenPositions = {}
 
 		for y = startY, endY, step do
-			-- Yield periodically to prevent timeout
 			if os.clock() - startTime > 1/160 then
 				task.wait()
 				startTime = os.clock()
@@ -355,10 +291,9 @@ local function plotFunction(func: (number) -> number, options: {
 			local success = table.remove(results, 1)
 
 			if success and #results > 0 then
-				-- Plot each returned value as a separate curve
 				for i, x in ipairs(results) do
 					if type(x) == "number" and x == x then
-						plottedCurves[i] = true -- Mark this curve as plotted
+						plottedCurves[i] = true
 						local screenX = offset.X + x * scale
 						local screenY = offset.Y - y * scale
 
@@ -395,7 +330,6 @@ local function plotFunction(func: (number) -> number, options: {
 		end
 	end
 
-	-- Draw legend if multiple curves were plotted
 	local curveCount = 0
 	for _ in pairs(plottedCurves) do
 		curveCount = curveCount + 1
@@ -418,7 +352,6 @@ local function plotFunction(func: (number) -> number, options: {
 			local curveColor = colors[((i - 1) % #colors) + 1]
 			local yPos = legendY + (_ - 1) * lineHeight
 
-			-- Draw colored line
 			if thickness > 1 then
 				for t = 0, thickness - 1 do
 					image:DrawLine(
@@ -437,7 +370,6 @@ local function plotFunction(func: (number) -> number, options: {
 				)
 			end
 
-			-- Draw label
 			local label = "F(" .. i .. "):"
 			image:DrawText(
 				label,
@@ -449,9 +381,7 @@ local function plotFunction(func: (number) -> number, options: {
 		end
 	end
 
-	-- Draw axes if enabled (drawn after plotting so they appear on top)
 	if showAxes then
-		-- X-axis
 		if offset.Y >= 0 and offset.Y <= size.Y then
 			image:DrawLine(
 				Vector2.new(0, offset.Y),
@@ -461,7 +391,6 @@ local function plotFunction(func: (number) -> number, options: {
 			)
 		end
 
-		-- Y-axis
 		if offset.X >= 0 and offset.X <= size.X then
 			image:DrawLine(
 				Vector2.new(offset.X, 0),
@@ -472,20 +401,17 @@ local function plotFunction(func: (number) -> number, options: {
 		end
 	end
 
-	-- Draw axis labels if enabled (drawn after plotting so they appear on top)
 	if showLabels and showAxes then
 		local startX = math.floor(-offset.X / scale / labelSpacing) * labelSpacing
 		local endX = math.ceil((size.X - offset.X) / scale / labelSpacing) * labelSpacing
 		local startY = math.floor(-(size.Y - offset.Y) / scale / labelSpacing) * labelSpacing
 		local endY = math.ceil(offset.Y / scale / labelSpacing) * labelSpacing
 
-		-- X-axis labels
 		if offset.Y >= 0 and offset.Y <= size.Y then
 			for x = startX, endX, labelSpacing do
-				if x ~= 0 then -- Skip origin
+				if x ~= 0 then
 					local screenX = offset.X + x * scale
 					if screenX >= 10 and screenX <= size.X - 10 then
-						-- Draw tick mark
 						image:DrawLine(
 							Vector2.new(screenX, offset.Y - 3),
 							Vector2.new(screenX, offset.Y + 3),
@@ -493,16 +419,14 @@ local function plotFunction(func: (number) -> number, options: {
 							0
 						)
 
-						-- Format label (remove trailing zeros)
 						local label = tostring(x)
 						if math.floor(x) == x then
 							label = tostring(math.floor(x))
 						end
 
-						-- Draw label below axis
 						local labelOffset = 8
 						if offset.Y > size.Y - 20 then
-							labelOffset = -12 -- Draw above if axis is at bottom
+							labelOffset = -12
 						end
 
 						image:DrawText(
@@ -517,13 +441,11 @@ local function plotFunction(func: (number) -> number, options: {
 			end
 		end
 
-		-- Y-axis labels
 		if offset.X >= 0 and offset.X <= size.X then
 			for y = startY, endY, labelSpacing do
-				if y ~= 0 then -- Skip origin
+				if y ~= 0 then
 					local screenY = offset.Y - y * scale
 					if screenY >= 10 and screenY <= size.Y - 10 then
-						-- Draw tick mark
 						image:DrawLine(
 							Vector2.new(offset.X - 3, screenY),
 							Vector2.new(offset.X + 3, screenY),
@@ -531,16 +453,14 @@ local function plotFunction(func: (number) -> number, options: {
 							0
 						)
 
-						-- Format label
 						local label = tostring(y)
 						if math.floor(y) == y then
 							label = tostring(math.floor(y))
 						end
 
-						-- Draw label to the left of axis
 						local labelOffset = -10 - (#label * 6 * labelSize)
 						if offset.X < 40 then
-							labelOffset = 10 -- Draw to the right if axis is on left edge
+							labelOffset = 10
 						end
 
 						image:DrawText(
@@ -555,7 +475,6 @@ local function plotFunction(func: (number) -> number, options: {
 			end
 		end
 
-		-- Draw origin label
 		if offset.X >= 20 and offset.X <= size.X - 20 and offset.Y >= 20 and offset.Y <= size.Y - 20 then
 			image:DrawText(
 				"0",
@@ -567,7 +486,6 @@ local function plotFunction(func: (number) -> number, options: {
 		end
 	end
 
-	-- Convert to PNG and write to file
 	local pngData = Image.toPng(image, false)
 	io.writefile(pngData, filename)
 	return image

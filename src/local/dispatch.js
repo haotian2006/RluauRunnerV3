@@ -24,14 +24,9 @@ const { storeSource } = require("../sourceStore");
 const { runLocal } = require("./run");
 const { classify, describeClassification } = require("./router");
 
-// Matches the bound the Roblox executor already applies before Discord.
 const MAX_RESPONSE_LENGTH = 1900;
 const LIVE_UPDATE_INTERVAL_MS = 1000;
-// Beyond the run's own timeout, how long to wait for a terminal embed before
-// declaring the run stalled. Generous on purpose: a slow Discord edit is not a
-// stall, a run that never reports anything is.
 const TERMINAL_UPDATE_GRACE_MS = 60000;
-// Bounds both /input delivery and inputs parsed out of the source itself.
 const MAX_PENDING_INPUTS = 32;
 const ANSI_RED = "\u001b[0;31m";
 const ANSI_YELLOW = "\u001b[0;33m";
@@ -60,11 +55,8 @@ function deliverLocalInput(userId, value) {
   return delivered;
 }
 
-// The Roblox executor queues inputs written into the source itself, so a
-// script that pairs --[[@ ... ]] with io.read works there and used to hang on
-// Lune, which only ever saw inputs arriving from /input. Patterns mirror the
-// Luau side, including block-form first and the [ exclusion that keeps --@
-// from matching the opening of a --[[@ block.
+// Inputs written in the source (--[[@ ... ]] / --@), as the Roblox executor queues them.
+// Patterns mirror the Luau side; the [ exclusion stops --@ matching a --[[@ block.
 function parseQueuedInputs(source) {
   if (typeof source !== "string") return [];
   const queued = [];
@@ -254,9 +246,7 @@ async function tryRunLocally(
   const startedAt = Date.now();
   const executionId = `lune:${token}:${startedAt}`;
   let terminalUpdateSent = false;
-  // Last line of defence. Every stall found so far ended the same way: the
-  // pending embed never changes and nothing anywhere records why. Whatever
-  // else breaks, the user gets an answer and the journal gets a reason.
+  // Last line of defence: every stall so far froze the pending embed with no logged reason.
   const stallWatchdog = setTimeout(
     () => {
       if (terminalUpdateSent) return;

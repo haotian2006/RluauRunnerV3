@@ -11,12 +11,11 @@ return {
 - colorstring(text:string,color:string):string -- Returns a string that will be colored when outputted in ansi.
 - native: boolean -- Is native code generation enabled.
 - optimize: number -- The optimization level that the script is running in.
-- _native: table? -- C++ versions of the Image library's encoders and filters, on servers that have them; `nil` everywhere else.
 - io.write(...any) -- Does not add spaces between args and does not output tables expanded.If `TIMESTAMP` is false, then it will ...
 - io.read():string -- yields the thread until `/input` is given.
 - io.writefile(content: string|buffer, filename: string): boolean -- This function makes it so the log file will output the content instead of the log history along with the fi...
 - io.writeimage(value: Image | {Image} | Instance, filename: string?, options: {}?): string -- Writes an image file without converting it yourself, and returns the file name used.
-- io.import(url:string):Instance -- Builds a GitHub repository or a Wally package into an Instance.
+- io.import(url:string|number):Instance -- Builds a GitHub repository, a Wally package or a public Roblox model into an Instance.
 - io.readfile(file:string): (string,string) -- reads a loaded file with write file and returns the content and the file type.
 - io.getoutput(): string -- returns the current output log as a string
 - io.clearoutput() -- Clears the output.
@@ -24,6 +23,7 @@ return {
 - Image.fromPng(pngData:string): Image -- Creates a new Image object by decoding the provided PNG data string.
 - Image.fromAsset(id:number|string, size:number?): Image -- Downloads a Roblox image asset (`123`, `"rbxassetid://123"` or a `roblox.com/asset/?id=` link) and returns ...
 - Image.fromInstance(root:Instance, options:{}?): Image -- Renders Roblox instances into an Image.
+- Image.record(root:Instance, options:{}?): Recorder -- Records `root` with `fromInstance` into a gif.
 - Image.toPng(image:Image,outputLogs:boolean?): string -- Encodes the Image object as a raw string encoded as a png.
 - Image.toGif(frames:{Image},frameDelays:{number},options: {},outputLogs:boolean?): string -- Encodes multiple Image objects as a raw string encoded as a gif.
 - Image.plotFunction(function: (x:number) -> (...number), options:{}?) -> Image -- **Params**:
@@ -79,7 +79,7 @@ return {
 	sections = {
 		{ key = "TIMEOUT", text = [[
 ### TIMEOUT: number
-The maximum time (in seconds) that a code execution is allowed to run before terminated. Defaults to 15 seconds. 
+The maximum time (in seconds) that a code execution is allowed to run before terminated. Defaults to 25 seconds. 
 
 ```lua
 TIMEOUT = 3 -- make sure it's not a local
@@ -88,7 +88,13 @@ while task.wait(.5) do
 end 
 ```
 
-Note: The maximum time a session can run for is 5 minutes before it shuts down.]] },
+Note: The maximum time a session can run for is 5 minutes before it shuts down. In Studio a session lasts up to 4 minutes, and code still running when it ends stops with `Session ended.`
+
+### Limits
+- Code can run for at most 7 seconds without yielding: `Script timeout: exhausted allowed execution time`.
+- Code that keeps the server busy for 8 seconds without a break is stopped: `CPU limit exceeded`.
+- Each run can use the memory left of 1 GB, and at least 128 MB: `Memory limit exceeded`.
+- At most 8 files can be written, 10 MB each.]] },
 		{ key = "OUTPUT_LOGS", text = [[
 ### OUTPUT_LOGS: boolean|"LOG"
 Should a file be attached once the code execution finishes, containing all the outputs, defaults to false. If set to "LOG" then headers will not be included.]] },
@@ -97,7 +103,20 @@ Should a file be attached once the code execution finishes, containing all the o
 Should the time stamp be included when logging. If false it will not give a timeout warning and does not apply to errors. Defaults to false.]] },
 		{ key = "user", text = [[
 ### user:{Name:string,UserId:number}
-A table containing information about the user who sent the code to be executed.]] },
+A table containing information about the user who sent the code to be executed.
+
+### DataStores and MemoryStores
+`DataStoreService` and `MemoryStoreService` work in Discord, and what you save is kept between runs.
+
+- Your data is kept under your User ID, up to 1 MB.
+- Data that isn't used for 30 days is deleted. MemoryStore entries are deleted when they expire.
+- Code run in the play ground doesn't save anything.
+
+```lua
+local store = game:GetService("DataStoreService"):GetDataStore("scores")
+print(store:GetAsync("best")) -- nil the first time
+store:SetAsync("best", 42)
+```]] },
 		{ key = "bench", text = [[
 ### bench(funcs:{},printMode:number?,iterations:number?,delayEveryXIter:number?): results
 Runs benchmarks on the provided functions.
@@ -170,17 +189,18 @@ Valid colors are (casing does not matter):
 Is native code generation enabled. Should not be modified at runtime. Does not effect running code.]] },
 		{ key = "optimize", text = [[
 ### optimize: number
-The optimization level that the script is running in. Should not be modified at runtime. Does not effect running code.]] },
-		{ key = "_native", text = [[
-### _native: table?
-C++ versions of the Image library's encoders and filters, on servers that have them; `nil` everywhere else. `Image` already uses them when they're there, so `toPng`, `toGif` and the blur and sharpen filters need no changes. `pixels` is RGBA8, like an Image's `imageBuffer`.
+The optimization level that the script is running in. Should not be modified at runtime. Does not effect running code.
 
-- `encodePng(width, height, pixels, compression?): string` (compression 0-9, default 6)
-- `encodeGif(width, height, frames, delays, loops?): string` (`frames` is a list of `pixels`, `delays` in seconds)
-- `convolveSeparable(width, height, pixels, kernel)` and `convolve2D(width, height, pixels, weights, size, divisor?, bias?)` filter `pixels` in place
-- `clock(): number` (seconds) and `fnv1a(data: string): string` (a 64-bit hash, as hex)
+### Libraries
+These are available without requiring anything:
 
-These calls can't yield, so inputs over 16 MiB of pixels, or filters over 2^26 steps (width × height × weights), are refused.]] },
+- `discord`: buttons and other things for the response.
+- `table`: the default table library with extra functions.
+- `io`: input, output files, images and `import`.
+- `misc`: some random functions.
+- `Image`: create, edit and render images.
+
+Lune libraries like `@lune/fs` and `@lune/serde` can be required too.]] },
 		{ key = "io.write", text = [[
 ### io.write(...any)
 Does not add spaces between args and does not output tables expanded.If `TIMESTAMP` is false, then it will not create a new line.]] },
@@ -233,6 +253,7 @@ Writes an image file without converting it yourself, and returns the file name u
 - An `Image` is written as a `.png`.
 - A list of Images is written as a `.gif`. Options: `Delay` (seconds per frame, or a list of them; default `0.1`), `Loop` (`0` loops forever).
 - An Instance (`workspace`, a model, a ScreenGui, ...) is rendered with `Image.fromInstance` first; `options` are passed to it.
+- A recording from `Image.record` is written as a `.gif`. An Instance is recorded first if `options` has `Duration` or `FrameRate`.
 
 The extension is added if `filename` doesn't have one; the default name is `image`.
 
@@ -242,13 +263,16 @@ In the playground, an image named `screen` (or `screen2`, `screen3`, ...) opens 
 io.writeimage(workspace, "scene", { Size = Vector2.new(320, 180) })
 ```]] },
 		{ key = "io.import", text = [[
-### io.import(url:string):Instance
-Builds a GitHub repository or a Wally package into an Instance.
+### io.import(url:string|number):Instance
+Builds a GitHub repository, a Wally package or a public Roblox model into an Instance.
 
 - `github.com//`: builds `default.project.json`, or `src/` if there isn't one.
 - `.../tree//` or `.../blob//`: builds that folder or file.
-- `.../releases/download//.rbxm`
+- `.../releases/download//.rbxm` or `.../releases/latest/download/.rbxm` (`.rbxmx` works too)
+- `raw.githubusercontent.com////`
 - `wally:/@` 
+
+Only public repositories work, and a build is cached for 10 minutes. A repository can be up to 80 MB, with up to 5000 files (32 MB in all) and 4 MB per file.
 
 Note: Scripts don't run when imported
 ```lua
@@ -260,6 +284,11 @@ Wally example:
 ```lua
 local Knit = require(io.import("wally:sleitnick/knit@1.7"))
 local Signal = require(io.import("https://wally.run/package/sleitnick/signal?version=2.0.1"))
+```
+
+Roblox example: a public model's asset id, `rbxassetid://` id, or `roblox.com/library/` / `create.roblox.com/store/asset/` link.
+```lua
+local Packet = require(io.import(104116977416770))
 ```]] },
 		{ key = "io.readfile", text = [[
 ### io.readfile(file:string): (string,string)
@@ -292,7 +321,7 @@ Renders Roblox instances into an Image.
 - **3D**: `workspace` (uses `workspace.CurrentCamera`), a Model, Part, Folder or ViewportFrame. Models and parts are framed automatically.
 - **UI**: a ScreenGui or any GuiObject. Supports UICorner, UIStroke, UIGradient, layouts, images and text.
 
-`options`: `Size: Vector2`, `Camera: Camera | CFrame`, `FieldOfView: number`, `Background: Color3 | false`, `LightDirection: Vector3`.
+`options`: `Size: Vector2`, `Camera: Camera | CFrame`, `FieldOfView: number`, `Background: Color3 | false`, `LightDirection: Vector3`, `AntiAliasing: boolean` (default `true`), `Materials: boolean` (`false` draws plain colours instead of material textures).
 
 ```lua
 local part = Instance.new("Part")
@@ -300,6 +329,19 @@ part.Anchored = true
 part.Parent = workspace
 workspace.CurrentCamera.CFrame = CFrame.lookAt(Vector3.new(6, 6, 10), part.Position)
 io.writefile(Image.toPng(Image.fromInstance(workspace)), "scene.png")
+```]] },
+		{ key = "Image.record", text = [[
+### Image.record(root:Instance, options:{}?): Recorder
+Records `root` with `fromInstance` into a gif. It returns right away and records while your code keeps running.
+
+`options`: the `fromInstance` options, and `Duration` (seconds, default `3`, at most `30`), `FrameRate` (default `10`, at most `20`), `MaxFrames` (at most `256`), `Loop` (`0` loops forever), `Encode` (`false` gives the frames and delays instead of a gif).
+
+The recorder has `Status` (`"recording"`, `"done"` or `"failed"`), `FrameCount`, `Reason`, `Stop()` and `Wait(timeout?)`, which returns the gif (or `nil` and why).
+
+```lua
+local rec = Image.record(workspace, { Duration = 2 })
+local gif = rec:Wait()
+io.writefile(gif, "spin.gif")
 ```]] },
 		{ key = "Image.toPng", text = [[
 ### Image.toPng(image:Image,outputLogs:boolean?): string

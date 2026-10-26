@@ -6,8 +6,7 @@ const { notifyWorkers } = require("./workerEvents");
 const state = {
   CallbackUrl: "",
 
-  // Legacy single-server fields for older tests and integrations; scheduling
-  // uses RobloxServers.
+  // Legacy single-server fields for old tests; scheduling uses RobloxServers.
   RunningServer: "",
   RunningServerTime: 0,
   LastServerPing: 0,
@@ -63,12 +62,7 @@ const ActiveRobloxTasks = {};
 
 const RobloxServers = {};
 
-/**
- * Tasks already requeued once, so a lost handoff is retried only one time.
- * Weak and keyed by task object on purpose: a task can be dropped down several
- * paths (retry timer, six-minute expiry, /stopall, failPendingTasks), and the
- * entry dies with the task, so none can leak. Don't swap for a Set of uuids.
- */
+/** Tasks requeued once. Weak and keyed by task object so every drop path frees it. */
 const retriedTasks = new WeakSet();
 
 const DISPATCH_RETRY_MS = 60 * 1000;
@@ -86,8 +80,7 @@ function registerRobloxServer(serverId, now = Date.now()) {
     outageRecorded: false,
     retiring: false,
     activeTaskIds: new Set(),
-    // Set by its first task; --!nosandbox runs (real DataModel) never share a
-    // server with sandboxed runs.
+    // Set by its first task; --!nosandbox runs never share a server with sandboxed ones.
     mode: null,
     // "studio" for a headless Studio worker on this host, else an Open Cloud server.
     kind: "cloud",
@@ -230,7 +223,6 @@ function getDispatchedTask(uuid) {
   return DispatchedTasks[uuid]?.task || null;
 }
 
-/** The server a run was handed to, while it is running there. */
 function serverForToken(token) {
   for (const tasks of [DispatchedTasks, ActiveRobloxTasks]) {
     for (const entry of Object.values(tasks)) {
@@ -247,8 +239,7 @@ function settleTasksForToken(token, finished = true) {
       clearTimeout(entry.timer);
       delete DispatchedTasks[uuid];
       if (!finished) {
-        // No retry timer from here on; only a server reap can recover this
-        // task, so record where it went.
+        // No retry timer now; only a server reap can recover it, so record where it went.
         ActiveRobloxTasks[uuid] = {
           ...entry,
           timer: null,

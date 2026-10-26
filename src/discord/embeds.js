@@ -28,12 +28,9 @@ function liveAttachmentOptions(existingAttachments, fileMap, changedFile) {
   };
 }
 
-// An empty ansi block renders as a bare "1" gutter, which reads as a result
-// that never arrived rather than one with no output. Keep the block and
-// put dimmed placeholder text in it so every state looks the same.
+// An empty ansi block renders a bare "1" gutter, so show dimmed placeholder text.
+// Whitespace-only output still counts as output.
 function describeBody(responseContent, isLast) {
-  // Only a total absence of output is "no output": a script that printed a
-  // space or a blank line did produce something.
   const censored = censorText(String(responseContent ?? ""));
   const body = censored.length
     ? censored
@@ -57,8 +54,7 @@ function createResponseEmbed(
       : serverNum === "Lune"
         ? "Lune"
         : `${studio ? "Studio" : "Server"} #${serverNum}`;
-  // Discord fails to render a masked link placed before some ansi blocks, so
-  // it only goes there when the title link is taken.
+  // Discord misrenders a masked link before some ansi blocks; inline only when the title link is taken.
   const inlineRaw = msgLink && sourceUrl ? ` | [see raw](${sourceUrl})` : "";
   const embed = new EmbedBuilder()
     .setTitle(

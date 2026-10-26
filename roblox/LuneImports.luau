@@ -18,7 +18,15 @@ return function(backend, env, createFs, hooks)
 			for key in options do
 				assert(key == "optimizationLevel" or key == "debugLevel" or key == "coverageLevel", "unsupported compile option: " .. tostring(key))
 			end
-			local result = compile(source, options.optimizationLevel, options.debugLevel, options.coverageLevel, dump)
+			local ok, result = pcall(compile, source, options.optimizationLevel, options.debugLevel, options.coverageLevel, dump)
+			if not ok then
+				-- Disassembly, and compile on a Studio build without a validated compiler, use the
+				-- bundled compiler, which predates classes; luau.load always has them.
+				if type(source) == "string" and #source <= 1024 * 1024 and string.find(source, "%f[%w_]class%s+[%a_]") and loadstring(source) then
+					error("this bytecode compiler doesn't support classes; luau.load takes the source directly", 0)
+				end
+				error(result, 0)
+			end
 			if not dump and not compiled[result] then
 				while #compileOrder >= 64 or compiledBytes + #result + #source > 32 * 1024 * 1024 do
 					local removed = table.remove(compileOrder, 1)
@@ -40,6 +48,17 @@ return function(backend, env, createFs, hooks)
 			-- Never send bytecode to Roblox's private loader; recompile this job's source in the sandbox.
 			local fn, err = sourceLoader(source, options.debugName)
 			if not fn then error(err, 2) end
+			-- A class chunk sets itself up from __rluauSetup in its own env; keep that reachable,
+			-- without the imports that would land in target.
+			local setup = rawget(getfenv(fn), "__rluauSetup")
+			if setup then
+				target = setmetatable({
+					__rluauSetup = function()
+						local imports, _, guards = setup()
+						return imports, nil, guards
+					end,
+				}, { __index = target, __newindex = target })
+			end
 			setfenv(fn, target)
 			return fn
 		end

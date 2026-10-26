@@ -5,6 +5,8 @@ local plotfunction = require(script.plotFunction)
 local decoder = require(script.pngDecoder)
 local render3d = require(script.render3d)
 local render2d = require(script.render2d)
+local raster = require(script.raster)
+local styles = require(script.styles)
 local nativeImage = require(script.native)
 local function empty()end
 
@@ -46,6 +48,24 @@ local function checkHeader(str: string)
 	end
 end
 
+-- Encoders size their buffers from Size and read imageBuffer up to it.
+local function checkImage(image, who: string, size: Vector2?)
+	local s = type(image) == "table" and image.Size
+	if typeof(s) ~= "Vector2" or typeof(image.imageBuffer) ~= "buffer" then
+		error(`{who}: expected an Image`, 3)
+	end
+	local w, h = s.X, s.Y
+	if w < 1 or h < 1 or w > MAX_SIDE or h > MAX_SIDE or w % 1 ~= 0 or h % 1 ~= 0 then
+		error(`{who}: {w}x{h} is outside the 1x1..{MAX_SIDE}x{MAX_SIDE} range`, 3)
+	end
+	if size and s ~= size then
+		error(`{who}: every frame must be {size.X}x{size.Y}`, 3)
+	end
+	if buffer.len(image.imageBuffer) < w * h * 4 then
+		error(`{who}: imageBuffer is smaller than Size`, 3)
+	end
+end
+
 local function parseAssetId(v): string?
 	if type(v) == "number" then
 		return if v >= 1 and v < 2 ^ 53 and v == math.floor(v) then string.format("%d", v) else nil
@@ -78,8 +98,6 @@ local function readCamera(cam)
 	return nil
 end
 
--- Frames the parts from in front of the root, slightly above and to the right, as
--- tightly as the frustum allows.
 local function fitCamera(target, parts, fov, aspect)
 	local pts = {}
 	for _, p in parts do
@@ -164,6 +182,7 @@ return function(println,io,fetchAsset,sandbox)
 			return img
 		end,
 		toPng = function(image,shouldLog,timmeout)
+			checkImage(image, "toPng")
 			local encoded = nativeImage.png(image)
 			if encoded then
 				if shouldLog then
@@ -174,6 +193,13 @@ return function(println,io,fetchAsset,sandbox)
 			return pngEncoder(image, shouldLog and println or empty,timmeout)
 		end,
 		toGif = function(frames,durations,options,shouldLog)
+			if type(frames) ~= "table" or #frames < 1 then
+				error("toGif: expected a list of Images", 2)
+			end
+			checkImage(frames[1], "toGif")
+			for _, frame in frames do
+				checkImage(frame, "toGif", frames[1].Size)
+			end
 			local encoded = nativeImage.gif(frames, durations, options)
 			if encoded then
 				if shouldLog then
@@ -222,9 +248,8 @@ return function(println,io,fetchAsset,sandbox)
 		return if typeof(v) == "Instance" then v else nil
 	end
 
-	--// EditableImage. AssetService's own is blocked on these servers, so the sandbox hands out
-	--// these instead, backed by an Image. Content.fromObject gives one a uri that rides on the
-	--// ImageLabel (and its clones), which the UI renderer looks up below.
+	-- AssetService's EditableImage is blocked on these servers, so the sandbox hands out Image-backed ones.
+	-- Content.fromObject gives one a uri that rides on the ImageLabel (and clones) for the UI renderer.
 	local EDITABLE_URI = "rbxtemp://luaurunner/editable/"
 	local editables = {}
 	local editableOf = setmetatable({}, { __mode = "k" })
@@ -277,7 +302,6 @@ return function(println,io,fetchAsset,sandbox)
 			DrawImageProjected = function()
 				error("DrawImageProjected isn't supported here", 2)
 			end,
-			-- deprecated, but older scripts still use them
 			ReadPixels = function(_, position, size)
 				local buf = alive("ReadPixels"):ReadPixelsBuffer(position, size)
 				local out = table.create(buffer.len(buf))
@@ -346,7 +370,6 @@ return function(println,io,fetchAsset,sandbox)
 	end
 
 	Image._editable = {
-		-- AssetService:CreateEditableImage({ Size = Vector2 })
 		create = function(options)
 			local size = Vector2.new(512, 512)
 			if options ~= nil then
@@ -365,7 +388,6 @@ return function(println,io,fetchAsset,sandbox)
 			end
 			return newEditable(Image.new(size))
 		end,
-		-- AssetService:CreateEditableImageAsync(content or asset id)
 		load = function(content)
 			local uri = if typeof(content) == "Content" then content.Uri else content
 			local copy = editableFromUri(uri)
@@ -409,65 +431,221 @@ return function(println,io,fetchAsset,sandbox)
 		return parts
 	end
 
+	local LIGHTING_PROPS = {
+		"Ambient", "OutdoorAmbient", "Brightness", "ColorShift_Top", "ColorShift_Bottom", "EnvironmentDiffuseScale",
+		"EnvironmentSpecularScale", "ExposureCompensation", "FogColor", "FogEnd", "FogStart", "GlobalShadows",
+		"ShadowSoftness", "ClockTime",
+	}
+
+	local function readLighting()
+		if sandbox and sandbox.lighting then
+			local ok, info = pcall(sandbox.lighting)
+			if ok and type(info) == "table" then
+				return info
+			end
+		end
+		local L = game:GetService("Lighting")
+		local info = { children = L:GetChildren() }
+		for _, k in LIGHTING_PROPS do
+			local ok, v = pcall(function()
+				return L[k]
+			end)
+			if ok then
+				info[k] = v
+			end
+		end
+		local okSun, sun = pcall(L.GetSunDirection, L)
+		local okMoon, moon = pcall(L.GetMoonDirection, L)
+		info.SunDirection = if okSun then sun else Vector3.new(-0.35, 0.85, 0.4).Unit
+		info.MoonDirection = if okMoon then moon else -info.SunDirection
+		return info
+	end
+
+	local function c3(c: Color3?, default: Vector3)
+		return if typeof(c) == "Color3" then Vector3.new(c.R, c.G, c.B) else default
+	end
+	local function lerp3(a: Vector3, b: Vector3, t: number)
+		return a + (b - a) * t
+	end
+	local function clamp01(x)
+		return math.clamp(x, 0, 1)
+	end
+
+	local DAY_HORIZON, DAY_ZENITH, DAY_GROUND = Vector3.new(0.80, 0.88, 0.97), Vector3.new(0.22, 0.64, 0.86), Vector3.new(0.50, 0.53, 0.57)
+	local AMBIENT_ZENITH = Vector3.new(0.40, 0.71, 0.87)
+	local NIGHT_HORIZON, NIGHT_ZENITH, NIGHT_GROUND = Vector3.new(0.10, 0.12, 0.20), Vector3.new(0.02, 0.03, 0.08), Vector3.new(0.05, 0.05, 0.06)
+	local SUNSET = Vector3.new(1.0, 0.55, 0.3)
+
+	local function sceneLight(target, o)
+		if target:IsA("ViewportFrame") then
+			local a, l = target.Ambient, target.LightColor
+			local ambient = Vector3.new(a.R, a.G, a.B)
+			local toLight = -(o.lightDir or target.LightDirection).Unit
+			return {
+				toLight = toLight, sunDir = toLight, sun = Vector3.one, sunCos = 2,
+				light = Vector3.new(l.R, l.G, l.B), ambient = ambient, skyAmbient = Vector3.zero, bounce = Vector3.zero,
+				horizon = ambient, zenith = ambient, ground = ambient * 0.5, shadows = false,
+			}
+		end
+		local info = readLighting()
+		local sunDir = (info.SunDirection or Vector3.yAxis).Unit
+		local moonDir = (info.MoonDirection or -sunDir).Unit
+		-- Roblox keeps the sun at full strength until it is nearly down
+		local day = clamp01((sunDir.Y + 0.02) / 0.1)
+		local warm = clamp01(sunDir.Y / 0.15)
+		local exposure = 2 ^ (info.ExposureCompensation or 0)
+		local brightness = (0.38 + 0.19 * math.max(info.Brightness or 2, 0)) * exposure
+		local sunColor = lerp3(SUNSET, Vector3.new(1, 0.97, 0.9), warm)
+		local lightColor = lerp3(Vector3.new(0.5, 0.55, 0.7) * 0.25, sunColor, day) * brightness
+			+ c3(info.ColorShift_Top, Vector3.zero) * brightness * day
+		local toLight = if o.lightDir then -o.lightDir.Unit elseif day > 0 then sunDir else moonDir
+
+		local horizon = lerp3(NIGHT_HORIZON, DAY_HORIZON, day)
+		local zenith = lerp3(NIGHT_ZENITH, DAY_ZENITH * (0.85 + 0.15 * clamp01(sunDir.Y / 0.5)), day)
+		local ground = lerp3(NIGHT_GROUND, DAY_GROUND, day)
+		horizon = lerp3(horizon, SUNSET, (1 - warm) * day * 0.55)
+
+		local atmosphere, sky
+		for _, c in info.children or {} do
+			if c:IsA("Atmosphere") then
+				atmosphere = c
+			elseif c:IsA("Sky") then
+				sky = c
+			end
+		end
+		local fog
+		local horizonOffset, groundScale = 0, 4
+		if atmosphere then
+			local ac = c3(atmosphere.Color, Vector3.new(0.78, 0.78, 0.78))
+			local decay = c3(atmosphere.Decay, Vector3.new(0.42, 0.44, 0.49))
+			horizon = lerp3(horizon, ac * 1.08 * math.max(day, 0.15), 0.85 + 0.15 * clamp01(atmosphere.Haze / 10))
+			local grey = (decay.X + decay.Y + decay.Z) / 3
+			ground = lerp3(decay, Vector3.one * grey, 0.6) * 0.85 * math.max(day, 0.15)
+			horizonOffset = math.clamp(atmosphere.Offset, 0, 1) * 0.8
+			groundScale = 2.5
+			local density = math.max(atmosphere.Density, 0)
+			if density > 0 then
+				fog = { start = 0, finish = 0, density = density * 0.004, color = horizon }
+			end
+		elseif info.FogEnd and info.FogEnd < 1e5 then
+			fog = { start = info.FogStart or 0, finish = info.FogEnd, density = 0, color = c3(info.FogColor, horizon) }
+		end
+
+		local outdoor = c3(info.OutdoorAmbient, Vector3.new(0.5, 0.5, 0.5))
+		local indoor = c3(info.Ambient, Vector3.zero)
+		local ambient = (outdoor * 0.4 + indoor * 0.2) * exposure
+		local diffuseScale = info.EnvironmentDiffuseScale or 0
+		local skyTop = lerp3(NIGHT_ZENITH, AMBIENT_ZENITH, day)
+		local skyAmbient = Vector3.new(skyTop.X ^ 3, skyTop.Y ^ 3.5, skyTop.Z ^ 1.5) * (0.25 + 0.3 * diffuseScale) * exposure
+		local bounce = (lightColor * math.max(toLight.Y, 0) * 0.65 + skyAmbient * 0.5 + ambient) * 0.9
+		local envSpecular = (0.2 + 0.5 * (info.EnvironmentSpecularScale or 0)) * math.max(day, 0.2)
+
+		local sunCos = math.cos(math.rad(21) * 0.45)
+		local celestial = true
+		if sky then
+			local okSize, size = pcall(function()
+				return sky.SunAngularSize
+			end)
+			if okSize and type(size) == "number" then
+				sunCos = math.cos(math.rad(math.max(size, 0.5)) * 0.45)
+			end
+			celestial = sky.CelestialBodiesShown
+		end
+		if not celestial or day <= 0 then
+			sunCos = 2
+		end
+		return {
+			toLight = toLight, sunDir = sunDir, sun = sunColor * 1.4, sunCos = sunCos,
+			light = lightColor, ambient = ambient, skyAmbient = skyAmbient, bounce = bounce, envSpecular = envSpecular,
+			horizon = horizon, zenith = zenith, ground = ground, fog = fog,
+			horizonOffset = horizonOffset, groundScale = groundScale,
+			shadows = info.GlobalShadows ~= false, softness = info.ShadowSoftness or 0.2,
+		}
+	end
+
+	local function runCommands(w, width, height, color: buffer?, scale: number?)
+		local s = scale or 1
+		local out = color or buffer.create(width * height * 4)
+		if nativeImage.raster(w, width * s, height * s, out, s) then
+			return out
+		end
+		lastYield = os.clock()
+		if s == 1 then
+			raster.run(w.buf, w.n, width, height, out, w.textures, maybeYield)
+			return out
+		end
+		local big = buffer.create(width * s * height * s * 4)
+		if color then
+			raster.upsample(out, width, height, s, big)
+		end
+		raster.run(w.buf, w.n, width * s, height * s, big, w.textures, maybeYield)
+		raster.downsample(big, width, height, s, out, maybeYield)
+		return out
+	end
+
+	local renderGui, decalImage, prefetchDecals, meshGeometry, meshTexture, prefetchMeshes
+
 	-- o: camCF, fov (degrees), lightDir, background (nil = default, false = none, or a Color3)
 	local function render3dInto(target, root, o, w, h)
 		local camCF, fov = o.camCF, o.fov
 		local background, backgroundAlpha
-		local toLight, ambient, lightColor, skyAmbient
 		if target:IsA("ViewportFrame") then
 			if not camCF and target.CurrentCamera then
 				local vcf, vfov = readCamera(target.CurrentCamera)
 				camCF, fov = vcf, fov or vfov
 			end
 			background, backgroundAlpha = target.BackgroundColor3, 1 - target.BackgroundTransparency
-			toLight = -(o.lightDir or target.LightDirection).Unit
-			local a, l = target.Ambient, target.LightColor
-			ambient, lightColor, skyAmbient = Vector3.new(a.R, a.G, a.B), Vector3.new(l.R, l.G, l.B), 0
-		else
-			if target:IsA("WorldRoot") then
-				if not camCF and root then
-					local ok, wsCam = pcall(function()
-						return root.CurrentCamera
-					end)
-					if ok and wsCam then
-						local wcf, wfov = readCamera(wsCam)
-						-- a camera nobody moved (the server default) frames the parts instead
-						local untouched = wcf
-							and (wcf.Position - Vector3.new(0, 20, 20)).Magnitude < 0.01
-							and wcf.LookVector:Dot(Vector3.new(0, -1, -1).Unit) > 0.9999
-							and wfov == 70
-						if not untouched then
-							camCF, fov = wcf, fov or wfov
-						end
+		elseif target:IsA("WorldRoot") then
+			if not camCF and root then
+				local ok, wsCam = pcall(function()
+					return root.CurrentCamera
+				end)
+				if ok and wsCam then
+					local wcf, wfov = readCamera(wsCam)
+					-- a camera nobody moved (the server default) frames the parts instead
+					local untouched = wcf
+						and (wcf.Position - Vector3.new(0, 20, 20)).Magnitude < 0.01
+						and wcf.LookVector:Dot(Vector3.new(0, -1, -1).Unit) > 0.9999
+						and wfov == 70
+					if not untouched then
+						camCF, fov = wcf, fov or wfov
 					end
 				end
-				background = "sky"
 			end
-			toLight = -(o.lightDir or DEFAULT_LIGHT).Unit
-			ambient, lightColor, skyAmbient = Vector3.new(0.36, 0.36, 0.38), Vector3.new(0.68, 0.66, 0.62), 0.14
+			background = "sky"
 		end
 		if o.background == false then
 			background = nil
 		elseif o.background ~= nil then
 			background, backgroundAlpha = o.background, 1
 		end
-		local parts = partsUnder(target)
 		local fovRad = math.rad(math.clamp(fov or (if camCF then 70 else 40), 1, 120))
 		if not camCF then
-			camCF = fitCamera(target, parts, fovRad, w / h)
+			camCF = fitCamera(target, partsUnder(target), fovRad, w / h)
 		end
-		return render3d(parts, {
-			width = w,
-			height = h,
+		prefetchDecals(target)
+		prefetchMeshes(target)
+		local s = o.scale or 2
+		local writer = raster.writer()
+		render3d(writer, target, {
+			width = w * s,
+			height = h * s,
+			scale = s,
+			materials = o.materials,
 			camera = camCF,
 			fov = fovRad,
 			background = background,
 			backgroundAlpha = backgroundAlpha,
-			toLight = toLight,
-			ambient = ambient,
-			lightColor = lightColor,
-			skyAmbient = skyAmbient,
+			light = sceneLight(target, o),
+			imageFor = decalImage,
+			meshGeometry = if nativeImage.readMesh then meshGeometry else nil,
+			meshTexture = meshTexture,
+			renderGui = function(gui, gw, gh)
+				local ok, img = pcall(renderGui, gui, Vector2.new(gw, gh))
+				return if ok then img else nil
+			end,
 		})
+		return runCommands(writer, w, h, nil, s)
 	end
 
 	local function nearestCollector(inst)
@@ -529,7 +707,6 @@ return function(println,io,fetchAsset,sandbox)
 		end
 	end
 
-	-- decoded asset images, kept across renders so animated UIs don't re-decode icons
 	local imageCache, imageCacheCount = {}, 0
 
 	local function thumbSize(iw, ih)
@@ -547,7 +724,10 @@ return function(println,io,fetchAsset,sandbox)
 		local img = false
 		local ok, bytes = fetchAsset(id, px)
 		if ok then
-			local dok, buf, vec = pcall(decoder, bytes, empty)
+			local dok, buf, vec = pcall(function()
+				checkHeader(bytes)
+				return decoder(bytes, empty)
+			end)
 			if dok then
 				img = Image.new(vec)
 				img.imageBuffer = buf
@@ -561,7 +741,6 @@ return function(println,io,fetchAsset,sandbox)
 		imageCacheCount += 1
 	end
 
-	-- Fetch every image up front and together, so the bot resolves them in one batch.
 	local function prefetchImages(root)
 		if not fetchAsset then
 			return
@@ -623,22 +802,189 @@ return function(println,io,fetchAsset,sandbox)
 		return imageCache[key] or nil
 	end
 
-	-- Lays out and paints one cloned root (inside its own scratch ScreenGui) into buf.
-	local function paintRoot(scratch, root, w, h, buf)
+	local DECAL_SIZE = 420
+
+	local function decalAssetId(decal): string?
+		return parseAssetId(decal.Texture) or string.match(decal.Texture, "^rbxthumb://.-id=(%d+)")
+	end
+
+	decalImage = function(decal)
+		local ok, content = pcall(function()
+			return decal.TextureContent
+		end)
+		local editable = (ok and content and editableFromUri(content.Uri)) or editableFromUri(decal.Texture)
+		if editable then
+			return editable
+		end
+		local id = fetchAsset and decalAssetId(decal)
+		if not id then
+			return nil
+		end
+		local key = id .. ":" .. DECAL_SIZE
+		if imageCache[key] == nil then
+			pcall(loadImage, id, DECAL_SIZE)
+		end
+		return imageCache[key] or nil
+	end
+
+	prefetchDecals = function(root)
+		if not fetchAsset then
+			return
+		end
+		local pending, started = 0, {}
+		for _, d in root:GetDescendants() do
+			if d:IsA("Decal") then
+				local id = decalAssetId(d)
+				local key = id and id .. ":" .. DECAL_SIZE
+				if key and imageCache[key] == nil and not started[key] then
+					started[key] = true
+					pending += 1
+					task.spawn(function()
+						pcall(loadImage, id, DECAL_SIZE)
+						pending -= 1
+					end)
+				end
+			end
+		end
+		local deadline = os.clock() + 25
+		while pending > 0 and os.clock() < deadline do
+			task.wait()
+		end
+	end
+
+	-- Where luau_native can read meshes (Studio workers) MeshParts draw as real triangles; asset meshes
+	-- load through AssetService first, which only works for meshes this server may load. Else a box.
+	local AssetService = game:GetService("AssetService")
+	local MESH_CACHE_LIMIT = 32
+	local meshes, meshCount = {}, 0
+
+	local function meshKey(part)
+		local ok, content = pcall(function()
+			return part.MeshContent
+		end)
+		if ok and content and content.Uri and content.Uri ~= "" then
+			return content.Uri
+		end
+		local okId, id = pcall(function()
+			return part.MeshId
+		end)
+		return if okId and id ~= "" then id else nil
+	end
+
+	local function loadMesh(part, key)
+		meshes[key] = false
+		local ok, editable = pcall(AssetService.CreateEditableMeshAsync, AssetService, part.MeshContent)
+		if ok and editable then
+			local okRead, geo = pcall(nativeImage.readMesh, editable)
+			editable:Destroy()
+			if okRead and geo then
+				if meshCount >= MESH_CACHE_LIMIT then
+					table.clear(meshes)
+					meshCount = 0
+				end
+				meshes[key] = geo
+				meshCount += 1
+			end
+		end
+	end
+
+	meshGeometry = function(part)
+		-- an EditableMesh-backed MeshPart reads directly, and may change between renders
+		local ok, geo = pcall(nativeImage.readMesh, part)
+		if ok and geo then
+			return geo
+		end
+		local key = meshKey(part)
+		return key and meshes[key] or nil
+	end
+
+	prefetchMeshes = function(root)
+		if not nativeImage.readMesh then
+			return
+		end
+		local pending, started = 0, {}
+		local function visit(d)
+			if d:IsA("MeshPart") then
+				local key = meshKey(d)
+				if key and meshes[key] == nil and not started[key] then
+					started[key] = true
+					pending += 1
+					task.spawn(function()
+						pcall(loadMesh, d, key)
+						pending -= 1
+					end)
+				end
+			end
+		end
+		visit(root)
+		for _, d in root:GetDescendants() do
+			visit(d)
+		end
+		local deadline = os.clock() + 15
+		while pending > 0 and os.clock() < deadline do
+			task.wait()
+		end
+	end
+
+	meshTexture = function(part)
+		local id
+		local appearance = part:FindFirstChildOfClass("SurfaceAppearance")
+		if appearance then
+			local ok, map = pcall(function()
+				return appearance.ColorMap
+			end)
+			id = ok and parseAssetId(map)
+		end
+		if not id then
+			local ok, tex = pcall(function()
+				return part.TextureID
+			end)
+			id = ok and parseAssetId(tex)
+		end
+		if not id or not fetchAsset then
+			return nil
+		end
+		local key = id .. ":" .. DECAL_SIZE
+		if imageCache[key] == nil then
+			pcall(loadImage, id, DECAL_SIZE)
+		end
+		return imageCache[key] or nil
+	end
+
+	local function ancestorLinks(target)
+		local links = {}
+		local cur = target.Parent
+		while cur do
+			for _, c in cur:GetChildren() do
+				if c:IsA("StyleLink") then
+					table.insert(links, c)
+				end
+			end
+			cur = cur.Parent
+		end
+		return links
+	end
+
+	local function paintRoot(scratch, root, w, h, buf, links)
+		pcall(styles.apply, root, links)
 		sizeAutoText(root)
 		prefetchImages(root)
+		local writer = raster.writer()
 		local ok, err = pcall(render2d.paint, root, {
+			writer = writer,
 			width = w,
 			height = h,
-			target = buf,
 			origin = root.AbsolutePosition,
 			global = scratch.ZIndexBehavior == Enum.ZIndexBehavior.Global,
 			imageFor = imageFor,
 			yield = maybeYield,
 		})
 		scratch:Destroy()
+		if ok then
+			ok, err = pcall(runCommands, writer, w, h, buf)
+		end
 		if not ok then
-			error(`fromInstance: {err}`, 4)
+			error(`fromInstance: {err}`, 5)
 		end
 	end
 
@@ -671,7 +1017,7 @@ return function(println,io,fetchAsset,sandbox)
 		return list
 	end
 
-	local function renderGui(target, size)
+	renderGui = function(target, size)
 		local w, h
 		local abs = target.AbsoluteSize
 		w, h = if size then size.X else abs.X, if size then size.Y else abs.Y
@@ -712,12 +1058,12 @@ return function(println,io,fetchAsset,sandbox)
 		end
 
 		if w < 1 or h < 1 then
-			error("fromInstance: this GUI object has no size; parent it to a ScreenGui or pass Size", 3)
+			error("fromInstance: this GUI object has no size; parent it to a ScreenGui or pass Size", 4)
 		end
 		w, h = math.clamp(math.floor(w), 1, MAX_SIDE), math.clamp(math.floor(h), 1, MAX_SIDE)
 		local root = target:Clone()
 		if not root then
-			error("fromInstance: can't render an object whose Archivable is false", 3)
+			error("fromInstance: can't render an object whose Archivable is false", 4)
 		end
 		local scratch = Instance.new("ScreenGui")
 		local collector = nearestCollector(target)
@@ -728,28 +1074,29 @@ return function(println,io,fetchAsset,sandbox)
 		root.Size = UDim2.fromOffset(w, h)
 		root.Parent = scratch
 		local buf = buffer.create(w * h * 4)
-		paintRoot(scratch, root, w, h, buf)
+		paintRoot(scratch, root, w, h, buf, ancestorLinks(target))
 		local out = Image.new(Vector2.new(w, h))
 		out.imageBuffer = buf
 		return out
 	end
 
-	Image.fromInstance = function(root, options)
+	local function readOptions(name, root, options)
 		if options ~= nil and type(options) ~= "table" then
-			error("fromInstance: arg 2 must be a table of options", 2)
+			error(`{name}: arg 2 must be a table of options`, 3)
 		end
 		options = options or {}
 		local target = renderTarget(root)
 		if not target then
-			error("fromInstance: arg 1 must be workspace or an Instance from this run", 2)
+			error(`{name}: arg 1 must be workspace or an Instance from this run`, 3)
 		end
 		local size = options.Size
 		if size ~= nil and typeof(size) ~= "Vector2" then
-			error("fromInstance: Size must be a Vector2", 2)
+			error(`{name}: Size must be a Vector2`, 3)
 		end
-		lastYield = os.clock()
+		local spec = { target = target, root = root, size = size }
 		if target:IsA("GuiBase2d") and not target:IsA("ViewportFrame") then
-			return renderGui(target, size)
+			spec.gui = true
+			return spec
 		end
 
 		local o = {}
@@ -759,25 +1106,34 @@ return function(println,io,fetchAsset,sandbox)
 		elseif cam ~= nil then
 			o.camCF, o.fov = readCamera(cam)
 			if not o.camCF then
-				error("fromInstance: Camera must be a Camera or a CFrame", 2)
+				error(`{name}: Camera must be a Camera or a CFrame`, 3)
 			end
 		end
 		if options.FieldOfView ~= nil then
 			if type(options.FieldOfView) ~= "number" then
-				error("fromInstance: FieldOfView must be a number", 2)
+				error(`{name}: FieldOfView must be a number`, 3)
 			end
 			o.fov = options.FieldOfView
 		end
 		local lightDir = options.LightDirection
 		if lightDir ~= nil and (typeof(lightDir) ~= "Vector3" or lightDir.Magnitude == 0) then
-			error("fromInstance: LightDirection must be a non-zero Vector3", 2)
+			error(`{name}: LightDirection must be a non-zero Vector3`, 3)
 		end
 		o.lightDir = lightDir
 		local bg = options.Background
 		if bg ~= nil and bg ~= false and typeof(bg) ~= "Color3" then
-			error("fromInstance: Background must be a Color3 or false", 2)
+			error(`{name}: Background must be a Color3 or false`, 3)
 		end
 		o.background = bg
+		if options.AntiAliasing ~= nil and type(options.AntiAliasing) ~= "boolean" then
+			error(`{name}: AntiAliasing must be a boolean`, 3)
+		end
+		if options.Materials ~= nil and type(options.Materials) ~= "boolean" then
+			error(`{name}: Materials must be a boolean`, 3)
+		end
+		o.scale = if options.AntiAliasing == false then 1 else 2
+		o.materials = options.Materials
+		spec.o = o
 
 		local defaultSize = Vector2.new(512, 512)
 		if target:IsA("ViewportFrame") then
@@ -789,11 +1145,171 @@ return function(println,io,fetchAsset,sandbox)
 			defaultSize = Vector2.new(640, 360)
 		end
 		size = size or defaultSize
-		local w = math.clamp(math.floor(size.X), 1, MAX_SIDE)
-		local h = math.clamp(math.floor(size.Y), 1, MAX_SIDE)
-		local out = Image.new(Vector2.new(w, h))
-		out.imageBuffer = render3dInto(target, root, o, w, h)
+		spec.w = math.clamp(math.floor(size.X), 1, MAX_SIDE)
+		spec.h = math.clamp(math.floor(size.Y), 1, MAX_SIDE)
+		return spec
+	end
+
+	local function renderSpec(spec)
+		lastYield = os.clock()
+		if spec.gui then
+			return renderGui(spec.target, spec.size)
+		end
+		local out = Image.new(Vector2.new(spec.w, spec.h))
+		out.imageBuffer = render3dInto(spec.target, spec.root, spec.o, spec.w, spec.h)
 		return out
+	end
+
+	Image.fromInstance = function(root, options)
+		return renderSpec(readOptions("fromInstance", root, options))
+	end
+
+	-- record returns at once; every path ends the recording and Wait times out, so nothing yields forever.
+	local MAX_DURATION, MAX_RATE, MAX_FRAMES = 30, 20, 256
+	local FRAME_BUDGET = 64 * 1024 * 1024 -- RGBA bytes over all frames, the GIF encoder's cap
+	local WAIT_GRACE = 60
+	-- Each recording may hold FRAME_BUDGET; this module is loaded once per run.
+	local MAX_ACTIVE_RECORDINGS, activeRecordings = 2, 0
+
+	local function checkNumber(name, value, default, lo, hi)
+		if value == nil then
+			return default
+		end
+		if type(value) ~= "number" or value ~= value or value < lo or value > hi then
+			error(`record: {name} must be a number from {lo} to {hi}`, 3)
+		end
+		return value
+	end
+
+	Image.record = function(root, options)
+		if options ~= nil and type(options) ~= "table" then
+			error("record: arg 2 must be a table of options", 2)
+		end
+		options = table.clone(options or {})
+		local duration = checkNumber("Duration", options.Duration, 3, 0.05, MAX_DURATION)
+		local rate = checkNumber("FrameRate", options.FrameRate, 10, 1, MAX_RATE)
+		local maxFrames = math.floor(checkNumber("MaxFrames", options.MaxFrames, MAX_FRAMES, 1, MAX_FRAMES))
+		local loop = math.floor(checkNumber("Loop", options.Loop, 0, 0, 65535))
+		if options.Encode ~= nil and type(options.Encode) ~= "boolean" then
+			error("record: Encode must be a boolean", 2)
+		end
+		local encode = options.Encode ~= false
+		if options.AntiAliasing == nil then
+			options.AntiAliasing = false
+		end
+		local spec = readOptions("record", root, options)
+		if activeRecordings >= MAX_ACTIVE_RECORDINGS then
+			error(`record: at most {MAX_ACTIVE_RECORDINGS} recordings can run at once`, 2)
+		end
+		if not spec.gui and options.Size == nil then
+			spec.w, spec.h = math.min(spec.w, 320), math.min(spec.h, 180)
+		end
+		-- GIF frames have no partial transparency, so a model gets the sky behind it
+		if not spec.gui and options.Background == nil then
+			spec.o.background = "sky"
+		end
+
+		local rec = { Status = "recording", FrameCount = 0, Reason = nil }
+		local stopped, destroyed = false, false
+		local result, delays, failure
+		local startedAt = os.clock()
+
+		local conn
+		pcall(function()
+			conn = spec.target.Destroying:Connect(function()
+				destroyed = true
+			end)
+		end)
+
+		activeRecordings += 1
+		task.defer(function()
+			local frames, times = {}, {}
+			local lastKey
+			local interval = 1 / rate
+			local nextAt = startedAt
+			local bytes = 0
+			local ok, err = pcall(function()
+				while true do
+					if stopped then
+						rec.Reason = "stopped"
+						break
+					elseif destroyed then
+						rec.Reason = "destroyed"
+						break
+					elseif os.clock() - startedAt >= duration then
+						rec.Reason = "duration"
+						break
+					elseif #frames >= maxFrames then
+						rec.Reason = "frames"
+						break
+					end
+					local now = os.clock()
+					local img = renderSpec(spec)
+					local key = buffer.tostring(img.imageBuffer)
+					if key == lastKey then
+					elseif bytes + #key > FRAME_BUDGET then
+						rec.Reason = "budget"
+						break
+					else
+						bytes += #key
+						lastKey = key
+						table.insert(frames, img)
+						table.insert(times, now)
+						rec.FrameCount = #frames
+					end
+					nextAt += interval
+					task.wait(math.max(nextAt - os.clock(), 0))
+				end
+				if #frames == 0 then
+					error("no frames were captured")
+				end
+				local endAt = math.min(os.clock(), startedAt + duration)
+				delays = table.create(#frames)
+				for i = 1, #frames do
+					delays[i] = math.max((times[i + 1] or endAt) - times[i], 0.02)
+				end
+				result = if encode then Image.toGif(frames, delays, { loop = loop }) else frames
+			end)
+			activeRecordings -= 1
+			if conn then
+				conn:Disconnect()
+			end
+			if ok then
+				rec.Status = "done"
+			else
+				failure = `record: {err}`
+				rec.Status = "failed"
+				rec.Reason = rec.Reason or "error"
+			end
+		end)
+
+		function rec.Stop(_self)
+			stopped = true
+		end
+
+		-- GIF bytes (frames and delays with Encode = false), or nil and a reason on failure or
+		-- timeout. The default timeout is the rest of Duration plus a minute.
+		function rec.Wait(_self, timeout)
+			if timeout ~= nil and (type(timeout) ~= "number" or timeout < 0) then
+				error("record: Wait timeout must be a non-negative number", 2)
+			end
+			local deadline = os.clock() + (timeout or (startedAt + duration - os.clock() + WAIT_GRACE))
+			while rec.Status == "recording" do
+				if os.clock() >= deadline then
+					return nil, "timeout"
+				end
+				task.wait()
+			end
+			if rec.Status == "failed" then
+				return nil, failure
+			end
+			if encode then
+				return result
+			end
+			return result, delays
+		end
+
+		return rec
 	end
 
 	Image.plotFunction = function(fx,options)

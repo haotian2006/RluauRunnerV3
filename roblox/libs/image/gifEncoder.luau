@@ -9,9 +9,6 @@ local function u16le(n: number): string
 	return string.char(bit32.band(n, 0xFF), bit32.band(bit32.rshift(n, 8), 0xFF))
 end
 
--- LZW over a u8 buffer of palette indices. Keyed by prefixCode * 256 + byte, so
--- there is no per-pixel string build or hash lookup. Returns the GIF sub-blocks
--- and the last generation it used.
 local function lzwCompress(idx: buffer, count: number, minCodeSize: number, dict: buffer, codes: buffer, gen: number): string
 	local CLEAR = bit32.lshift(1, minCodeSize)
 	local EOI = CLEAR + 1
@@ -24,7 +21,6 @@ local function lzwCompress(idx: buffer, count: number, minCodeSize: number, dict
 	local accBits = 0
 	local wp = 0
 
-	-- Initial CLEAR
 	acc = CLEAR
 	accBits = codeSize
 	while accBits >= 8 do
@@ -107,7 +103,7 @@ local function lzwCompress(idx: buffer, count: number, minCodeSize: number, dict
 		wp += 1
 	end
 
-	-- Pack into 255-byte sub-blocks (trailing terminator byte is already 0)
+	-- The trailing terminator byte is already 0.
 	local out = buffer.create(wp + math.ceil(wp / 255) + 1)
 	local sp = 0
 	local dp = 0
@@ -123,23 +119,148 @@ local function lzwCompress(idx: buffer, count: number, minCodeSize: number, dict
 	return buffer.tostring(out), gen
 end
 
--- Build 256-color global palette (3-3-2)
-local function buildGlobalPalette(): string
-	local t = table.create(256)
-	for i = 0, 255 do
-		local r = bit32.band(bit32.rshift(i, 5), 7)
-		local g = bit32.band(bit32.rshift(i, 2), 7)
-		local b = bit32.band(i, 3)
-		t[i + 1] = string.char(
-			math.floor(r / 7 * 255 + 0.5),
-			math.floor(g / 7 * 255 + 0.5),
-			math.floor(b / 3 * 255 + 0.5)
-		)
-	end
-	return table.concat(t)
+local function expand5(v: number): number
+	return bit32.bor(bit32.lshift(v, 3), bit32.rshift(v, 2))
 end
 
-local globalPalette = buildGlobalPalette()
+local function channelOf(k: number, c: number): number
+	if c == 0 then
+		return bit32.rshift(k, 10)
+	elseif c == 1 then
+		return bit32.band(bit32.rshift(k, 5), 31)
+	end
+	return bit32.band(k, 31)
+end
+
+-- Same integer steps as image_encoding.cpp so both give the same bytes.
+local function buildPalette(frames, pause: () -> ()): (string, buffer)
+	local hist = buffer.create(32768 * 4)
+	for _, img in frames do
+		local buf = img.imageBuffer
+		local n = buffer.len(buf)
+		local p = 0
+		while p < n do
+			local px = buffer.readu32(buf, p)
+			local o = (bit32.band(bit32.rshift(px, 3), 31) * 1024 + bit32.band(bit32.rshift(px, 11), 31) * 32 + bit32.band(bit32.rshift(px, 19), 31)) * 4
+			buffer.writeu32(hist, o, buffer.readu32(hist, o) + 1)
+			p += 4
+		end
+		pause()
+	end
+	local bins = {}
+	for k = 0, 32767 do
+		if buffer.readu32(hist, k * 4) > 0 then
+			table.insert(bins, k)
+		end
+	end
+	local function count(k)
+		return buffer.readu32(hist, k * 4)
+	end
+
+	-- a box is { start, end (exclusive), count, range, channel } over bins
+	local function measure(start, e)
+		local lo0, lo1, lo2, hi0, hi1, hi2, total = 31, 31, 31, 0, 0, 0, 0
+		for i = start, e - 1 do
+			local k = bins[i]
+			local v0, v1, v2 = channelOf(k, 0), channelOf(k, 1), channelOf(k, 2)
+			lo0, hi0 = math.min(lo0, v0), math.max(hi0, v0)
+			lo1, hi1 = math.min(lo1, v1), math.max(hi1, v1)
+			lo2, hi2 = math.min(lo2, v2), math.max(hi2, v2)
+			total += count(k)
+		end
+		local range, channel = -1, 0
+		for c, r in { hi0 - lo0, hi1 - lo1, hi2 - lo2 } do
+			if r > range then
+				range, channel = r, c - 1
+			end
+		end
+		return { start, e, total, range, channel }
+	end
+
+	local boxes = {}
+	if #bins > 0 then
+		boxes[1] = measure(1, #bins + 1)
+	end
+	local sorted = table.create(#bins)
+	while #boxes < 256 do
+		local best, bestScore = nil, 0
+		for i, box in boxes do
+			local score = box[3] * (box[4] + 1)
+			if box[4] > 0 and score > bestScore then
+				best, bestScore = i, score
+			end
+		end
+		if not best then
+			break
+		end
+		local box = boxes[best]
+		local start, e, ch = box[1], box[2], box[5]
+		local starts = table.create(33, 0)
+		for i = start, e - 1 do
+			local v = channelOf(bins[i], ch) + 2
+			starts[v] += 1
+		end
+		for v = 1, 32 do
+			starts[v + 1] += starts[v]
+		end
+		for i = start, e - 1 do
+			local k = bins[i]
+			local v = channelOf(k, ch) + 1
+			sorted[start + starts[v]] = k
+			starts[v] += 1
+		end
+		for i = start, e - 1 do
+			bins[i] = sorted[i]
+		end
+		local seen, cut = 0, e - 1
+		for i = start, e - 2 do
+			seen += count(bins[i])
+			if seen * 2 >= box[3] then
+				cut = i + 1
+				break
+			end
+		end
+		boxes[best] = measure(start, cut)
+		table.insert(boxes, measure(cut, e))
+		pause()
+	end
+
+	local rgb = buffer.create(768)
+	for i, box in boxes do
+		local s0, s1, s2 = 0, 0, 0
+		for j = box[1], box[2] - 1 do
+			local k = bins[j]
+			local n = count(k)
+			s0 += n * expand5(channelOf(k, 0))
+			s1 += n * expand5(channelOf(k, 1))
+			s2 += n * expand5(channelOf(k, 2))
+		end
+		local total = box[3]
+		local o = (i - 1) * 3
+		buffer.writeu8(rgb, o, (s0 + total // 2) // total)
+		buffer.writeu8(rgb, o + 1, (s1 + total // 2) // total)
+		buffer.writeu8(rgb, o + 2, (s2 + total // 2) // total)
+	end
+	local map = buffer.create(32768)
+	for n, k in bins do
+		local r, g, b = expand5(channelOf(k, 0)), expand5(channelOf(k, 1)), expand5(channelOf(k, 2))
+		local best, bestDistance = 0, math.huge
+		for i = 0, #boxes - 1 do
+			local dr = r - buffer.readu8(rgb, i * 3)
+			local dg = g - buffer.readu8(rgb, i * 3 + 1)
+			local db = b - buffer.readu8(rgb, i * 3 + 2)
+			local d = dr * dr + dg * dg + db * db
+			if d < bestDistance then
+				best, bestDistance = i, d
+			end
+		end
+		buffer.writeu8(map, k, best)
+		if n % 256 == 0 then
+			pause()
+		end
+	end
+	return buffer.tostring(rgb), map
+end
 
 -- Shared across calls: every lzwCompress call takes a fresh generation and never
 -- yields, so a concurrent encode can only waste generations, not corrupt state.
@@ -162,16 +283,20 @@ return function(frames, durations, options, println)
 
 	println("GIF: Building palette...", line)
 	task.wait()
-	out[#out + 1] = globalPalette
+	local paused = os.clock()
+	local palette, map = buildPalette(frames, function()
+		if os.clock() - paused > yieldTime then
+			task.wait()
+			paused = os.clock()
+		end
+	end)
+	out[#out + 1] = palette
 
-	-- Netscape Loop
 	out[#out + 1] = "\x21\xFF\x0BNETSCAPE2.0\x03\x01" .. u16le(loopCount) .. "\x00"
 
 	println(string.format("GIF: Encoding %d frames...", #frames), line)
 	task.wait()
 
-	-- Scratch reused across frames. Worst case LZW emits a 12-bit code per input
-	-- byte, i.e. 1.5 bytes per pixel, plus the trailing codes.
 	local pixels = width * height
 	local idx = buffer.create(math.max(pixels, 1))
 	local codes = buffer.create(math.max(pixels * 2, 1) + 64)
@@ -192,15 +317,9 @@ return function(frames, durations, options, println)
 		for y = 0, height - 1 do
 			local p = y * width * 4
 			for _ = 1, width do
-				-- One u32 read per pixel; 3-3-2 quantize is pure bit math.
 				local px = buffer.readu32(buf, p)
-				buffer.writeu8(
-					idx,
-					w,
-					bit32.band(bit32.rshift(px, 5), 7) * 32
-						+ bit32.band(bit32.rshift(px, 13), 7) * 4
-						+ bit32.band(bit32.rshift(px, 22), 3)
-				)
+				buffer.writeu8(idx, w, buffer.readu8(map, bit32.band(bit32.rshift(px, 3), 31) * 1024
+					+ bit32.band(bit32.rshift(px, 11), 31) * 32 + bit32.band(bit32.rshift(px, 19), 31)))
 				p += 4
 				w += 1
 			end

@@ -1,6 +1,5 @@
 --!native
 
--- Unpack 32-bit big-endian integer
 local function unpack32be(data, pos)
 	return bit32.bor(
 		bit32.lshift(string.byte(data, pos),     24),
@@ -10,7 +9,6 @@ local function unpack32be(data, pos)
 	)
 end
 
--- LSB-first bit reader (DEFLATE bit ordering)
 local function newBitReader(data, startPos)
 	local pos      = startPos or 1
 	local bits     = 0
@@ -54,7 +52,6 @@ local function newBitReader(data, startPos)
 	return { readBit = readBit, readBits = readBits, readU16LE = readU16LE, readRawBytes = readRawBytes }
 end
 
--- Build Huffman decode function from code-length array.
 -- lengths[i] = bit-length for symbol (i-1).
 local function buildHuffman(lengths, numSymbols)
 	local maxLen = 0
@@ -79,9 +76,7 @@ local function buildHuffman(lengths, numSymbols)
 		nextCode[bits] = code
 	end
 
-	-- Store canonical code directly (no reversal).
-	-- The accumulator in the decode loop builds MSB-first (acc = acc*2 + bit),
-	-- which matches canonical codes naturally — reversing was wrong.
+	-- Canonical codes stay unreversed: the decode loop builds MSB-first (acc = acc*2 + bit).
 	local syms = {}
 	for i = 1, numSymbols do
 		local len = lengths[i] or 0
@@ -102,7 +97,6 @@ local function buildHuffman(lengths, numSymbols)
 	end
 end
 
--- Pre-built fixed Huffman decoders (RFC 1951 §3.2.6)
 local _fixedLitLens = {}
 for i = 0, 143 do _fixedLitLens[i+1] = 8 end
 for i = 144, 255 do _fixedLitLens[i+1] = 9 end
@@ -114,25 +108,26 @@ for i = 0, 31 do _fixedDistLens[i+1] = 5 end
 local decodeFixedLit  = buildHuffman(_fixedLitLens,  288)
 local decodeFixedDist = buildHuffman(_fixedDistLens,  32)
 
--- RFC 1951 §3.2.5 length/distance tables
 local LEN_BASE  = {3,4,5,6,7,8,9,10,11,13,15,17,19,23,27,31,35,43,51,59,67,83,99,115,131,163,195,227,258}
 local LEN_EXTRA = {0,0,0,0,0,0,0,0,1,1,1,1,2,2,2,2,3,3,3,3,4,4,4,4,5,5,5,5,0}
 local DST_BASE  = {1,2,3,4,5,7,9,13,17,25,33,49,65,97,129,193,257,385,513,769,1025,1537,2049,3073,4097,6145,8193,12289,16385,24577}
 local DST_EXTRA = {0,0,0,0,1,1,2,2,3,3,4,4,5,5,6,6,7,7,8,8,9,9,10,10,11,11,12,12,13,13}
 
--- INFLATE: returns a byte-value array + its length
-local function inflate(data)
+local function inflate(data, limit)
 	local cmf = string.byte(data, 1)
 	assert(bit32.band(cmf, 0x0F) == 8, "PNG: unsupported zlib compression method")
 	assert(bit32.band(string.byte(data, 2), 0x20) == 0, "PNG: preset dictionary not supported")
 
-	local reader = newBitReader(data, 3) -- skip 2-byte zlib header
+	local reader = newBitReader(data, 3)
 	local out    = {}
 	local outLen = 0
 
-	local function push(b) outLen = outLen + 1; out[outLen] = b end
+	local function push(b)
+		outLen = outLen + 1
+		if outLen > limit then error("PNG: image data is larger than its header says", 0) end
+		out[outLen] = b
+	end
 
-	-- LZ77 back-reference copy (supports overlap / run-length)
 	local function copyBack(dist, length)
 		local start = outLen - dist + 1
 		for i = 0, length - 1 do push(out[start + i]) end
@@ -160,9 +155,8 @@ local function inflate(data)
 		local btype  = reader.readBits(2)
 
 		if btype == 0 then
-			-- Uncompressed block
 			local len = reader.readU16LE()
-			reader.readU16LE() -- nlen complement, discard
+			reader.readU16LE()
 			local raw = reader.readRawBytes(len)
 			for i = 1, #raw do push(string.byte(raw, i)) end
 
@@ -170,7 +164,6 @@ local function inflate(data)
 			decodeBlock(decodeFixedLit, decodeFixedDist)
 
 		elseif btype == 2 then
-			-- Dynamic Huffman
 			local hlit  = reader.readBits(5) + 257
 			local hdist = reader.readBits(5) + 1
 			local hclen = reader.readBits(4) + 4
@@ -210,7 +203,6 @@ local function inflate(data)
 	return out, outLen
 end
 
--- PNG Paeth predictor (spec §9.4)
 local function paeth(a, b, c)
 	local p  = a + b - c
 	local pa = math.abs(p - a)
@@ -221,8 +213,6 @@ local function paeth(a, b, c)
 	else                          return c end
 end
 
--- ── Main decoder ────────────────────────────────────────────────────────────
--- Takes raw PNG bytes, returns (imageBuffer, Vector2 size).
 -- imageBuffer layout matches the encoder: packed RGBA, row-major, y=0 at top.
 local CHANNELS = { [0] = 1, [2] = 3, [3] = 1, [4] = 2, [6] = 4 }
 local DEPTHS = {
@@ -240,13 +230,11 @@ end
 return function(pngData, println, timeout)
 	local line = println and println("PNG: Starting decoding...") or nil
 
-	-- Validate signature
 	assert(
 		string.sub(pngData, 1, 8) == string.char(0x89,0x50,0x4E,0x47,0x0D,0x0A,0x1A,0x0A),
 		"PNG: invalid file signature"
 	)
 
-	-- Parse chunks
 	local pos = 9
 	local width, height, colorType, bitDepth
 	local idatParts = {}
@@ -283,7 +271,8 @@ return function(pngData, println, timeout)
 	if println then println("PNG: Decompressing...", line) end
 	task.wait()
 
-	local rawBytes = inflate(table.concat(idatParts))
+	-- At most 8 bytes per pixel (16-bit RGBA) plus a filter byte per row.
+	local rawBytes = inflate(table.concat(idatParts), height * (width * 8 + 1))
 
 	if println then println("PNG: Applying filters...", line) end
 	task.wait()
@@ -311,7 +300,6 @@ return function(pngData, println, timeout)
 		local filterType = rawBytes[rawPos]; rawPos = rawPos + 1
 		local cur = {}
 
-		-- Reconstruct filtered scanline
 		for x = 1, stride do
 			local raw  = rawBytes[rawPos]; rawPos = rawPos + 1
 			local a    = (x > bpp) and cur[x - bpp]       or 0
@@ -330,7 +318,6 @@ return function(pngData, println, timeout)
 			cur[x] = recon
 		end
 
-		-- Write RGBA pixels into buffer
 		if bitDepth == 8 and colorType == 6 then
 			for x = 0, width - 1 do
 				local bi, ci = (y * width + x) * 4, x * 4 + 1
@@ -348,7 +335,6 @@ return function(pngData, println, timeout)
 				buffer.writeu8(imgBuffer, bi + 3, 255)
 			end
 		else
-			-- i is a 0-based sample index within the row; returns the unscaled sample
 			local function sample(i)
 				if bitDepth == 8 then
 					return cur[i + 1]

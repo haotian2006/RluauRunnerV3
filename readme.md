@@ -1,7 +1,7 @@
 A discord bot that executes Luau code in a Roblox game.
 
 Check out the site here:
-https://haotian2006.github.io/LuauBotSite/
+https://rluwa.com/
 
 Add the bot here:  https://discord.com/oauth2/authorize?client_id=1271610114062811176
 
@@ -53,7 +53,7 @@ permission `luau-execution-sessions` and Experience Operations of
 
 ### 3. Tool binaries
 
-`luau-compile`, `luau-analyze`, `luau-ast`, `stylua` and `lune` live in `bin/`
+`luau-compile`, `luau-analyze`, `luau-lsp`, `luau-ast`, `stylua` and `lune` live in `bin/`
 and are downloaded from the upstream GitHub releases:
 
 ```
@@ -63,6 +63,29 @@ npm run fetch-tools -- --force # re-download, e.g. to pick up a new Luau release
 
 This runs automatically on `npm install`. Windows, Linux and macOS (x64 and
 arm64) are all handled;
+
+The analyze command uses `luau-lsp analyze` with Roblox API definitions, without
+starting Studio. The fetcher pins luau-lsp and its Roblox definitions to 1.70.1;
+update both with `npm run fetch-tools -- --force --lsp-version <release>`.
+Replies include `{ code, output }`, annotated Luau source, and
+`script.luau(line,column)` diagnostics. Discord replies use code blocks or files.
+Valid Roblox globals and members are recognized;
+invalid property names and incompatible values are reported.
+
+This checks a single snippet, not a live place's Instance tree. Required modules
+have unknown types: the analysis adapter adds `:: any` to require arguments so
+the analyzer cannot follow them into host files. Returned diagnostics retain
+the original line/column locations. Bot-specific Image/io/Lune extensions are
+not yet described by these standard Roblox definitions. The execution router
+still uses plain `luau-analyze` to detect Roblox-only globals; analysis types
+do not change execution routing.
+
+Local validation: `node --test test/analysis.test.js test/router.test.js`.
+On the development Windows machine Roblox-aware calls took roughly 3.1 seconds
+each, including startup and definition loading. No running Studio is used;
+keeping Studio open does not reduce that cost. A persistent analysis process
+would be separate follow-up work. See the upstream
+[luau-lsp documentation](https://github.com/JohnnyMorganz/luau-lsp#standalone).
 
 ### 4. `.env`
 
@@ -84,7 +107,7 @@ STORE_COMPILE_SOURCE=false(OPTIONAL, default false, adds a "see raw" link to res
 COMPILE_SOURCE_TTL_MS=86400000(OPTIONAL, default 86400000 / 24 hours)
 COMPILE_SOURCE_MAX_BYTES=1048576(OPTIONAL, default 1 MB per source)
 COMPILE_SOURCE_TOTAL_BYTES=209715200(OPTIONAL, default 200 MB for all stored sources)
-PLAYGROUND_URL=https://haotian2006.github.io/LuauBotSite/playground.html(OPTIONAL, blank disables the redirect)
+PLAYGROUND_URL=https://rluwa.com/playground.html(OPTIONAL, blank disables the redirect)
 TRUST_PROXY=false(OPTIONAL, default false)
 WORKER_SOCKET=/run/luau-bot/worker.sock(OPTIONAL, blank disables; Unix socket with only the worker routes)
 WORKER_SECRET_FILE=/run/luau-bot/secret(OPTIONAL, default next to WORKER_SOCKET; read by the worker supervisor)

@@ -78,11 +78,7 @@ async function handleInputContext(interaction) {
   });
 }
 
-/**
- * Render a message's markdown the way /tag would, so a tag can be checked
- * before it is merged into the resources repo. Private to the caller: the
- * source is unreviewed, and authors iterate several times per tag.
- */
+/** Ephemeral: the source is unreviewed and authors iterate several times per tag. */
 async function handleTagPreview(interaction) {
   await interaction.deferReply({ ephemeral: true });
   const text = await getTagSourceFromContextMenu(interaction);
@@ -124,11 +120,7 @@ async function handleTagPreview(interaction) {
   await interaction.editReply({ embeds, components });
 }
 
-/**
- * Message context-menu commands
- *
- * @param {import('discord.js').MessageContextMenuCommandInteraction} interaction
- */
+/** @param {import('discord.js').MessageContextMenuCommandInteraction} interaction */
 async function handleContextMenu(interaction) {
   if (interaction.commandName === "input") {
     return handleInputContext(interaction);

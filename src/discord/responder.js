@@ -21,7 +21,6 @@ function createDiscordResponder(token) {
 
   return {
     isWeb: false,
-    // Matches the Roblox executor's visible line count. SSE has no limit.
     outputLineLimit: 24,
 
     link() {
@@ -48,9 +47,6 @@ function createDiscordResponder(token) {
     }) {
       const current = entry();
       if (!current) {
-        // The task entry is gone, so this edit is discarded and whatever the
-        // user is looking at stays frozen on the pending embed forever. Never
-        // let that happen without a trace.
         logBot(
           "Delivery Dropped",
           `${isLast ? "final" : "live"} update for ${tokenTag(token)} had no CompilingTasks entry; the embed is now stuck`,
@@ -103,9 +99,7 @@ function createDiscordResponder(token) {
         "Edit reply",
       );
 
-      // A retried pending-embed request can land after this one and revert the
-      // message. It has been seen arriving ~400ms late, so checking once
-      // immediately is not enough - check again after it would have landed.
+      // A retried pending-embed edit can land ~400ms late and revert the final embed.
       if (isLast) {
         const repairIfReverted = async (when) => {
           const applied = await interaction.fetchReply().catch(() => null);

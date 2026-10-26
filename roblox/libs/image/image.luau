@@ -11,11 +11,10 @@ local ImageCombineType = {
 }
 
 local ResamplerMode = {
-	Default = 0, -- Bilinear filtering
-	Pixelated = 1, -- Nearest neighbor
+	Default = 0,
+	Pixelated = 1,
 }
 
--- Convert enum to integer (handles both enum objects and direct integers)
 local function enumToInt(value)
 	if type(value) == "number" then
 		return value
@@ -24,7 +23,7 @@ local function enumToInt(value)
 	elseif type(value) == "userdata" then
 		return value.Value
 	end
-	return 2 -- Default to Overwrite
+	return 2
 end
 
 local function createImageBuffer(width, height)
@@ -58,7 +57,6 @@ local function packRGBA(color, transparency)
 	return r + (g * 256) + (b * 65536) + (a * 16777216)
 end
 
--- Unpack u32 to RGBA components
 local function unpackRGBA(packed)
 	local r = packed % 256
 	local g = math.floor(packed / 256) % 256
@@ -67,32 +65,31 @@ local function unpackRGBA(packed)
 	return r, g, b, a
 end
 
--- Blend two colors based on combine type
 local function blendPixels(srcPacked, dstPacked, combineType)
 	local sr, sg, sb, sa = unpackRGBA(srcPacked)
 	local dr, dg, db, da = unpackRGBA(dstPacked)
 
-	if combineType == 2 then -- Overwrite
+	if combineType == 2 then
 		return srcPacked
-	elseif combineType == 3 then -- Add
+	elseif combineType == 3 then
 		local r = min(255, sr + dr)
 		local g = min(255, sg + dg)
 		local b = min(255, sb + db)
 		local a = min(255, sa + da)
 		return r + (g * 256) + (b * 65536) + (a * 16777216)
-	elseif combineType == 4 then -- Multiply
+	elseif combineType == 4 then
 		local r = math.floor((sr / 255) * (dr / 255) * 255)
 		local g = math.floor((sg / 255) * (dg / 255) * 255)
 		local b = math.floor((sb / 255) * (db / 255) * 255)
 		local a = math.floor((sa / 255) * (da / 255) * 255)
 		return r + (g * 256) + (b * 65536) + (a * 16777216)
-	elseif combineType == 5 then -- AlphaBlend
+	elseif combineType == 5 then
 		local srcAlpha = sa / 255
 		local r = math.floor(sr * srcAlpha + dr * (1 - srcAlpha))
 		local g = math.floor(sg * srcAlpha + dg * (1 - srcAlpha))
 		local b = math.floor(sb * srcAlpha + db * (1 - srcAlpha))
 		return r + (g * 256) + (b * 65536) + (sa * 16777216)
-	else -- BlendSourceOver (1) or default
+	else
 		local srcAlpha = sa / 255
 		local dstAlpha = da / 255
 		local outAlpha = srcAlpha + dstAlpha * (1 - srcAlpha)
@@ -109,7 +106,6 @@ local function blendPixels(srcPacked, dstPacked, combineType)
 	end
 end
 
--- Custom EditableImage class
 Image = {}
 Image.__index = Image
 
@@ -123,18 +119,15 @@ function Image.new(size: Vector2)
 
 	local self = setmetatable({}, Image)
 
-	-- Store size with clamping
 	local width = max(1, min(math.floor(size.X), 1024))
 	local height = max(1, min(math.floor(size.Y), 1024))
 	self.Size = Vector2.new(width, height)
 
-	-- Create internal buffer to hold image data
 	self.imageBuffer = createImageBuffer(width, height)
 
 	return self
 end
 
--- Write a pixel to the buffer
 function Image:SetPixel(x: number, y: number, color: Color3, transparency: number?, combineType: any?)
 	transparency = transparency or 0
 	if type(x) ~= "number" then
@@ -167,7 +160,6 @@ function Image:SetPixel(x: number, y: number, color: Color3, transparency: numbe
 	buffer.writeu32(imgBuffer, idx, packed)
 end
 
--- Read a pixel from the buffer
 function Image:GetPixel(x: number, y: number)
 	local imgBuffer = self.imageBuffer
 	local width, height = self.Size.X, self.Size.Y
@@ -186,7 +178,6 @@ function Image:GetPixel(x: number, y: number)
 	return Color3.new(r, g, b), 1 - a
 end
 
--- Fill the entire image with a color
 function Image:Fill(color: Color3, transparency: number?)
 	transparency = transparency or 0
 	if typeof(color) ~= "Color3" then
@@ -204,7 +195,6 @@ function Image:Fill(color: Color3, transparency: number?)
 	end
 end
 
--- Draw a rectangle
 function Image:DrawRectangle(position: Vector2, size: Vector2, color: Color3, transparency: number?, combineType: any?)
 	transparency = transparency or 0
 	if not (typeof(position) == "Vector2" or typeof(position) == "Vector3") then
@@ -250,7 +240,6 @@ function Image:DrawRectangle(position: Vector2, size: Vector2, color: Color3, tr
 	end
 end
 
--- Draw an anti-aliased line
 function Image:DrawLine(p1: Vector2, p2: Vector2, color: Color3, transparency: number?, combineType: any?)
 	transparency = transparency or 0
 	if not (typeof(p1) == "Vector2" or typeof(p1) == "Vector3") then
@@ -297,7 +286,6 @@ function Image:DrawLine(p1: Vector2, p2: Vector2, color: Color3, transparency: n
 	local dy = y1 - y0
 	local gradient = dx == 0 and 1 or dy / dx
 
-	-- Handle first endpoint
 	local xend = math.floor(x0 + 0.5)
 	local yend = y0 + gradient * (xend - x0)
 	local xgap = rfpart(x0 + 0.5)
@@ -314,7 +302,6 @@ function Image:DrawLine(p1: Vector2, p2: Vector2, color: Color3, transparency: n
 
 	local intery = yend + gradient
 
-	-- Handle second endpoint
 	xend = math.floor(x1 + 0.5)
 	yend = y1 + gradient * (xend - x1)
 	xgap = fpart(x1 + 0.5)
@@ -329,7 +316,6 @@ function Image:DrawLine(p1: Vector2, p2: Vector2, color: Color3, transparency: n
 		self:SetPixel(xpxl2, ypxl2 + 1, color, transparency + (1 - transparency) * rfpart(yend) * xgap, combineType)
 	end
 
-	-- Main loop
 	for x = xpxl1 + 1, xpxl2 - 1 do
 		if steep then
 			self:SetPixel(ipart(intery), x, color, transparency + (1 - transparency) * rfpart(intery), combineType)
@@ -342,7 +328,6 @@ function Image:DrawLine(p1: Vector2, p2: Vector2, color: Color3, transparency: n
 	end
 end
 
--- Draw a circle
 function Image:DrawCircle(center: Vector2, radius: number, color: Color3, transparency: number?, combineType: any?)
 	transparency = transparency or 0
 	if not (typeof(center) == "Vector2" or typeof(center) == "Vector3") then
@@ -364,7 +349,6 @@ function Image:DrawCircle(center: Vector2, radius: number, color: Color3, transp
 	local r = radius
 	local rSquared = r * r
 
-	-- Bounding box for circle
 	local minX = max(0, math.floor(cx - r))
 	local maxX = min(width - 1, math.floor(cx + r))
 	local minY = max(0, math.floor(cy - r))
@@ -392,12 +376,10 @@ function Image:DrawCircle(center: Vector2, radius: number, color: Color3, transp
 	end
 end
 
--- Get raw buffer access
 function Image:GetBuffer()
 	return self.imageBuffer
 end
 
--- Clone the buffer
 function Image:Clone()
 	local clone = Image.new(self.Size)
 	local imgBuffer = self.imageBuffer
@@ -409,7 +391,6 @@ function Image:Clone()
 	return clone
 end
 
--- Read a rectangular region of pixels into a buffer
 function Image:ReadPixelsBuffer(position: Vector2, size: Vector2)
 	if not (typeof(position) == "Vector2" or typeof(position) == "Vector3") then
 		error("arg 1: position must be a Vector2 or Vector3, got " .. typeof(position), 2)
@@ -426,24 +407,20 @@ function Image:ReadPixelsBuffer(position: Vector2, size: Vector2)
 	local regionWidth = math.floor(size.X)
 	local regionHeight = math.floor(size.Y)
 
-	-- Clamp to image bounds
 	startX = max(0, min(startX, self.Size.X - 1))
 	startY = max(0, min(startY, self.Size.Y - 1))
 	regionWidth = max(0, min(regionWidth, self.Size.X - startX))
 	regionHeight = max(0, min(regionHeight, self.Size.Y - startY))
 
-	-- Create output buffer
 	local outputBuffer = buffer.create(regionWidth * regionHeight * 4)
 	local imgBuffer = self.imageBuffer
 	local imgWidth = self.Size.X
 
-	-- Copy pixels row by row
 	for y = 0, regionHeight - 1 do
 		for x = 0, regionWidth - 1 do
 			local srcIdx = getPixelIndex(startX + x, startY + y, imgWidth)
 			local dstIdx = getPixelIndex(x, y, regionWidth)
 
-			-- Copy RGBA bytes
 			buffer.writeu8(outputBuffer, dstIdx, buffer.readu8(imgBuffer, srcIdx))
 			buffer.writeu8(outputBuffer, dstIdx + 1, buffer.readu8(imgBuffer, srcIdx + 1))
 			buffer.writeu8(outputBuffer, dstIdx + 2, buffer.readu8(imgBuffer, srcIdx + 2))
@@ -454,7 +431,6 @@ function Image:ReadPixelsBuffer(position: Vector2, size: Vector2)
 	return outputBuffer
 end
 
--- Write a rectangular region of pixels from a buffer
 function Image:WritePixelsBuffer(position: Vector2, size: Vector2, pixelBuffer: buffer)
 	if not (typeof(position) == "Vector2" or typeof(position) == "Vector3") then
 		error("arg 1: position must be a Vector2 or Vector3, got " .. typeof(position), 2)
@@ -474,7 +450,6 @@ function Image:WritePixelsBuffer(position: Vector2, size: Vector2, pixelBuffer: 
 	local regionWidth = math.floor(size.X)
 	local regionHeight = math.floor(size.Y)
 
-	-- Clamp to image bounds
 	startX = max(0, min(startX, self.Size.X - 1))
 	startY = max(0, min(startY, self.Size.Y - 1))
 	regionWidth = max(0, min(regionWidth, self.Size.X - startX))
@@ -483,13 +458,11 @@ function Image:WritePixelsBuffer(position: Vector2, size: Vector2, pixelBuffer: 
 	local imgBuffer = self.imageBuffer
 	local imgWidth = self.Size.X
 
-	-- Copy pixels row by row from input buffer
 	for y = 0, regionHeight - 1 do
 		for x = 0, regionWidth - 1 do
 			local srcIdx = getPixelIndex(x, y, regionWidth)
 			local dstIdx = getPixelIndex(startX + x, startY + y, imgWidth)
 
-			-- Copy RGBA bytes
 			buffer.writeu8(imgBuffer, dstIdx, buffer.readu8(pixelBuffer, srcIdx))
 			buffer.writeu8(imgBuffer, dstIdx + 1, buffer.readu8(pixelBuffer, srcIdx + 1))
 			buffer.writeu8(imgBuffer, dstIdx + 2, buffer.readu8(pixelBuffer, srcIdx + 2))
@@ -498,7 +471,6 @@ function Image:WritePixelsBuffer(position: Vector2, size: Vector2, pixelBuffer: 
 	end
 end
 
--- Simple 5x3 bitmap font (uppercase letters, numbers, and basic symbols)
 local FONT_CHARS = {
 	["A"] = { 0x7, 0x5, 0x7, 0x5, 0x5 },
 	["B"] = { 0x6, 0x5, 0x6, 0x5, 0x6 },
@@ -553,7 +525,6 @@ local FONT_CHARS = {
 	[">"] = { 0x4, 0x2, 0x1, 0x2, 0x4 },
 }
 
--- Draw text on the image
 local text2d
 local ALIGN = { Left = true, Center = true, Right = true }
 
@@ -625,7 +596,6 @@ function Image:DrawText(text: string, position: Vector2, color: Color3, transpar
 	return text2d.drawText(self.imageBuffer, self.Size.X, self.Size.Y, text, position.X, position.Y, color, alpha, o)
 end
 
--- Draw another image onto this image with transformations
 function Image:DrawImageTransformed(
 	position: Vector2,
 	scale: Vector2,
@@ -650,27 +620,23 @@ function Image:DrawImageTransformed(
 	end
 
 	options = options or {}
-	local combineType = options.CombineType or options.combineType or 5 -- Default to AlphaBlend
+	local combineType = options.CombineType or options.combineType or 5
 	local resamplerMode = enumToInt(options.ResamplerMode or options.resamplerMode or ResamplerMode.Default)
 	local pivotPoint = options.PivotPoint
 		or options.pivotPoint
 		or Vector2.new(sourceImage.Size.X / 2, sourceImage.Size.Y / 2)
 
-	-- Get source image dimensions
 	local srcWidth = sourceImage.Size.X
 	local srcHeight = sourceImage.Size.Y
 	local srcBuffer = sourceImage.imageBuffer
 
-	-- Convert rotation from degrees to radians
 	local rotationRad = math.rad(rotation)
 	local cosTheta = math.cos(rotationRad)
 	local sinTheta = math.sin(rotationRad)
 
-	-- Use pivot point from options
 	local centerX = pivotPoint.X
 	local centerY = pivotPoint.Y
 
-	-- Calculate transformed bounds to determine which pixels to iterate
 	local corners = {
 		{ 0, 0 },
 		{ srcWidth, 0 },
@@ -683,16 +649,12 @@ function Image:DrawImageTransformed(
 
 	for _, corner in ipairs(corners) do
 		local x, y = corner[1], corner[2]
-		-- Translate to pivot point
 		x = x - centerX
 		y = y - centerY
-		-- Apply scale
 		x = x * scale.X
 		y = y * scale.Y
-		-- Apply rotation
 		local rotX = x * cosTheta - y * sinTheta
 		local rotY = x * sinTheta + y * cosTheta
-		-- Translate to position
 		rotX = rotX + position.X
 		rotY = rotY + position.Y
 
@@ -702,37 +664,28 @@ function Image:DrawImageTransformed(
 		maxY = max(maxY, rotY)
 	end
 
-	-- Clamp to destination bounds
 	minX = max(0, math.floor(minX))
 	minY = max(0, math.floor(minY))
 	maxX = min(self.Size.X - 1, math.ceil(maxX))
 	maxY = min(self.Size.Y - 1, math.ceil(maxY))
 
-	-- Determine if we should use bilinear sampling
 	local useBilinear = resamplerMode == ResamplerMode.Default
 
-	-- Iterate over destination pixels
 	for dy = minY, maxY do
 		for dx = minX, maxX do
-			-- Transform destination coordinates to source space
-			-- Translate to rotation origin
 			local px = dx - position.X
 			local py = dy - position.Y
 
-			-- Apply inverse rotation
 			local rx = px * cosTheta + py * sinTheta
 			local ry = -px * sinTheta + py * cosTheta
 
-			-- Apply inverse scale
 			rx = rx / scale.X
 			ry = ry / scale.Y
 
-			-- Translate back from pivot point
 			rx = rx + centerX
 			ry = ry + centerY
 
 			if useBilinear then
-				-- Bilinear interpolation
 				local x0 = math.floor(rx)
 				local y0 = math.floor(ry)
 				local x1 = x0 + 1
@@ -741,14 +694,12 @@ function Image:DrawImageTransformed(
 				local fx = rx - x0
 				local fy = ry - y0
 
-				-- Check bounds for all 4 sample points
 				local inBounds00 = x0 >= 0 and x0 < srcWidth and y0 >= 0 and y0 < srcHeight
 				local inBounds10 = x1 >= 0 and x1 < srcWidth and y0 >= 0 and y0 < srcHeight
 				local inBounds01 = x0 >= 0 and x0 < srcWidth and y1 >= 0 and y1 < srcHeight
 				local inBounds11 = x1 >= 0 and x1 < srcWidth and y1 >= 0 and y1 < srcHeight
 
 				if inBounds00 or inBounds10 or inBounds01 or inBounds11 then
-					-- Sample the 4 pixels
 					local function samplePixel(sx, sy)
 						if sx >= 0 and sx < srcWidth and sy >= 0 and sy < srcHeight then
 							local srcIdx = getPixelIndex(sx, sy, srcWidth)
@@ -767,7 +718,6 @@ function Image:DrawImageTransformed(
 					local p01 = samplePixel(x0, y1)
 					local p11 = samplePixel(x1, y1)
 
-					-- Bilinear interpolation
 					local r = (
 						p00[1] * (1 - fx) * (1 - fy)
 							+ p10[1] * fx * (1 - fy)
@@ -798,12 +748,10 @@ function Image:DrawImageTransformed(
 					self:SetPixel(dx, dy, color, transparency, combineType)
 				end
 			else
-				-- Nearest neighbor (pixelated)
 				local sx = math.floor(rx + 0.5)
 				local sy = math.floor(ry + 0.5)
 
 				if sx >= 0 and sx < srcWidth and sy >= 0 and sy < srcHeight then
-					-- Read source pixel
 					local srcIdx = getPixelIndex(sx, sy, srcWidth)
 					local r = buffer.readu8(srcBuffer, srcIdx)
 					local g = buffer.readu8(srcBuffer, srcIdx + 1)
@@ -819,16 +767,6 @@ function Image:DrawImageTransformed(
 	end
 end
 
--- ─────────────────────────────────────────────────────────────────────────────
--- IMAGE EXTENSIONS
--- Paste these methods into your Image module, above the `return Image.new` line.
--- ─────────────────────────────────────────────────────────────────────────────
-
--- ┌─────────────────────────────────────────────────────────────────────────┐
--- │  COLOR ADJUSTMENTS                                                      │
--- └─────────────────────────────────────────────────────────────────────────┘
-
--- Convert image to grayscale in-place (preserves alpha).
 function Image:Grayscale()
 	local imgBuffer = self.imageBuffer
 	local width, height = self.Size.X, self.Size.Y
@@ -846,7 +784,6 @@ function Image:Grayscale()
 	end
 end
 
--- Invert RGB channels in-place (preserves alpha).
 function Image:Invert()
 	local imgBuffer = self.imageBuffer
 	local width, height = self.Size.X, self.Size.Y
@@ -860,7 +797,6 @@ function Image:Invert()
 	end
 end
 
--- Add `amount` (-255..255) to each RGB channel (preserves alpha).
 function Image:AdjustBrightness(amount: number)
 	if type(amount) ~= "number" then
 		error("arg 1: amount must be a number, got " .. type(amount), 2)
@@ -878,8 +814,6 @@ function Image:AdjustBrightness(amount: number)
 	end
 end
 
--- Multiply contrast around the midpoint 128.
--- factor > 1 increases contrast, 0 < factor < 1 decreases it.
 function Image:AdjustContrast(factor: number)
 	if type(factor) ~= "number" then
 		error("arg 1: factor must be a number, got " .. type(factor), 2)
@@ -897,7 +831,6 @@ function Image:AdjustContrast(factor: number)
 	end
 end
 
--- Adjust saturation. factor=0 → grayscale, factor=1 → unchanged, factor>1 → vivid.
 function Image:AdjustSaturation(factor: number)
 	if type(factor) ~= "number" then
 		error("arg 1: factor must be a number, got " .. type(factor), 2)
@@ -918,7 +851,6 @@ function Image:AdjustSaturation(factor: number)
 	end
 end
 
--- Tint the image toward `color` by `strength` (0..1).
 function Image:Tint(color: Color3, strength: number)
 	if typeof(color) ~= "Color3" then
 		error("arg 1: color must be a Color3, got " .. typeof(color), 2)
@@ -942,7 +874,6 @@ function Image:Tint(color: Color3, strength: number)
 	end
 end
 
--- Posterize to black/white based on luminance cutoff (0..255).
 function Image:Threshold(cutoff: number)
 	cutoff = cutoff or 128
 	if type(cutoff) ~= "number" then
@@ -965,11 +896,6 @@ function Image:Threshold(cutoff: number)
 	end
 end
 
--- ┌─────────────────────────────────────────────────────────────────────────┐
--- │  CONVOLUTION HELPERS (internal)                                         │
--- └─────────────────────────────────────────────────────────────────────────┘
-
--- Apply a separable 1-D kernel horizontally then vertically (faster than 2-D).
 -- `kernel` is a {-r..r} weight table (index 1 = weight for offset -(#kernel//2)).
 local function applySeparable(imgBuffer, width, height, kernel)
 	if nativeImage.separable(imgBuffer, width, height, kernel) then
@@ -978,7 +904,6 @@ local function applySeparable(imgBuffer, width, height, kernel)
 	local radius = math.floor(#kernel / 2)
 	local tmp    = buffer.create(width * height * 4)
 
-	-- Horizontal pass
 	for y = 0, height - 1 do
 		for x = 0, width - 1 do
 			local r, g, b, a = 0, 0, 0, 0
@@ -999,7 +924,6 @@ local function applySeparable(imgBuffer, width, height, kernel)
 		end
 	end
 
-	-- Vertical pass (reads from tmp, writes back to imgBuffer)
 	for y = 0, height - 1 do
 		for x = 0, width - 1 do
 			local r, g, b, a = 0, 0, 0, 0
@@ -1021,8 +945,7 @@ local function applySeparable(imgBuffer, width, height, kernel)
 	end
 end
 
--- Apply a non-separable 2-D kernel (row-major, centre = floor(size/2)+1).
--- `divisor` normalises the result; `bias` shifts it (useful for edge detect).
+-- kernel is row-major, centre = floor(size/2)+1.
 local function apply2DKernel(imgBuffer, width, height, kernel, kSize, divisor, bias)
 	divisor = divisor or 1
 	bias    = bias    or 0
@@ -1057,11 +980,6 @@ local function apply2DKernel(imgBuffer, width, height, kernel, kSize, divisor, b
 	buffer.copy(imgBuffer, 0, tmp, 0, width * height * 4)
 end
 
--- ┌─────────────────────────────────────────────────────────────────────────┐
--- │  FILTERS                                                                │
--- └─────────────────────────────────────────────────────────────────────────┘
-
--- Box blur with given radius (separable, O(n) per row/column regardless of radius).
 function Image:Blur(radius: number)
 	radius = math.max(1, math.floor(radius or 1))
 	local size   = radius * 2 + 1
@@ -1071,7 +989,6 @@ function Image:Blur(radius: number)
 	applySeparable(self.imageBuffer, self.Size.X, self.Size.Y, kernel)
 end
 
--- Gaussian blur. sigma controls spread; kernel size is auto-derived (6*sigma+1).
 function Image:GaussianBlur(sigma: number)
 	sigma     = sigma or 1
 	local radius = math.max(1, math.floor(sigma * 3))
@@ -1088,7 +1005,6 @@ function Image:GaussianBlur(sigma: number)
 	applySeparable(self.imageBuffer, self.Size.X, self.Size.Y, kernel)
 end
 
--- Standard 3×3 sharpen kernel.
 function Image:Sharpen()
 	apply2DKernel(self.imageBuffer, self.Size.X, self.Size.Y,
 		{ 0,-1, 0,
@@ -1096,7 +1012,6 @@ function Image:Sharpen()
 			0,-1, 0 }, 3, 1, 0)
 end
 
--- Sobel edge detection. Returns magnitude image (black background, white edges).
 function Image:EdgeDetect()
 	local imgBuffer = self.imageBuffer
 	local width, height = self.Size.X, self.Size.Y
@@ -1136,7 +1051,6 @@ function Image:EdgeDetect()
 	buffer.copy(imgBuffer, 0, tmp, 0, width * height * 4)
 end
 
--- Classic emboss effect (adds 128 bias so mid-grey = "flat").
 function Image:Emboss()
 	apply2DKernel(self.imageBuffer, self.Size.X, self.Size.Y,
 		{ -2,-1, 0,
@@ -1144,11 +1058,6 @@ function Image:Emboss()
 			0, 1, 2 }, 3, 1, 128)
 end
 
--- ┌─────────────────────────────────────────────────────────────────────────┐
--- │  PIXEL EFFECTS                                                          │
--- └─────────────────────────────────────────────────────────────────────────┘
-
--- Mosaic / pixelate: average each NxN block and fill it with that colour.
 function Image:Pixelate(blockSize: number)
 	blockSize = math.max(2, math.floor(blockSize or 8))
 	local imgBuffer = self.imageBuffer
@@ -1191,14 +1100,11 @@ function Image:Pixelate(blockSize: number)
 	end
 end
 
--- Floyd-Steinberg dithering to the nearest of `levels` per channel.
--- levels=2 → 1-bit look; levels=4 → 2-bit look, etc.
 function Image:Dither(levels: number)
 	levels  = math.max(2, math.floor(levels or 2))
 	local step  = 255 / (levels - 1)
 	local imgBuffer = self.imageBuffer
 	local width, height = self.Size.X, self.Size.Y
-	-- Work on float arrays to accumulate error
 	local fr, fg, fb = {}, {}, {}
 	for y = 0, height - 1 do
 		for x = 0, width - 1 do
@@ -1241,7 +1147,6 @@ function Image:Dither(levels: number)
 	end
 end
 
--- Reduce colour depth to `levels` steps per channel (hard posterise, no dithering).
 function Image:Posterize(levels: number)
 	levels = math.max(2, math.floor(levels or 4))
 	local step      = 255 / (levels - 1)
@@ -1259,7 +1164,6 @@ function Image:Posterize(levels: number)
 	end
 end
 
--- Chromatic aberration: shift the R channel right and B channel left by `offset` pixels.
 function Image:ChromaticAberration(offset: number)
 	offset = math.floor(offset or 3)
 	local imgBuffer = self.imageBuffer
@@ -1276,14 +1180,12 @@ function Image:ChromaticAberration(offset: number)
 			local rSrc   = getPixelIndex(rx, y, width)
 			local bSrc   = getPixelIndex(bx, y, width)
 
-			buffer.writeu8(imgBuffer, dstIdx,     buffer.readu8(tmp, rSrc))     -- R from right
-			-- G stays where it is (already copied)
-			buffer.writeu8(imgBuffer, dstIdx + 2, buffer.readu8(tmp, bSrc + 2)) -- B from left
+			buffer.writeu8(imgBuffer, dstIdx,     buffer.readu8(tmp, rSrc))
+			buffer.writeu8(imgBuffer, dstIdx + 2, buffer.readu8(tmp, bSrc + 2))
 		end
 	end
 end
 
--- Darken pixels toward the edges. strength (0..1) controls maximum darkening.
 function Image:Vignette(strength: number)
 	strength = math.clamp(strength or 0.8, 0, 1)
 	local imgBuffer = self.imageBuffer
@@ -1296,8 +1198,8 @@ function Image:Vignette(strength: number)
 		for x = 0, width - 1 do
 			local dx   = x - cx
 			local dy   = y - cy
-			local dist = math.sqrt(dx * dx + dy * dy) / maxDist -- 0 (centre) to 1 (corner)
-			local dark = 1 - dist * dist * strength              -- quadratic falloff
+			local dist = math.sqrt(dx * dx + dy * dy) / maxDist
+			local dark = 1 - dist * dist * strength
 			local idx  = getPixelIndex(x, y, width)
 			for ch = 0, 2 do
 				local v = buffer.readu8(imgBuffer, idx + ch)
@@ -1307,11 +1209,6 @@ function Image:Vignette(strength: number)
 	end
 end
 
--- ┌─────────────────────────────────────────────────────────────────────────┐
--- │  TRANSFORMS                                                             │
--- └─────────────────────────────────────────────────────────────────────────┘
-
--- Flip horizontally (mirror left/right) in-place.
 function Image:FlipHorizontal()
 	local imgBuffer = self.imageBuffer
 	local width, height = self.Size.X, self.Size.Y
@@ -1333,7 +1230,6 @@ function Image:FlipHorizontal()
 	end
 end
 
--- Flip vertically (mirror top/bottom) in-place.
 function Image:FlipVertical()
 	local imgBuffer = self.imageBuffer
 	local width, height = self.Size.X, self.Size.Y
@@ -1355,8 +1251,6 @@ function Image:FlipVertical()
 	end
 end
 
--- Rotate 90° clockwise `times` times (1, 2, or 3).
--- Returns a new Image (dimensions swap for odd multiples of 90°).
 function Image:Rotate90(times: number)
 	times = (times or 1) % 4
 	if times == 0 then return self:Clone() end
@@ -1367,7 +1261,7 @@ function Image:Rotate90(times: number)
 	for _ = 1, times do
 		local sw   = src.Size.X
 		local sh   = src.Size.Y
-		local dst  = Image.new(Vector2.new(sh, sw)) -- dimensions swap
+		local dst  = Image.new(Vector2.new(sh, sw))
 		local dstBuf = dst.imageBuffer
 
 		for y = 0, sh - 1 do
@@ -1389,7 +1283,6 @@ function Image:Rotate90(times: number)
 	return src
 end
 
--- Crop a rectangular region and return a new Image.
 function Image:Crop(position: Vector2, size: Vector2)
 	if not (typeof(position) == "Vector2" or typeof(position) == "Vector3") then
 		error("arg 1: position must be a Vector2 or Vector3, got " .. typeof(position), 2)
@@ -1421,7 +1314,6 @@ function Image:Crop(position: Vector2, size: Vector2)
 	return dst
 end
 
--- Resize to `newSize` using bilinear interpolation. Returns a new Image.
 function Image:Resize(newSize: Vector2)
 	if not (typeof(newSize) == "Vector2" or typeof(newSize) == "Vector3") then
 		error("arg 1: newSize must be a Vector2 or Vector3, got " .. typeof(newSize), 2)
@@ -1466,11 +1358,6 @@ function Image:Resize(newSize: Vector2)
 	return dst
 end
 
--- ┌─────────────────────────────────────────────────────────────────────────┐
--- │  UTILITY                                                                │
--- └─────────────────────────────────────────────────────────────────────────┘
-
--- Return three 256-entry arrays {r={}, g={}, b={}} counting pixel frequencies.
 function Image:GetHistogram()
 	local imgBuffer = self.imageBuffer
 	local width, height = self.Size.X, self.Size.Y
@@ -1492,7 +1379,6 @@ function Image:GetHistogram()
 	return { r = r, g = g, b = b }
 end
 
--- Stretch each colour channel to use the full 0-255 range (auto levels).
 function Image:AutoLevels()
 	local hist = self:GetHistogram()
 	local imgBuffer = self.imageBuffer
@@ -1524,8 +1410,6 @@ function Image:AutoLevels()
 	end
 end
 
--- Compare two images and return a new Image showing absolute channel differences.
--- Bright areas = large differences, black = identical.
 function Image:Compare(otherImage)
 	if not (type(otherImage) == "table" and otherImage.imageBuffer) then
 		error("arg 1: otherImage must be an Image instance", 2)
@@ -1555,7 +1439,6 @@ function Image:Compare(otherImage)
 	return dst
 end
 
--- Set pixels with alpha below `threshold` fully transparent (removes fringe).
 function Image:AlphaErode(threshold: number)
 	threshold = math.clamp(math.floor(threshold or 10), 0, 255)
 	local imgBuffer = self.imageBuffer
